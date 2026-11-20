@@ -111,3 +111,38 @@ test('在跑页的异常事实列表只显示服务端来的 detail', async ({ p
     await fixture.close();
   }
 });
+
+test('监控 WS：开页后新任务收到 TaskEvent', async ({ page, browser }) => {
+  test.setTimeout(180_000);
+  const fixture = await startKernelFixture({ t030: 'write' });
+  const frames: { taskId: string; seq: number }[] = [];
+  page.on('websocket', (socket) => {
+    socket.on('framereceived', (received) => {
+      try {
+        const raw = String(received.payload);
+        const frame = JSON.parse(raw) as { type?: string; taskId?: string; event?: { seq?: number } };
+        if (frame.type === 'task-event' && frame.taskId && typeof frame.event?.seq === 'number') {
+          frames.push({ taskId: frame.taskId, seq: frame.event.seq });
+        }
+      } catch {
+        // 非 JSON 帧不管。
+      }
+    });
+  });
+  const ids = () => [...new Set(frames.map((frame) => frame.taskId))];
+  try {
+    await page.goto(urlOf(fixture, '#monitor?tab=live'));
+    await expect(page.locator('[data-page="monitor"]')).toBeVisible({ timeout: 30_000 });
+    const kindPage = await browser.newPage();
+    try {
+      await kindPage.goto(urlOf(fixture, '#kind'));
+      await sendKind(kindPage, '把 hello.txt 的判重改成按 url');
+      await expect.poll(() => ids().length, { timeout: 60_000 }).toBeGreaterThanOrEqual(1);
+      expect(ids().length).toBeGreaterThanOrEqual(1);
+    } finally {
+      await kindPage.close();
+    }
+  } finally {
+    await fixture.close();
+  }
+});

@@ -342,14 +342,14 @@ fn spawn_monitor_task(mut task: MonitorLiveTask, sender: tokio::sync::mpsc::Send
 }
 
 /// 只返回 known 里没有的任务；抽出来让「新任务也会挂订阅」有单测。
-fn unseen_task_ids<'a>(
-    known: &BTreeSet<String>,
+fn unseen_task_keys<'a>(
+    known: &BTreeSet<(String, u64)>,
     tasks: impl IntoIterator<Item = &'a MonitorLiveTask>,
-) -> Vec<String> {
+) -> Vec<(String, u64)> {
     tasks
         .into_iter()
-        .map(|task| task.task_id.clone())
-        .filter(|task_id| !known.contains(task_id))
+        .map(|task| (task.task_id.clone(), task.attempt_id))
+        .filter(|key| !known.contains(key))
         .collect()
 }
 
@@ -357,21 +357,21 @@ fn unseen_task_ids<'a>(
 async fn attach_new_monitor_tasks(
     socket: &mut WebSocket,
     runtime: &TaskRuntime,
-    known: &mut BTreeSet<String>,
+    known: &mut BTreeSet<(String, u64)>,
     sender: &tokio::sync::mpsc::Sender<MonitorMsg>,
 ) -> bool {
     let Ok(live) = runtime.monitor_live(0).await else {
         return true;
     };
-    let new_ids = unseen_task_ids(known, &live.tasks);
+    let new_keys = unseen_task_keys(known, &live.tasks);
     for task in live.tasks {
-        if !new_ids.contains(&task.task_id) {
+        if !new_keys.contains(&(task.task_id.clone(), task.attempt_id)) {
             continue;
         }
         if !send_monitor_backlog(socket, &task).await {
             return false;
         }
-        known.insert(task.task_id.clone());
+        known.insert((task.task_id.clone(), task.attempt_id));
         spawn_monitor_task(task, sender.clone());
     }
     true
@@ -404,8 +404,11 @@ async fn ws_monitor_session(socket: &mut WebSocket, state: &AppState, last_seq: 
             return;
         }
     };
-    let mut known_tasks: BTreeSet<String> =
-        live.tasks.iter().map(|task| task.task_id.clone()).collect();
+    let mut known_tasks: BTreeSet<(String, u64)> = live
+        .tasks
+        .iter()
+        .map(|task| (task.task_id.clone(), task.attempt_id))
+        .collect();
     let (sender, mut receiver) = tokio::sync::mpsc::channel::<MonitorMsg>(256);
     for task in live.tasks {
         if !send_monitor_backlog(socket, &task).await {
@@ -436,7 +439,7 @@ async fn ws_monitor_session(socket: &mut WebSocket, state: &AppState, last_seq: 
                     if known_tasks.is_empty() {
                         if !send_frame(socket, &Frame::TaskChanged { task_id: String::new() }).await { return; }
                     } else {
-                        for task_id in &known_tasks {
+                        for (task_id, _) in &known_tasks {
                             if !send_frame(socket, &Frame::TaskChanged { task_id: task_id.clone() }).await { return; }
                         }
                     }
@@ -692,11 +695,20 @@ mod monitor_tests {
         }
     }
 
+    fn task_at(id: &str, attempt_id: u64) -> MonitorLiveTask {
+        let mut task = task(id);
+        task.attempt_id = attempt_id;
+        task
+    }
+
     #[test]
-    fn dynamic_attach_selects_only_new_tasks() {
-        let known = BTreeSet::from(["old".to_owned()]);
-        let tasks = [task("old"), task("new-a"), task("new-b")];
-        assert_eq!(unseen_task_ids(&known, &tasks), vec!["new-a", "new-b"]);
-        assert!(unseen_task_ids(&known, &[task("old")]).is_empty());
+    fn dynamic_attach_selects_only_unseen_attempts() {
+        let known = BTreeSet::from([("old".to_owned(), 1), ("same".to_owned(), 1)]);
+        let tasks = [task("old"), task_at("same", 2), task("new-a")];
+        assert_eq!(
+            unseen_task_keys(&known, &tasks),
+            vec![("same".to_owned(), 2), ("new-a".to_owned(), 1)]
+        );
+        assert!(unseen_task_keys(&known, &[task("old"), task("same")]).is_empty());
     }
 }
