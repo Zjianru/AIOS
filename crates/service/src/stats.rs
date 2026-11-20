@@ -124,6 +124,52 @@ pub struct SessionStats {
     pub effort_wanted: String,
 }
 
+/// 一次请求的首字毫秒：第一帧时间 - requestAt；缺 requestAt 或流就「没采到」，不回退 step/start。
+pub fn first_token_ms(event: &session::Event) -> Option<u64> {
+    let (request_at, stream) = match &event.kind {
+        EventKind::AssistantMessage {
+            request_at, stream, ..
+        }
+        | EventKind::AssistantAttempt {
+            request_at, stream, ..
+        } => (request_at.as_ref()?, stream),
+        _ => return None,
+    };
+    let first = stream.iter().filter_map(stream_frame_time).min()?;
+    first.checked_sub(*request_at)
+}
+
+/// 这次请求的五块上下文估算；旧日志没采到。
+pub fn context_parts(event: &session::Event) -> Option<&session::ContextParts> {
+    match &event.kind {
+        EventKind::AssistantMessage { context_parts, .. }
+        | EventKind::AssistantAttempt { context_parts, .. } => context_parts.as_ref(),
+        _ => None,
+    }
+}
+
+fn stream_frame_time(record: &model::AssistantStreamRecord) -> Option<u64> {
+    match record {
+        model::AssistantStreamRecord::TextChunks { time0, .. }
+        | model::AssistantStreamRecord::ReasoningChunks { time0, .. }
+        | model::AssistantStreamRecord::ToolCallChunks { time0, .. } => Some(*time0),
+        model::AssistantStreamRecord::Chunk { time, .. } => Some(*time),
+    }
+}
+
+/// 把做梦的 usage_json 计入「后台」消耗（只给消耗合计/环用）。
+pub fn dream_usage_cost(
+    usage_json: &str,
+    connection: Option<&ConnectionInfo>,
+    catalog: &CatalogSnapshot,
+    model: &str,
+) -> Option<f64> {
+    let usage: Usage = serde_json::from_str(usage_json).ok()?;
+    let connection = connection?;
+    let price = effective_price(connection, catalog, model)?;
+    usage_cost_usd(&usage, &price)
+}
+
 /// 从日志现算会话合计。价格按当前连接 + 目录；每轮的模型取 assistant/message 的
 /// message.source.model（没有就按当前 model 算）。
 pub fn session_stats(
@@ -159,6 +205,32 @@ pub fn session_stats(
                 }
             }
             EventKind::StepStart { .. } => stats.steps += 1,
+            EventKind::CompactionSummary {
+                model: compaction_model,
+                usage,
+                ..
+            } => {
+                let Some(usage) = usage else { continue };
+                stats.input_tokens += usage.input_tokens.unwrap_or(0);
+                stats.output_tokens += usage.output_tokens.unwrap_or(0);
+                stats.cache_read_tokens += usage.cache_read_input_tokens.unwrap_or(0);
+                stats.cache_write_tokens += usage.cache_creation_input_tokens.unwrap_or(0);
+                let connection = connections
+                    .iter()
+                    .find(|connection| connection.id == round_connection);
+                match connection
+                    .and_then(|connection| effective_price(connection, catalog, compaction_model))
+                {
+                    Some(price) => match usage_cost_usd(usage, &price) {
+                        Some(round_cost) => {
+                            cost += round_cost;
+                            priced += 1;
+                        }
+                        None => stats.unpriced = true,
+                    },
+                    None => stats.unpriced = true,
+                }
+            }
             EventKind::SessionModel {
                 connection, model, ..
             } => {
@@ -269,6 +341,9 @@ mod tests {
             interrupted: None,
             effort: Some("high".to_owned()),
             effort_wanted: None,
+
+            request_at: None,
+            context_parts: None,
         }
     }
 
@@ -633,6 +708,9 @@ mod tests {
                     interrupted: None,
                     effort: Some("high".to_owned()),
                     effort_wanted: None,
+
+                    request_at: None,
+                    context_parts: None,
                 },
             ),
         ];
@@ -676,5 +754,113 @@ mod tests {
         };
         let cost = usage_cost_usd(&without_write, &price).expect("缓存写为 0");
         assert!(cost > 0.0);
+    }
+    fn assistant_event(
+        request_at: Option<u64>,
+        stream: Vec<model::AssistantStreamRecord>,
+    ) -> session::Event {
+        session::Event::new(
+            1,
+            9_000,
+            session::EventKind::AssistantMessage {
+                turn: 1,
+                step: 1,
+                message: model::Message::assistant(
+                    vec![model::ContentBlock::text("ok")],
+                    "deepseek",
+                    "deepseek-flash",
+                ),
+                stream,
+                usage: None,
+                interrupted: None,
+                effort: None,
+                effort_wanted: None,
+                request_at,
+                context_parts: Some(session::ContextParts {
+                    fixed_block: 100,
+                    tool_definitions: 50,
+                    task_book_messages: 0,
+                    model_replies: 10,
+                    tool_results: 5,
+                }),
+            },
+        )
+    }
+
+    #[test]
+    fn first_token_is_first_frame_minus_request_at() {
+        let chunk = model::AssistantStreamRecord::TextChunks {
+            time0: 1_250,
+            index: 0,
+            dt: Vec::new(),
+            texts: vec!["好".to_owned()],
+        };
+        let event = assistant_event(Some(1_000), vec![chunk]);
+        assert_eq!(first_token_ms(&event), Some(250));
+        let missing = assistant_event(None, Vec::new());
+        assert_eq!(first_token_ms(&missing), None, "缺 requestAt 就是没采到");
+        assert_eq!(
+            context_parts(&event).map(|parts| parts.fixed_block),
+            Some(100)
+        );
+    }
+
+    #[test]
+    fn compaction_summary_usage_counts_in_session_stats() {
+        let event = session::Event::new(
+            1,
+            9_000,
+            session::EventKind::CompactionSummary {
+                compaction_id: "c-1".to_owned(),
+                source_command_id: None,
+                summary: Vec::new(),
+                raw_output: Vec::new(),
+                llm_stream_call: false,
+                shadowed_range: session::ShadowedRange { start: 0, end: 1 },
+                shadowed_seqs: Vec::new(),
+                shadowed_token_count: 0,
+                provider: "deepseek".to_owned(),
+                model: "deepseek-flash".to_owned(),
+                max_tokens: None,
+                usage: Some(Usage {
+                    input_tokens: Some(1_000_000),
+                    output_tokens: Some(1_000_000),
+                    cache_read_input_tokens: Some(0),
+                    cache_creation_input_tokens: Some(0),
+                }),
+            },
+        );
+        let stats = session_stats(
+            &[event],
+            &[connection(Some(2.0))],
+            &catalog(),
+            &selection(),
+            0,
+            0,
+        );
+        assert_eq!(stats.input_tokens, 1_000_000, "压缩用量进合计");
+        assert_eq!(stats.output_tokens, 1_000_000);
+        assert!((stats.cost_usd.unwrap() - 4.0).abs() < 1e-9, "{stats:?}");
+    }
+
+    #[test]
+    fn dream_usage_cost_is_background_only() {
+        let cost = dream_usage_cost(
+            r#"{"inputTokens":1000000,"outputTokens":0}"#,
+            Some(&connection(Some(2.0))),
+            &catalog(),
+            "deepseek-flash",
+        );
+        assert!((cost.unwrap() - 2.0).abs() < 1e-9);
+        assert!(
+            dream_usage_cost(
+                "{bad",
+                Some(&connection(Some(2.0))),
+                &catalog(),
+                "deepseek-flash"
+            )
+            .is_none(),
+            "坏 usage 不当 0"
+        );
     }
 }

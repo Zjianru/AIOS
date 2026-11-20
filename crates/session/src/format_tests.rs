@@ -315,6 +315,9 @@ fn assistant_settlement_shapes_match_dsh() {
                     ..Usage::default()
                 }),
                 interrupted: None,
+
+                request_at: None,
+                context_parts: None,
             },
             EventKind::AssistantAttempt {
                 turn: 1,
@@ -326,6 +329,9 @@ fn assistant_settlement_shapes_match_dsh() {
                         block_type: model::BlockType::Text,
                     },
                 }],
+
+                request_at: None,
+                context_parts: None,
             },
             EventKind::AssistantMessage {
                 effort: None,
@@ -340,6 +346,9 @@ fn assistant_settlement_shapes_match_dsh() {
                 stream: Vec::new(),
                 usage: None,
                 interrupted: Some(true),
+
+                request_at: None,
+                context_parts: None,
             },
         ])
         .unwrap();
@@ -552,6 +561,9 @@ fn all_event_kinds() -> Vec<EventKind> {
                 ..Usage::default()
             }),
             interrupted: Some(true),
+
+            request_at: None,
+            context_parts: None,
         },
         EventKind::AssistantAttempt {
             turn: 1,
@@ -563,6 +575,9 @@ fn all_event_kinds() -> Vec<EventKind> {
                     block_type: model::BlockType::Text,
                 },
             }],
+
+            request_at: None,
+            context_parts: None,
         },
         EventKind::ToolCall {
             turn: 1,
@@ -1191,6 +1206,9 @@ fn tool_call_stream_records_match_dsh() {
                     args: vec!["{\"a\":".to_owned(), "1}".to_owned()],
                 },
             ],
+
+            request_at: None,
+            context_parts: None,
         }])
         .unwrap();
     let (_header, rows) = log_rows(&store);

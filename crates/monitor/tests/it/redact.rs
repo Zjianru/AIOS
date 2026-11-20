@@ -68,6 +68,9 @@ fn reasoning_text_is_replaced_with_character_counts() {
             }],
             usage: None,
             interrupted: None,
+
+            request_at: None,
+            context_parts: None,
         }])
         .expect("追加");
     drop(store);

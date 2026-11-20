@@ -29,8 +29,16 @@ pub(super) fn emit_usage(inner: &Arc<Inner>, usage: &Option<Usage>) {
     }
 }
 
+/// 一次模型尝试的请求事实（时刻 + 上下文估算），参数打包免得中断路径参数过多。
+#[derive(Debug, Clone)]
+pub(super) struct RequestFacts {
+    pub request_at: u64,
+    pub context_parts: session::ContextParts,
+}
+
 /// 取消时收尾一次已开始的尝试（DSH agent.ts:499-533）：有可见前缀写 interrupted 的
 /// assistant/message；没有可见内容写 assistant/attempt（帧保留，不留空消息）。
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn interrupted_step(
     inner: &Arc<Inner>,
     turn: u64,
@@ -39,10 +47,11 @@ pub(super) async fn interrupted_step(
     open: &BTreeMap<usize, (BlockType, String)>,
     usage: &Option<Usage>,
     stream: &AssistantStreamAccumulator,
+    facts: &RequestFacts,
 ) -> Result<StepEnd, AgentError> {
     let content = interrupted_content(blocks, open);
     if content.is_empty() {
-        append_attempt(inner, turn, step, stream).await?;
+        append_attempt(inner, turn, step, stream, facts).await?;
     } else {
         let message = assistant_message(inner, content);
         let (effort_wanted, effort) = inner.model.effort_state();
@@ -56,6 +65,8 @@ pub(super) async fn interrupted_step(
                 stream: stream.snapshot(),
                 usage: usage.clone(),
                 interrupted: Some(true),
+                request_at: Some(facts.request_at),
+                context_parts: Some(facts.context_parts.clone()),
             }])
             .await?;
         emit_usage(inner, usage);
@@ -69,12 +80,15 @@ pub(super) async fn append_attempt(
     turn: u64,
     step: u64,
     stream: &AssistantStreamAccumulator,
+    facts: &RequestFacts,
 ) -> Result<(), AgentError> {
     inner
         .append(&[EventKind::AssistantAttempt {
             turn,
             step,
             stream: stream.snapshot(),
+            request_at: Some(facts.request_at),
+            context_parts: Some(facts.context_parts.clone()),
         }])
         .await
 }

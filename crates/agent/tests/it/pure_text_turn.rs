@@ -97,8 +97,19 @@ async fn pure_text_turn() {
                 usage,
                 effort,
                 effort_wanted,
+                request_at,
+                context_parts,
+                stream,
                 ..
-            } => Some((message, usage, effort, effort_wanted)),
+            } => Some((
+                message,
+                usage,
+                effort,
+                effort_wanted,
+                request_at,
+                context_parts,
+                stream,
+            )),
             _ => None,
         })
         .expect("日志里有 assistant/message");
@@ -119,6 +130,43 @@ async fn pure_text_turn() {
         Some("high"),
         "effort_wanted 是用户要的档"
     );
+    let request_at = assistant.4.expect("请求发出时刻已采到");
+    let parts = assistant.5.as_ref().expect("上下文五块已估算");
+    assert!(request_at > 0);
+    let first_frame = assistant
+        .6
+        .iter()
+        .map(|record| match record {
+            model::AssistantStreamRecord::TextChunks { time0, .. }
+            | model::AssistantStreamRecord::ReasoningChunks { time0, .. }
+            | model::AssistantStreamRecord::ToolCallChunks { time0, .. } => *time0,
+            model::AssistantStreamRecord::Chunk { time, .. } => *time,
+        })
+        .min()
+        .expect("流里有帧");
+    assert!(first_frame >= request_at);
+    assert!(parts.fixed_block > 0, "固定块有估算：{parts:?}");
+    assert!(
+        parts.tool_definitions + parts.task_book_messages + parts.fixed_block > 0,
+        "请求上下文非空：{parts:?}"
+    );
+    let event = reopened
+        .events()
+        .iter()
+        .find(|event| matches!(event.kind, EventKind::AssistantMessage { .. }))
+        .expect("assistant 事件");
+    let json = serde_json::to_value(event).unwrap();
+    assert!(json["data"]["requestAt"].as_u64().is_some(), "{json}");
+    let five = &json["data"]["contextParts"];
+    for key in [
+        "fixedBlock",
+        "toolDefinitions",
+        "taskBookMessages",
+        "modelReplies",
+        "toolResults",
+    ] {
+        assert!(five.get(key).is_some(), "contextParts 缺 {key}：{json}");
+    }
 
     let derived = reopened.derive_messages();
     let roles: Vec<Role> = derived.iter().map(|message| message.role).collect();

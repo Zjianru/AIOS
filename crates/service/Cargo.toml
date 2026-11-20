@@ -25,6 +25,7 @@ encoding_rs = "0.8.44"
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+shell-words.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 

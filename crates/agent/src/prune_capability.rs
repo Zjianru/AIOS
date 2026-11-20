@@ -332,6 +332,8 @@ async fn apply_canvas_group(
             interrupted: *interrupted,
             effort: effort.clone(),
             effort_wanted: effort_wanted.clone(),
+            request_at: None,
+            context_parts: None,
         },
         SurfaceOp::Replace {
             start_seq: group.call_seq,

@@ -39,14 +39,16 @@ impl SkillCatalogState {
                 continue;
             };
             self.published_digest = Some(digest_entries(entries, *incomplete));
-            self.current_text = Some(
-                message
-                    .content
-                    .iter()
-                    .filter_map(|block| block.as_text())
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            );
+            if self.current_text.is_none() {
+                self.current_text = Some(
+                    message
+                        .content
+                        .iter()
+                        .filter_map(|block| block.as_text())
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                );
+            }
         }
     }
 
@@ -108,8 +110,11 @@ impl SkillCatalogState {
         } else {
             render_catalog_first(&entries, discovery.incomplete, &unavailable)
         };
+        // 压缩固定块用 first 版完整目录：更新版只讲变化，不能当当前完整内容。
+        if !published {
+            self.current_text = Some(text.clone());
+        }
         self.published_digest = Some(digest);
-        self.current_text = Some(text.clone());
         Some(Message::skill_catalog(
             text,
             published,
@@ -268,4 +273,64 @@ fn fnv_hex(input: &str) -> String {
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     format!("{hash:016x}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn current_text_stays_the_first_full_catalog_on_updates() {
+        let data = tempfile::tempdir().unwrap();
+        let cwd = tempfile::tempdir().unwrap();
+        let roots = cwd.path().join("skills");
+        std::fs::create_dir_all(roots.join("one")).unwrap();
+        std::fs::write(
+            roots.join("one/SKILL.md"),
+            "---\nname: one\ndescription: 第一份\n---\n\n正文",
+        )
+        .unwrap();
+        let mut state = SkillCatalogState::default();
+        let first = state
+            .prepare(
+                cwd.path(),
+                data.path(),
+                std::slice::from_ref(&roots),
+                &[],
+                &BTreeSet::new(),
+            )
+            .expect("首次发布");
+        let first_text = state.current_text().expect("完整目录");
+        assert_eq!(
+            first
+                .content
+                .iter()
+                .filter_map(model::ContentBlock::as_text)
+                .collect::<String>(),
+            first_text
+        );
+
+        std::fs::create_dir_all(roots.join("two")).unwrap();
+        std::fs::write(
+            roots.join("two/SKILL.md"),
+            "---\nname: two\ndescription: 第二份\n---\n\n正文",
+        )
+        .unwrap();
+        let update = state
+            .prepare(cwd.path(), data.path(), &[roots], &[], &BTreeSet::new())
+            .expect("目录更新");
+        assert!(
+            update
+                .content
+                .iter()
+                .filter_map(model::ContentBlock::as_text)
+                .collect::<String>()
+                .contains("two")
+        );
+        assert_eq!(
+            state.current_text().as_deref(),
+            Some(first_text.as_str()),
+            "压缩固定块留 first 版完整文案"
+        );
+    }
 }

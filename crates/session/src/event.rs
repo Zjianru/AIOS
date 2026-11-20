@@ -260,6 +260,21 @@ pub struct JobToolCallData {
     pub root_call_id: String,
 }
 
+/// 一次请求的上下文估算（token；只给监控展示，不进模型请求）。
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ContextParts {
+    #[serde(rename = "fixedBlock")]
+    pub fixed_block: u64,
+    #[serde(rename = "toolDefinitions")]
+    pub tool_definitions: u64,
+    #[serde(rename = "taskBookMessages")]
+    pub task_book_messages: u64,
+    #[serde(rename = "modelReplies")]
+    pub model_replies: u64,
+    #[serde(rename = "toolResults")]
+    pub tool_results: u64,
+}
+
 /// 会话事件。类型集合照 spec「实现决定·会话日志」。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -397,6 +412,12 @@ pub enum EventKind {
         /// T012.3：用户要的档；换到不能调的模型时和实际发的不同。
         #[serde(skip_serializing_if = "Option::is_none")]
         effort_wanted: Option<String>,
+        /// 请求发出时刻（Unix 毫秒）；旧日志没有。
+        #[serde(rename = "requestAt", skip_serializing_if = "Option::is_none")]
+        request_at: Option<u64>,
+        /// 这次请求的上下文五块估算；旧日志没有。
+        #[serde(rename = "contextParts", skip_serializing_if = "Option::is_none")]
+        context_parts: Option<ContextParts>,
     },
     /// 一次没有产出可见消息的模型尝试（重试/取消/流错误）。stream 保留帧，不进派生历史。
     #[serde(rename = "assistant/attempt")]
@@ -404,6 +425,10 @@ pub enum EventKind {
         turn: u64,
         step: u64,
         stream: Vec<AssistantStreamRecord>,
+        #[serde(rename = "requestAt", skip_serializing_if = "Option::is_none")]
+        request_at: Option<u64>,
+        #[serde(rename = "contextParts", skip_serializing_if = "Option::is_none")]
+        context_parts: Option<ContextParts>,
     },
     /// 一次已排定的重试（log-only；DSH llm/retry，durable before the cancellable wait）。
     #[serde(rename = "llm/retry")]
