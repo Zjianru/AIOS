@@ -2277,6 +2277,7 @@ impl TaskRuntime {
             },
         );
         self.monitor(task.id.clone(), attempt_id, conversation, events);
+        self.notify_changed(&task.id);
         Ok(OpenedResume { host, attempt_id })
     }
 
@@ -2670,6 +2671,7 @@ impl TaskRuntime {
             },
         );
         self.monitor(task.id.clone(), attempt_id, conversation.clone(), events);
+        self.notify_changed(&task.id);
         let assignment = self.assignment_value(&task, false).to_string();
         let sent = host
             .send_message(

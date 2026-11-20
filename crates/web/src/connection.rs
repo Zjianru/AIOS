@@ -1,5 +1,6 @@
 //! WebSocket 连接：线上帧、ready/补齐、live 事件和连接内 ops。
 
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -9,8 +10,9 @@ use axum::response::Response;
 use monitor::{Channel, Monitor, Record, Severity};
 use serde::{Deserialize, Serialize};
 use service::{
-    ContextUsage, FollowRequest, FollowResponse, HostInfo, HostLocation, PROTOCOL_VERSION,
-    RootHost, RootState, ServiceError, ServiceEvent, ServiceHost, TaskLive, TaskStream,
+    ContextUsage, FollowRequest, FollowResponse, HostInfo, HostLocation, MonitorLiveTask,
+    PROTOCOL_VERSION, RootHost, RootState, ServiceError, ServiceEvent, ServiceHost, TaskLive,
+    TaskRuntime, TaskStream,
 };
 use tokio::sync::broadcast;
 use ts_rs::TS;
@@ -278,6 +280,103 @@ async fn send_error(socket: &mut WebSocket, message: &str) -> bool {
     .await
 }
 
+enum MonitorMsg {
+    Event {
+        task_id: String,
+        attempt_id: u64,
+        event: ServiceEvent,
+    },
+    Changed(String),
+}
+
+/// 给一个任务补 backlog；失败表示连接已断。
+async fn send_monitor_backlog(socket: &mut WebSocket, task: &MonitorLiveTask) -> bool {
+    for event in &task.follow.events {
+        if !send_frame(
+            socket,
+            &Frame::TaskEvent {
+                task_id: task.task_id.clone(),
+                attempt_id: task.attempt_id,
+                event: event.clone(),
+            },
+        )
+        .await
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// 把一个任务的 live 订阅挂到连接上；任务已经结束（广播关闭）时自然退出。
+fn spawn_monitor_task(mut task: MonitorLiveTask, sender: tokio::sync::mpsc::Sender<MonitorMsg>) {
+    tokio::spawn(async move {
+        loop {
+            match task.events.recv().await {
+                Ok(event) => {
+                    if sender
+                        .send(MonitorMsg::Event {
+                            task_id: task.task_id.clone(),
+                            attempt_id: task.attempt_id,
+                            event,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    if sender
+                        .send(MonitorMsg::Changed(task.task_id.clone()))
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                Err(broadcast::error::RecvError::Closed) => return,
+            }
+        }
+    });
+}
+
+/// 只返回 known 里没有的任务；抽出来让「新任务也会挂订阅」有单测。
+fn unseen_task_keys<'a>(
+    known: &BTreeSet<(String, u64)>,
+    tasks: impl IntoIterator<Item = &'a MonitorLiveTask>,
+) -> Vec<(String, u64)> {
+    tasks
+        .into_iter()
+        .map(|task| (task.task_id.clone(), task.attempt_id))
+        .filter(|key| !known.contains(key))
+        .collect()
+}
+
+/// 开页后新起的任务：只挂不在 known 里的；新任务从 0 补，页面按任务 seq 去重。
+async fn attach_new_monitor_tasks(
+    socket: &mut WebSocket,
+    runtime: &TaskRuntime,
+    known: &mut BTreeSet<(String, u64)>,
+    sender: &tokio::sync::mpsc::Sender<MonitorMsg>,
+) -> bool {
+    let Ok(live) = runtime.monitor_live(0).await else {
+        return true;
+    };
+    let new_keys = unseen_task_keys(known, &live.tasks);
+    for task in live.tasks {
+        if !new_keys.contains(&(task.task_id.clone(), task.attempt_id)) {
+            continue;
+        }
+        if !send_monitor_backlog(socket, &task).await {
+            return false;
+        }
+        known.insert((task.task_id.clone(), task.attempt_id));
+        spawn_monitor_task(task, sender.clone());
+    }
+    true
+}
+
 /// 监控连接：ready 后补各在跑任务的 backlog，再转发 TaskEvent；掉帧发 task-changed 让页面重读。
 async fn ws_monitor_session(socket: &mut WebSocket, state: &AppState, last_seq: u64) {
     let info = state.host.info();
@@ -305,63 +404,17 @@ async fn ws_monitor_session(socket: &mut WebSocket, state: &AppState, last_seq: 
             return;
         }
     };
-    let known_tasks: Vec<String> = live.tasks.iter().map(|task| task.task_id.clone()).collect();
-    for task in &live.tasks {
-        for event in &task.follow.events {
-            if !send_frame(
-                socket,
-                &Frame::TaskEvent {
-                    task_id: task.task_id.clone(),
-                    attempt_id: task.attempt_id,
-                    event: event.clone(),
-                },
-            )
-            .await
-            {
-                return;
-            }
-        }
-    }
-    enum MonitorMsg {
-        Event {
-            task_id: String,
-            attempt_id: u64,
-            event: ServiceEvent,
-        },
-        Changed(String),
-    }
+    let mut known_tasks: BTreeSet<(String, u64)> = live
+        .tasks
+        .iter()
+        .map(|task| (task.task_id.clone(), task.attempt_id))
+        .collect();
     let (sender, mut receiver) = tokio::sync::mpsc::channel::<MonitorMsg>(256);
-    for mut task in live.tasks {
-        let sender = sender.clone();
-        tokio::spawn(async move {
-            loop {
-                match task.events.recv().await {
-                    Ok(event) => {
-                        if sender
-                            .send(MonitorMsg::Event {
-                                task_id: task.task_id.clone(),
-                                attempt_id: task.attempt_id,
-                                event,
-                            })
-                            .await
-                            .is_err()
-                        {
-                            return;
-                        }
-                    }
-                    Err(broadcast::error::RecvError::Lagged(_)) => {
-                        if sender
-                            .send(MonitorMsg::Changed(task.task_id.clone()))
-                            .await
-                            .is_err()
-                        {
-                            return;
-                        }
-                    }
-                    Err(broadcast::error::RecvError::Closed) => return,
-                }
-            }
-        });
+    for task in live.tasks {
+        if !send_monitor_backlog(socket, &task).await {
+            return;
+        }
+        spawn_monitor_task(task, sender.clone());
     }
     let mut changed = live.changed;
     loop {
@@ -377,14 +430,16 @@ async fn ws_monitor_session(socket: &mut WebSocket, state: &AppState, last_seq: 
             },
             message = changed.recv() => match message {
                 Ok(task_id) => {
+                    if !attach_new_monitor_tasks(socket, runtime, &mut known_tasks, &sender).await { return; }
                     if !send_frame(socket, &Frame::TaskChanged { task_id }).await { return; }
                 }
                 Err(broadcast::error::RecvError::Lagged(_)) => {
-                    // 任务事实变化也掉了：让页面按已知任务重读快照。
+                    // 任务事实变化也掉了：先把新任务挂上，再让页面按已知任务重读快照。
+                    if !attach_new_monitor_tasks(socket, runtime, &mut known_tasks, &sender).await { return; }
                     if known_tasks.is_empty() {
                         if !send_frame(socket, &Frame::TaskChanged { task_id: String::new() }).await { return; }
                     } else {
-                        for task_id in &known_tasks {
+                        for (task_id, _) in &known_tasks {
                             if !send_frame(socket, &Frame::TaskChanged { task_id: task_id.clone() }).await { return; }
                         }
                     }
@@ -621,5 +676,39 @@ mod wire_protocol_tests {
                 "argumentsDelta": "{\"title\":\"",
             })
         );
+    }
+}
+
+#[cfg(test)]
+mod monitor_tests {
+    use super::*;
+
+    fn task(id: &str) -> MonitorLiveTask {
+        MonitorLiveTask {
+            task_id: id.to_owned(),
+            attempt_id: 1,
+            follow: FollowResponse {
+                events: Vec::new(),
+                last_seq: 0,
+            },
+            events: broadcast::channel(1).1,
+        }
+    }
+
+    fn task_at(id: &str, attempt_id: u64) -> MonitorLiveTask {
+        let mut task = task(id);
+        task.attempt_id = attempt_id;
+        task
+    }
+
+    #[test]
+    fn dynamic_attach_selects_only_unseen_attempts() {
+        let known = BTreeSet::from([("old".to_owned(), 1), ("same".to_owned(), 1)]);
+        let tasks = [task("old"), task_at("same", 2), task("new-a")];
+        assert_eq!(
+            unseen_task_keys(&known, &tasks),
+            vec![("same".to_owned(), 2), ("new-a".to_owned(), 1)]
+        );
+        assert!(unseen_task_keys(&known, &[task("old"), task("same")]).is_empty());
     }
 }
