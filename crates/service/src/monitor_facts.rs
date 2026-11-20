@@ -264,12 +264,9 @@ impl Agg {
             rings.unpriced |= stats.unpriced;
             self.add_events(&filtered, Some(task.id.as_str()), &selection, tz, rings);
         }
-        if let Some(anomaly) = longest_request_anomaly(
-            &task_events,
-            task.id.as_str(),
-            running.unwrap_or(false),
-            Utc::now().timestamp_millis().max(0) as u64,
-        ) {
+        if let Some(anomaly) =
+            longest_request_anomaly(&task_events, task.id.as_str(), running.unwrap_or(false))
+        {
             self.anomalies.push(anomaly);
         }
         summary.tool_calls = latest_events
@@ -569,40 +566,27 @@ fn longest_request_anomaly(
     events: &[session::Event],
     task_id: &str,
     running: bool,
-    now_ms: u64,
 ) -> Option<MonitorAnomaly> {
-    let mut timings: Vec<(u64, u64)> = events
-        .iter()
-        .filter_map(|event| {
-            stats::request_duration_ms(event).map(|duration| (event.time, duration))
-        })
-        .collect();
-    timings.sort_by_key(|(time, _)| *time);
-    // 日志在请求结束前没有 requestAt；在飞这一段从本步 step/start 起算，页面卡片也用它。
-    let in_flight = running
-        .then(|| open_step_start(events))
-        .flatten()
-        .map(|start| now_ms.saturating_sub(start));
-    let (current, in_flight) = match in_flight {
-        Some(duration) => (duration, true),
-        None => (*timings.last().map(|(_, duration)| duration)?, false),
-    };
-    let completed = if in_flight {
-        timings
-            .iter()
-            .map(|(_, duration)| *duration)
-            .collect::<Vec<_>>()
+    // 在飞请求还没有 requestAt：不能用 step/start 冒充请求起点，直接写没采到、不给数字。
+    let detail = if running && open_step_start(events).is_some() {
+        "本次请求没采到：日志里还没有 requestAt，没法比此前最长".to_owned()
     } else {
-        timings[..timings.len().saturating_sub(1)]
+        let mut timings: Vec<(u64, u64)> = events
+            .iter()
+            .filter_map(|event| {
+                stats::request_duration_ms(event).map(|duration| (event.time, duration))
+            })
+            .collect();
+        timings.sort_by_key(|(time, _)| *time);
+        let (_, current) = *timings.last()?;
+        let prior = timings[..timings.len().saturating_sub(1)]
             .iter()
             .map(|(_, duration)| *duration)
-            .collect::<Vec<_>>()
-    };
-    let prior = completed.into_iter().max();
-    let suffix = if in_flight { "（在飞）" } else { "" };
-    let detail = match prior {
-        Some(prior) => format!("本次 {current}ms{suffix}，此前最长 {prior}ms"),
-        None => format!("本次 {current}ms{suffix}，此前没有可比的"),
+            .max();
+        match prior {
+            Some(prior) => format!("本次 {current}ms，此前最长 {prior}ms"),
+            None => format!("本次 {current}ms，此前没有可比的"),
+        }
     };
     Some(MonitorAnomaly {
         kind: "request-longest".to_owned(),
@@ -1311,10 +1295,10 @@ mod t075_usage_tests {
             timed(2, 200, 2_000, 2_900),
             timed(3, 300, 3_000, 3_700),
         ];
-        let anomaly = longest_request_anomaly(&events, "task-1", false, 0).unwrap();
+        let anomaly = longest_request_anomaly(&events, "task-1", false).unwrap();
         assert_eq!(anomaly.kind, "request-longest");
         assert_eq!(anomaly.detail, "本次 700ms，此前最长 900ms");
-        let single = longest_request_anomaly(&events[..1], "task-1", false, 0).unwrap();
+        let single = longest_request_anomaly(&events[..1], "task-1", false).unwrap();
         assert_eq!(single.detail, "本次 500ms，此前没有可比的");
         let missing = timed(4, 400, 3_000, 3_700);
         let session::EventKind::AssistantMessage { .. } = missing.kind else {
@@ -1328,19 +1312,20 @@ mod t075_usage_tests {
             *request_at = None;
             stream.clear();
         }
-        assert!(longest_request_anomaly(&[missing], "task-1", false, 0).is_none());
+        assert!(longest_request_anomaly(&[missing], "task-1", false).is_none());
     }
 
     #[test]
-    fn in_flight_request_uses_open_step_start_until_now() {
-        let now = 3_000;
+    fn in_flight_without_request_at_is_missed_and_gives_no_number() {
         let completed = timed(1, 1_000, 1_000, 1_500);
-        let mut open =
+        let open =
             session::Event::new(2, 1_800, session::EventKind::StepStart { turn: 2, step: 1 });
-        // 只保留 step/start，后面还没有 assistant/message（在飞）。
-        open.time = 1_800;
-        let anomaly = longest_request_anomaly(&[completed, open], "task-1", true, now).unwrap();
-        assert_eq!(anomaly.detail, "本次 1200ms（在飞），此前最长 500ms");
+        let anomaly = longest_request_anomaly(&[completed, open], "task-1", true).unwrap();
+        assert_eq!(
+            anomaly.detail,
+            "本次请求没采到：日志里还没有 requestAt，没法比此前最长"
+        );
+        assert!(!anomaly.detail.contains("ms"), "没采到不能给数字");
         let no_prior = longest_request_anomaly(
             &[session::Event::new(
                 1,
@@ -1349,10 +1334,12 @@ mod t075_usage_tests {
             )],
             "task-1",
             true,
-            2_000,
         )
         .unwrap();
-        assert_eq!(no_prior.detail, "本次 1000ms（在飞），此前没有可比的");
+        assert_eq!(
+            no_prior.detail,
+            "本次请求没采到：日志里还没有 requestAt，没法比此前最长"
+        );
     }
 
     #[test]
