@@ -22,3 +22,28 @@ pub enum MemoryError {
     #[error("记忆库设置在 {0} 上写失败")]
     Path(PathBuf),
 }
+
+/// 带关系写入的错误：普通库错误、需要模型先判关系、或者 binding 矛盾要出卡。
+#[derive(Debug, thiserror::Error)]
+pub enum WriteError {
+    #[error(transparent)]
+    Memory(#[from] MemoryError),
+    #[error("有 {} 条可能相关，先判关系再写", candidates.len())]
+    RelationRequired {
+        candidates: Vec<crate::types::RelationCandidate>,
+    },
+    #[error("这条与「{target}」矛盾：等用户在替换卡上点一下")]
+    NeedsCard {
+        target: String,
+        card: Box<crate::types::MemoryCardRecord>,
+        new_id: String,
+    },
+    #[error("关系判断不成立：{0}")]
+    InvalidRelation(String),
+}
+
+impl From<rusqlite::Error> for WriteError {
+    fn from(error: rusqlite::Error) -> Self {
+        Self::Memory(MemoryError::Sqlite(error))
+    }
+}

@@ -11,11 +11,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::error::MemoryError;
+use crate::error::WriteError;
 use crate::types::{
-    Actor, Binding, DiaryEntry, DreamAction, DreamChange, DreamChangeInput, DreamRun,
-    DreamSettings, DreamSettingsPatch, Layer, MemoryItem, MemoryKey, MemoryKeyKind,
-    MemoryMigrationReport, MemorySource, MemoryView, RevisionItem, Scope, SearchHit, WriteContext,
-    WriteOp, WriteOutcome,
+    AboutDraftPayload, AboutEdit, Actor, Binding, DiaryEntry, DreamAction, DreamChange,
+    DreamChangeInput, DreamRun, DreamSettings, DreamSettingsPatch, Layer, MemoryCardRecord,
+    MemoryItem, MemoryKey, MemoryKeyKind, MemoryMigrationReport, MemoryRelation, MemorySource,
+    MemoryView, MemoryWrite, RelationCandidate, RelationDecision, RevisionItem, Scope, SearchHit,
+    WriteContext, WriteOp, WriteOutcome,
 };
 
 pub const SCHEMA_VERSION: u64 = 3;
@@ -355,6 +357,22 @@ impl MemoryStore {
                 source_ref: row.get(1)?,
                 quote: row.get(2)?,
                 added_at: row.get(3)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(MemoryError::Sqlite)
+    }
+
+    /// 一条记忆的关系边（supplement / replaces）。
+    pub fn relations(&self, id: &str) -> Result<Vec<MemoryRelation>, MemoryError> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT related_id, kind FROM memory_relation WHERE memory_id = ?1 ORDER BY kind, related_id",
+        )?;
+        let rows = stmt.query_map(params![id], |row| {
+            Ok(MemoryRelation {
+                related_id: row.get(0)?,
+                kind: row.get(1)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>()
@@ -748,6 +766,62 @@ impl MemoryStore {
         Ok(outcome)
     }
 
+    /// 撤销「被替换」：旧条目恢复有效，新条目留着（只适用于 replaced）。
+    pub fn restore_invalid(&self, id: &str, ctx: &WriteContext) -> Result<MemoryItem, MemoryError> {
+        if ctx.actor != Actor::User {
+            return Err(MemoryError::Refused("只有用户能撤销失效"));
+        }
+        let now = (self.clock)();
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if item_by_id(&tx, id)?.is_none() {
+            return Err(MemoryError::NotFound(id.to_owned()));
+        }
+        let new_id: Option<String> = tx
+            .query_row(
+                "SELECT superseded_by FROM memory WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        let Some(new_id) = new_id else {
+            return Err(MemoryError::Refused("这一条不是被替换失效"));
+        };
+        tx.execute(
+            "UPDATE memory SET valid_until = NULL, invalid_reason = NULL, superseded_by = NULL, updated_at = ?1 WHERE id = ?2",
+            params![now, id],
+        )?;
+        tx.execute(
+            "DELETE FROM memory_relation WHERE memory_id = ?1 AND related_id = ?2 AND kind = 'replaces'",
+            params![new_id, id],
+        )?;
+        bump_version(&tx)?;
+        let updated = item_by_id(&tx, id)?.ok_or_else(|| MemoryError::NotFound(id.to_owned()))?;
+        tx.commit()?;
+        Ok(updated)
+    }
+
+    /// 存一张待决的「关于你」草稿卡；edits 已由服务核过原话/旧条。
+    pub fn draft_about(
+        &self,
+        quote: &str,
+        edits: Vec<AboutEdit>,
+    ) -> Result<MemoryCardRecord, MemoryError> {
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let payload = AboutDraftPayload {
+            quote: quote.to_owned(),
+            edits,
+        };
+        let payload = serde_json::to_value(payload)
+            .map_err(|error| MemoryError::StorageConfig(error.to_string()))?;
+        let card = put_card_in(&tx, "about_draft", "pending", &payload)?;
+        bump_version(&tx)?;
+        tx.commit()?;
+        Ok(card)
+    }
+
     /// 隔离区到期清理；启动/页面打开/做梦前顺手调。
     pub fn purge_expired(&self) -> Result<usize, MemoryError> {
         let now = (self.clock)();
@@ -756,6 +830,326 @@ impl MemoryStore {
         let purged = purge_expired(&tx, now)?;
         tx.commit()?;
         Ok(purged)
+    }
+
+    /// 按 scope + 钥匙捞可能相关的旧条目；没有钥匙就没有候选。
+    pub fn relation_candidates(
+        &self,
+        scope: Scope,
+        keys: &[MemoryKey],
+    ) -> Result<Vec<RelationCandidate>, MemoryError> {
+        let conn = self.lock();
+        candidates_in(&conn, scope, keys)
+    }
+
+    /// 带关系判断的一次写入。candidate 非空而 relation 为空时只回候选，不写。
+    pub fn write_with_relation(
+        &self,
+        write: MemoryWrite,
+        ctx: &WriteContext,
+    ) -> Result<WriteOutcome, WriteError> {
+        check_actor(&write.op, ctx)?;
+        let (layer, binding, title, summary, body, source_kind, source_ref) = match &write.op {
+            WriteOp::Remember {
+                title,
+                summary,
+                body,
+                source_kind,
+                source_ref,
+            } => (
+                Layer::AboutYou,
+                Binding::Binding,
+                title.clone(),
+                summary.clone(),
+                body.clone(),
+                source_kind.clone(),
+                source_ref.clone(),
+            ),
+            WriteOp::Note {
+                title,
+                summary,
+                body,
+                source_kind,
+                source_ref,
+            } => (
+                Layer::Note,
+                Binding::Fallible,
+                title.clone(),
+                summary.clone(),
+                body.clone(),
+                source_kind.clone(),
+                source_ref.clone(),
+            ),
+            _ => {
+                if write.relation.is_some() || !write.keys.is_empty() {
+                    return Err(WriteError::InvalidRelation(
+                        "只有 remember/note 支持关系判断和钥匙".to_owned(),
+                    ));
+                }
+                return self.write(write.op, ctx).map_err(WriteError::Memory);
+            }
+        };
+        let now = write.valid_from.unwrap_or_else(|| (self.clock)());
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let candidates = if write.keys.is_empty() {
+            Vec::new()
+        } else {
+            candidates_in(&tx, scope_of(&write.op), &write.keys)?
+        };
+        let relation = match write.relation.clone() {
+            Some(relation) => relation,
+            None if candidates.is_empty() => RelationDecision::Independent,
+            None => {
+                return Err(WriteError::RelationRequired { candidates });
+            }
+        };
+        let (outcome, needs_card) = match relation {
+            RelationDecision::Independent => {
+                let item = create_with_details(
+                    &tx,
+                    layer,
+                    binding,
+                    scope_of(&write.op),
+                    &title,
+                    &summary,
+                    &body,
+                    &source_kind,
+                    &source_ref,
+                    write.source_quote.as_deref(),
+                    &write.keys,
+                    now,
+                    actor_str(ctx.actor),
+                )?;
+                (
+                    WriteOutcome {
+                        item: Some(item),
+                        ..WriteOutcome::default()
+                    },
+                    None,
+                )
+            }
+            RelationDecision::Duplicate { target } => {
+                let old = item_by_id(&tx, &target)?
+                    .filter(|item| {
+                        item.status == "active"
+                            && invalid_reason_of(&tx, &item.id).ok().flatten().is_none()
+                    })
+                    .ok_or_else(|| {
+                        WriteError::InvalidRelation(format!("重复目标不存在或已失效：{target}"))
+                    })?;
+                add_source_row(
+                    &tx,
+                    &target,
+                    &source_kind,
+                    &source_ref,
+                    write.source_quote.as_deref(),
+                    now,
+                )?;
+                (
+                    WriteOutcome {
+                        item: Some(old),
+                        duplicate_of: Some(target),
+                        ..WriteOutcome::default()
+                    },
+                    None,
+                )
+            }
+            RelationDecision::Supplement { target } => {
+                ensure_active(&tx, &target)?;
+                let item = create_with_details(
+                    &tx,
+                    layer,
+                    binding,
+                    scope_of(&write.op),
+                    &title,
+                    &summary,
+                    &body,
+                    &source_kind,
+                    &source_ref,
+                    write.source_quote.as_deref(),
+                    &write.keys,
+                    now,
+                    actor_str(ctx.actor),
+                )?;
+                tx.execute(
+                    "INSERT OR IGNORE INTO memory_relation (memory_id, related_id, kind) VALUES (?1, ?2, 'supplement')",
+                    params![item.id, target],
+                )?;
+                (
+                    WriteOutcome {
+                        item: Some(item),
+                        related: Some(target),
+                        ..WriteOutcome::default()
+                    },
+                    None,
+                )
+            }
+            RelationDecision::Contradict { target, reason } => {
+                let old = ensure_active(&tx, &target)?;
+                if old.binding == Binding::Binding {
+                    // 新的先记成 Kind 笔记；用户点替换前旧的一直有效。
+                    let item = create_with_details(
+                        &tx,
+                        Layer::Note,
+                        Binding::Fallible,
+                        scope_of(&write.op),
+                        &title,
+                        &summary,
+                        &body,
+                        &source_kind,
+                        &source_ref,
+                        write.source_quote.as_deref(),
+                        &write.keys,
+                        now,
+                        "kind",
+                    )?;
+                    let payload = serde_json::json!({
+                        "old_id": old.id,
+                        "new_id": item.id,
+                        "old_title": old.title,
+                        "old_text": old.body,
+                        "new_text": item.body,
+                    });
+                    let card = put_card_in(&tx, "replace", "pending", &payload)?;
+                    (
+                        WriteOutcome {
+                            item: Some(item.clone()),
+                            related: Some(old.id.clone()),
+                            card: Some(card.clone()),
+                            ..WriteOutcome::default()
+                        },
+                        Some(WriteError::NeedsCard {
+                            target: old.id,
+                            card: Box::new(card),
+                            new_id: item.id,
+                        }),
+                    )
+                } else {
+                    let new_item = create_with_details(
+                        &tx,
+                        layer,
+                        binding,
+                        scope_of(&write.op),
+                        &title,
+                        &summary,
+                        &body,
+                        &source_kind,
+                        &source_ref,
+                        write.source_quote.as_deref(),
+                        &write.keys,
+                        now,
+                        actor_str(ctx.actor),
+                    )?;
+                    invalidate_item(&tx, &old.id, &new_item.id, now)?;
+                    tx.execute(
+                        "INSERT OR IGNORE INTO memory_relation (memory_id, related_id, kind) VALUES (?1, ?2, 'replaces')",
+                        params![new_item.id, old.id],
+                    )?;
+                    let _ = reason;
+                    (
+                        WriteOutcome {
+                            item: Some(new_item),
+                            related: Some(old.id),
+                            ..WriteOutcome::default()
+                        },
+                        None,
+                    )
+                }
+            }
+        };
+        bump_version(&tx)?;
+        tx.commit()?;
+        if let Some(error) = needs_card {
+            return Err(error);
+        }
+        Ok(outcome)
+    }
+
+    /// 一条待决卡的状态/内容。
+    pub fn card(&self, card_ref: &str) -> Result<Option<MemoryCardRecord>, MemoryError> {
+        let conn = self.lock();
+        card_in(&conn, card_ref)
+    }
+
+    /// 替换卡：替换/两条都留；只能生效一次，再点返回现状态。
+    pub fn resolve_replace(
+        &self,
+        card_ref: &str,
+        replace: bool,
+        ctx: &WriteContext,
+    ) -> Result<MemoryCardRecord, MemoryError> {
+        let now = (self.clock)();
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let Some(mut card) = card_in(&tx, card_ref)? else {
+            return Err(MemoryError::NotFound(card_ref.to_owned()));
+        };
+        if card.kind != "replace" {
+            return Err(MemoryError::Refused("不是替换卡"));
+        }
+        if card.status != "pending" {
+            return Ok(card);
+        }
+        if replace {
+            let old_id = card.payload["old_id"].as_str().unwrap_or_default();
+            let new_id = card.payload["new_id"].as_str().unwrap_or_default();
+            invalidate_item(&tx, old_id, new_id, now)?;
+            promote_replacement(&tx, new_id, now, actor_str(ctx.actor))?;
+            tx.execute(
+                "INSERT OR IGNORE INTO memory_relation (memory_id, related_id, kind) VALUES (?1, ?2, 'replaces')",
+                params![new_id, old_id],
+            )?;
+            card.status = "replaced".to_owned();
+        } else {
+            card.status = "kept".to_owned();
+        }
+        tx.execute(
+            "UPDATE memory_card SET status = ?1 WHERE card_ref = ?2",
+            params![card.status, card_ref],
+        )?;
+        bump_version(&tx)?;
+        tx.commit()?;
+        Ok(card)
+    }
+
+    /// 关于你草稿卡：保存/不用；只能生效一次。
+    pub fn resolve_about_draft(
+        &self,
+        card_ref: &str,
+        save: bool,
+        ctx: &WriteContext,
+    ) -> Result<MemoryCardRecord, MemoryError> {
+        if ctx.actor != Actor::User {
+            return Err(MemoryError::Refused("关于你只有用户能保存"));
+        }
+        let now = (self.clock)();
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let Some(mut card) = card_in(&tx, card_ref)? else {
+            return Err(MemoryError::NotFound(card_ref.to_owned()));
+        };
+        if card.kind != "about_draft" {
+            return Err(MemoryError::Refused("不是关于你草稿卡"));
+        }
+        if card.status != "pending" {
+            return Ok(card);
+        }
+        if save {
+            let payload: AboutDraftPayload = serde_json::from_value(card.payload.clone())
+                .map_err(|error| MemoryError::StorageConfig(error.to_string()))?;
+            apply_about_edits(&tx, &payload, card_ref, now, actor_str(ctx.actor))?;
+            card.status = "saved".to_owned();
+        } else {
+            card.status = "dropped".to_owned();
+        }
+        tx.execute(
+            "UPDATE memory_card SET status = ?1 WHERE card_ref = ?2",
+            params![card.status, card_ref],
+        )?;
+        bump_version(&tx)?;
+        tx.commit()?;
+        Ok(card)
     }
 }
 
@@ -997,7 +1391,7 @@ fn bump_version(tx: &rusqlite::Transaction<'_>) -> Result<(), MemoryError> {
 
 fn items(conn: &Connection, where_clause: &str) -> Result<Vec<MemoryItem>, MemoryError> {
     let sql = format!(
-        "SELECT id, layer, binding, scope, title, summary, body, source_kind, source_ref, status, current_revision, updated_at, pinned FROM memory {where_clause}"
+        "SELECT id, layer, binding, scope, title, summary, body, source_kind, source_ref, status, current_revision, updated_at, pinned, valid_from, valid_until, invalid_reason, superseded_by, possibly_stale FROM memory {where_clause}"
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map([], item_from_row)?;
@@ -1031,6 +1425,11 @@ fn item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryItem> {
         current_revision: row.get::<_, i64>(10)? as u64,
         updated_at: row.get(11)?,
         pinned: row.get::<_, i64>(12)? != 0,
+        valid_from: row.get(13)?,
+        valid_until: row.get(14)?,
+        invalid_reason: row.get(15)?,
+        superseded_by: row.get(16)?,
+        possibly_stale: row.get::<_, i64>(17)? != 0,
     })
 }
 
@@ -1054,7 +1453,7 @@ fn diary_by_id(conn: &Connection, id: &str) -> Result<Option<DiaryEntry>, Memory
 
 fn item_by_id(conn: &Connection, id: &str) -> Result<Option<MemoryItem>, MemoryError> {
     let mut stmt = conn.prepare(
-        "SELECT id, layer, binding, scope, title, summary, body, source_kind, source_ref, status, current_revision, updated_at, pinned FROM memory WHERE id = ?1",
+        "SELECT id, layer, binding, scope, title, summary, body, source_kind, source_ref, status, current_revision, updated_at, pinned, valid_from, valid_until, invalid_reason, superseded_by, possibly_stale FROM memory WHERE id = ?1",
     )?;
     stmt.query_row(params![id], item_from_row)
         .optional()
@@ -1148,6 +1547,318 @@ fn dream_run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DreamRun> {
 }
 
 #[allow(clippy::too_many_arguments)]
+fn scope_of(op: &WriteOp) -> Scope {
+    match op {
+        WriteOp::Remember { .. } | WriteOp::Note { .. } => Scope::Personal,
+        _ => Scope::Personal,
+    }
+}
+
+fn candidates_in(
+    conn: &Connection,
+    scope: Scope,
+    keys: &[MemoryKey],
+) -> Result<Vec<RelationCandidate>, MemoryError> {
+    if keys.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut clauses = Vec::new();
+    let mut values: Vec<String> = Vec::new();
+    for key in keys {
+        if key.value.trim().is_empty() {
+            continue;
+        }
+        values.push(key.value.trim().to_owned());
+        clauses.push("k.value = ?".to_owned());
+    }
+    if values.is_empty() {
+        return Ok(Vec::new());
+    }
+    let sql = format!(
+        "SELECT DISTINCT m.id, m.title, m.summary
+         FROM memory m JOIN memory_key k ON k.memory_id = m.id
+         WHERE m.status = 'active' AND m.invalid_reason IS NULL AND m.scope = ?
+           AND ({})
+         ORDER BY m.updated_at DESC LIMIT 5",
+        clauses.join(" OR ")
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let params = std::iter::once(scope.as_str().to_owned()).chain(values);
+    let rows = stmt.query_map(rusqlite::params_from_iter(params), |row| {
+        Ok(RelationCandidate {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            summary: row.get(2)?,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(MemoryError::Sqlite)
+}
+
+fn invalid_reason_of(conn: &Connection, id: &str) -> Result<Option<String>, MemoryError> {
+    let reason: Option<Option<String>> = conn
+        .query_row(
+            "SELECT invalid_reason FROM memory WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(reason.flatten())
+}
+
+fn ensure_active(conn: &Connection, id: &str) -> Result<MemoryItem, WriteError> {
+    let item = item_by_id(conn, id)?.filter(|item| {
+        item.status == "active" && invalid_reason_of(conn, &item.id).ok().flatten().is_none()
+    });
+    item.ok_or_else(|| WriteError::InvalidRelation(format!("关系目标不存在或已失效：{id}")))
+}
+
+fn add_source_row(
+    tx: &rusqlite::Transaction<'_>,
+    memory_id: &str,
+    source_kind: &str,
+    source_ref: &str,
+    quote: Option<&str>,
+    now: i64,
+) -> Result<(), MemoryError> {
+    if source_kind.trim().is_empty() && source_ref.trim().is_empty() {
+        return Ok(());
+    }
+    tx.execute(
+        "INSERT INTO memory_source (memory_id, source_kind, source_ref, quote, added_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(memory_id, source_kind, source_ref)
+         DO UPDATE SET quote = excluded.quote, added_at = excluded.added_at",
+        params![memory_id, source_kind, source_ref, quote, now],
+    )?;
+    Ok(())
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "创建条目时字段都是事实，集中一处写"
+)]
+fn create_with_details(
+    tx: &rusqlite::Transaction<'_>,
+    layer: Layer,
+    binding: Binding,
+    scope: Scope,
+    title: &str,
+    summary: &str,
+    body: &str,
+    source_kind: &str,
+    source_ref: &str,
+    quote: Option<&str>,
+    keys: &[MemoryKey],
+    now: i64,
+    actor: &str,
+) -> Result<MemoryItem, MemoryError> {
+    let item = create_item(
+        tx,
+        layer,
+        binding,
+        scope,
+        title,
+        summary,
+        body,
+        source_kind,
+        source_ref,
+        now,
+        None,
+        actor,
+    )?;
+    add_source_row(tx, &item.id, source_kind, source_ref, quote, now)?;
+    replace_keys_in(tx, &item.id, keys)?;
+    item_by_id(tx, &item.id)?.ok_or_else(|| MemoryError::NotFound(item.id))
+}
+
+fn replace_keys_in(
+    tx: &rusqlite::Transaction<'_>,
+    memory_id: &str,
+    keys: &[MemoryKey],
+) -> Result<(), MemoryError> {
+    tx.execute(
+        "DELETE FROM memory_key WHERE memory_id = ?1",
+        params![memory_id],
+    )?;
+    let mut values = Vec::new();
+    for (index, key) in keys.iter().enumerate() {
+        let value = key.value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        tx.execute(
+            "INSERT INTO memory_key (memory_id, key_no, kind, value) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                memory_id,
+                i64::try_from(index).unwrap_or(i64::MAX),
+                key.kind.as_str(),
+                value
+            ],
+        )?;
+        values.push(value.to_owned());
+    }
+    update_fts_keys(tx, memory_id, &values.join(" "))
+}
+
+fn put_card_in(
+    tx: &rusqlite::Transaction<'_>,
+    kind: &str,
+    status: &str,
+    payload: &serde_json::Value,
+) -> Result<MemoryCardRecord, MemoryError> {
+    let card_ref = next_id("card");
+    tx.execute(
+        "INSERT INTO memory_card (card_ref, kind, status, payload_json) VALUES (?1, ?2, ?3, ?4)",
+        params![card_ref, kind, status, payload.to_string()],
+    )?;
+    Ok(MemoryCardRecord {
+        card_ref,
+        kind: kind.to_owned(),
+        status: status.to_owned(),
+        payload: payload.clone(),
+    })
+}
+
+fn card_in(conn: &Connection, card_ref: &str) -> Result<Option<MemoryCardRecord>, MemoryError> {
+    conn.query_row(
+        "SELECT card_ref, kind, status, payload_json FROM memory_card WHERE card_ref = ?1",
+        params![card_ref],
+        |row| {
+            let payload: String = row.get(3)?;
+            Ok(MemoryCardRecord {
+                card_ref: row.get(0)?,
+                kind: row.get(1)?,
+                status: row.get(2)?,
+                payload: serde_json::from_str(&payload).unwrap_or(serde_json::Value::Null),
+            })
+        },
+    )
+    .optional()
+    .map_err(MemoryError::Sqlite)
+}
+
+fn invalidate_item(
+    tx: &rusqlite::Transaction<'_>,
+    old_id: &str,
+    new_id: &str,
+    now: i64,
+) -> Result<(), MemoryError> {
+    let changed = tx.execute(
+        "UPDATE memory SET invalid_reason = 'replaced', valid_until = ?1, superseded_by = ?2 WHERE id = ?3",
+        params![now, new_id, old_id],
+    )?;
+    if changed == 0 {
+        return Err(MemoryError::NotFound(old_id.to_owned()));
+    }
+    Ok(())
+}
+
+fn promote_replacement(
+    tx: &rusqlite::Transaction<'_>,
+    id: &str,
+    now: i64,
+    actor: &str,
+) -> Result<(), MemoryError> {
+    let item = item_by_id(tx, id)?.ok_or_else(|| MemoryError::NotFound(id.to_owned()))?;
+    let revision = item.current_revision + 1;
+    tx.execute(
+        "UPDATE memory SET layer = 'entry', binding = 'binding', pinned = 1, updated_at = ?1, current_revision = ?2 WHERE id = ?3",
+        params![now, revision as i64, id],
+    )?;
+    tx.execute(
+        "INSERT INTO memory_revision (memory_id, revision, title, summary, body, source_kind, source_ref, reason, actor, created_at, valid_from)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'replaced_by_user', ?8, ?9, ?9)",
+        params![id, revision as i64, item.title, item.summary, item.body, item.source_kind, item.source_ref, actor, now],
+    )?;
+    // 新的成为普通条目：FTS 的 kind 跟着层走。
+    fts_put(tx, id, Layer::Entry, &item.title, &item.body)?;
+    Ok(())
+}
+
+fn apply_about_edits(
+    tx: &rusqlite::Transaction<'_>,
+    payload: &AboutDraftPayload,
+    card_ref: &str,
+    now: i64,
+    actor: &str,
+) -> Result<(), MemoryError> {
+    for edit in &payload.edits {
+        match edit.op.as_str() {
+            "add" => {
+                let Some(text) = edit.text.as_deref().filter(|text| !text.trim().is_empty()) else {
+                    continue;
+                };
+                let title: String = text.chars().take(20).collect();
+                let item = create_item(
+                    tx,
+                    Layer::AboutYou,
+                    Binding::Binding,
+                    Scope::Personal,
+                    &title,
+                    "",
+                    text,
+                    "about_draft",
+                    card_ref,
+                    now,
+                    None,
+                    actor,
+                )?;
+                add_source_row(
+                    tx,
+                    &item.id,
+                    "about_draft",
+                    card_ref,
+                    Some(&payload.quote),
+                    now,
+                )?;
+            }
+            "replace" => {
+                let Some(id) = edit.about_id.as_deref() else {
+                    continue;
+                };
+                let Some(text) = edit.text.as_deref().filter(|text| !text.trim().is_empty()) else {
+                    continue;
+                };
+                let Some(current) = item_by_id(tx, id)? else {
+                    continue;
+                };
+                let item = correct_item(
+                    tx,
+                    id,
+                    &current.title,
+                    &current.summary,
+                    text,
+                    "about_draft",
+                    now,
+                    actor,
+                )?;
+                add_source_row(
+                    tx,
+                    &item.id,
+                    "about_draft",
+                    card_ref,
+                    Some(&payload.quote),
+                    now,
+                )?;
+            }
+            "delete" => {
+                if let Some(id) = edit.about_id.as_deref()
+                    && item_by_id(tx, id)?.is_some()
+                {
+                    delete_to_quarantine(tx, id, "about_draft", now)?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "创建条目时字段都是事实，集中一处写"
+)]
 fn create_item(
     tx: &rusqlite::Transaction<'_>,
     layer: Layer,
@@ -1295,8 +2006,20 @@ fn restore_item(
     now: i64,
 ) -> Result<MemoryItem, MemoryError> {
     let item = item_by_id(tx, id)?.ok_or_else(|| MemoryError::NotFound(id.to_owned()))?;
+    if let Some(new_id) = item.superseded_by.clone() {
+        // 被替换失效的：恢复旧条，新条留着。
+        tx.execute(
+            "UPDATE memory SET valid_until = NULL, invalid_reason = NULL, superseded_by = NULL, updated_at = ?1 WHERE id = ?2",
+            params![now, id],
+        )?;
+        tx.execute(
+            "DELETE FROM memory_relation WHERE memory_id = ?1 AND related_id = ?2 AND kind = 'replaces'",
+            params![new_id, id],
+        )?;
+        return item_by_id(tx, id)?.ok_or_else(|| MemoryError::NotFound(id.to_owned()));
+    }
     if item.status != "quarantine" {
-        return Err(MemoryError::Refused("只有隔离区的记忆能恢复"));
+        return Err(MemoryError::Refused("只有隔离区或被替换的记忆能恢复"));
     }
     tx.execute(
         "UPDATE memory SET status = 'active', deleted_at = NULL, purge_after = NULL, updated_at = ?1 WHERE id = ?2",
@@ -1547,7 +2270,7 @@ fn search_like(conn: &Connection, query: &str, limit: i64) -> Result<Vec<SearchH
     let mut hits = Vec::new();
     {
         let mut stmt = conn.prepare(
-            "SELECT id FROM memory WHERE status = 'active' AND (title LIKE ?1 ESCAPE '\\' OR body LIKE ?1 ESCAPE '\\') ORDER BY updated_at DESC LIMIT ?2",
+            "SELECT id FROM memory WHERE status = 'active' AND invalid_reason IS NULL AND (title LIKE ?1 ESCAPE '\\' OR body LIKE ?1 ESCAPE '\\') ORDER BY updated_at DESC LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![pattern, limit], |row| row.get::<_, String>(0))?;
         for id in rows {
@@ -1595,7 +2318,9 @@ fn search_fts(conn: &Connection, query: &str, limit: i64) -> Result<Vec<SearchHi
             conn.prepare("SELECT memory_id FROM memory_fts WHERE memory_fts MATCH ?1 LIMIT ?2")?;
         let rows = stmt.query_map(params![match_query, limit], |row| row.get::<_, String>(0))?;
         for id in rows {
-            if let Some(item) = item_by_id(conn, &id?)? {
+            if let Some(item) = item_by_id(conn, &id?)?
+                && item.invalid_reason.is_none()
+            {
                 hits.push(SearchHit::Memory(item));
             }
         }

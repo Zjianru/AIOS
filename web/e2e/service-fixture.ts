@@ -81,6 +81,12 @@ export async function startKernelFixture(
   if (options.t064Calendar) {
     await seedT064Calendar(dataDir);
   }
+  if (options.t073Cards) {
+    await copyFile(
+      path.join(FIXTURE_DIR, 't073-memory.sqlite'),
+      path.join(dataDir, 'memory.sqlite'),
+    );
+  }
   if (options.t062TaskGraphs) {
     // 任务库直接预置：三张已确认图 + 一个单派任务；工作页只读快照。
     await copyFile(path.join(FIXTURE_DIR, 't062-task-graphs.sqlite'), path.join(dataDir, 'tasks.sqlite'));

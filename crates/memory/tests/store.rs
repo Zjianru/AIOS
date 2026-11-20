@@ -1053,3 +1053,300 @@ fn sources_are_explicit_and_title_does_not_create_keys() {
     assert_eq!(sources[0].source_ref, "root:3");
     assert_eq!(sources[0].quote.as_deref(), Some("原话：回答先给结论"));
 }
+
+fn key(value: &str) -> memory::types::MemoryKey {
+    memory::types::MemoryKey {
+        key_no: 0,
+        kind: memory::types::MemoryKeyKind::Keyword,
+        value: value.to_owned(),
+    }
+}
+
+fn remember_write(
+    title: &str,
+    body: &str,
+    keys: Vec<memory::types::MemoryKey>,
+    relation: Option<memory::types::RelationDecision>,
+) -> memory::types::MemoryWrite {
+    memory::types::MemoryWrite {
+        op: WriteOp::Remember {
+            title: title.to_owned(),
+            summary: String::new(),
+            body: body.to_owned(),
+            source_kind: "user".to_owned(),
+            source_ref: format!("seq:{title}"),
+        },
+        keys,
+        relation,
+        valid_from: None,
+        source_quote: Some(body.to_owned()),
+    }
+}
+
+/// 有候选未带 relation：不写；带 duplicate 只补 source。
+#[test]
+fn related_write_requires_decision_and_duplicate_adds_source_only() {
+    let (store, _dir, _) = open();
+    let old = remember(&store, "周报格式");
+    store
+        .set_keys(
+            &old.id,
+            &[(memory::types::MemoryKeyKind::Keyword, "周报".to_owned())],
+        )
+        .unwrap();
+    let write = remember_write("周报", "周报按三段写", vec![key("周报")], None);
+    match store
+        .write_with_relation(write, &WriteContext::user())
+        .unwrap_err()
+    {
+        memory::WriteError::RelationRequired { candidates } => {
+            assert_eq!(candidates.len(), 1);
+            assert_eq!(candidates[0].id, old.id);
+        }
+        other => panic!("应返回 relation_required：{other:?}"),
+    }
+    assert_eq!(store.view().unwrap().about_you.len(), 1, "未判关系不写");
+    let write = remember_write(
+        "周报",
+        "周报按三段写",
+        vec![key("周报")],
+        Some(memory::types::RelationDecision::Duplicate {
+            target: old.id.clone(),
+        }),
+    );
+    let outcome = store
+        .write_with_relation(write, &WriteContext::user())
+        .unwrap();
+    assert_eq!(outcome.duplicate_of.as_deref(), Some(old.id.as_str()));
+    assert_eq!(store.view().unwrap().about_you.len(), 1, "重复不新增");
+    assert_eq!(
+        store.sources(&old.id).unwrap().len(),
+        1,
+        "补一条出处（原来没有）"
+    );
+}
+
+#[test]
+fn related_write_supplement_keeps_both_and_links() {
+    let (store, _dir, _) = open();
+    let old = remember(&store, "周报格式");
+    store
+        .set_keys(
+            &old.id,
+            &[(memory::types::MemoryKeyKind::Keyword, "周报".to_owned())],
+        )
+        .unwrap();
+    let write = remember_write(
+        "周报结尾",
+        "周报最后写下一步",
+        vec![key("周报")],
+        Some(memory::types::RelationDecision::Supplement {
+            target: old.id.clone(),
+        }),
+    );
+    let outcome = store
+        .write_with_relation(write, &WriteContext::user())
+        .unwrap();
+    let fresh = outcome.item.unwrap();
+    assert_eq!(store.view().unwrap().about_you.len(), 2, "补充两条都有效");
+    assert_eq!(outcome.related.as_deref(), Some(old.id.as_str()));
+    assert_eq!(store.relations(&fresh.id).unwrap()[0].kind, "supplement");
+}
+
+#[test]
+fn related_write_contradict_binding_needs_card_and_replaces_once() {
+    let (store, _dir, _) = open();
+    let old = remember(&store, "周报格式");
+    store
+        .set_keys(
+            &old.id,
+            &[(memory::types::MemoryKeyKind::Keyword, "周报".to_owned())],
+        )
+        .unwrap();
+    let write = remember_write(
+        "周报两段",
+        "周报只写两段",
+        vec![key("周报")],
+        Some(memory::types::RelationDecision::Contradict {
+            target: old.id.clone(),
+            reason: "三段和两段不能同时成立".to_owned(),
+        }),
+    );
+    let error = store
+        .write_with_relation(write, &WriteContext::user())
+        .unwrap_err();
+    let memory::WriteError::NeedsCard {
+        target,
+        card,
+        new_id,
+    } = error
+    else {
+        panic!("应出替换卡：{error:?}");
+    };
+    assert_eq!(target, old.id);
+    assert_eq!(card.kind, "replace");
+    assert_eq!(card.status, "pending");
+    // 用户没点之前旧的仍有效，新的是 Kind 笔记。
+    assert!(
+        store
+            .item(&old.id)
+            .unwrap()
+            .unwrap()
+            .invalid_reason
+            .is_none()
+    );
+    assert_eq!(
+        store.item(&new_id).unwrap().unwrap().binding,
+        Binding::Fallible
+    );
+    let resolved = store
+        .resolve_replace(&card.card_ref, true, &WriteContext::user())
+        .unwrap();
+    assert_eq!(resolved.status, "replaced");
+    let old_after = store.item(&old.id).unwrap().unwrap();
+    assert_eq!(old_after.invalid_reason.as_deref(), Some("replaced"));
+    assert_eq!(old_after.superseded_by.as_deref(), Some(new_id.as_str()));
+    let new_after = store.item(&new_id).unwrap().unwrap();
+    assert_eq!(new_after.binding, Binding::Binding);
+    assert!(
+        store
+            .revisions(&new_id)
+            .unwrap()
+            .last()
+            .is_some_and(|revision| revision.actor == "user"),
+        "新的变你定的"
+    );
+    assert_eq!(store.relations(&new_id).unwrap()[0].kind, "replaces");
+    let again = store
+        .resolve_replace(&card.card_ref, true, &WriteContext::user())
+        .unwrap();
+    assert_eq!(again.status, "replaced");
+    assert_eq!(store.revisions(&new_id).unwrap().len(), 2, "点两次不重复写");
+}
+
+#[test]
+fn related_write_contradict_fallible_invalidates_and_can_restore() {
+    let (store, _dir, _) = open();
+    let old = note(&store, "编码", "note:old");
+    store
+        .set_keys(
+            &old.id,
+            &[(memory::types::MemoryKeyKind::Keyword, "编码".to_owned())],
+        )
+        .unwrap();
+    let write = memory::types::MemoryWrite {
+        op: WriteOp::Note {
+            title: "编码变了".to_owned(),
+            summary: String::new(),
+            body: "CSV 改成 UTF-8 了".to_owned(),
+            source_kind: "kind".to_owned(),
+            source_ref: "note:new".to_owned(),
+        },
+        keys: vec![key("编码")],
+        relation: Some(memory::types::RelationDecision::Contradict {
+            target: old.id.clone(),
+            reason: "编码不能既是 GBK 又是 UTF-8".to_owned(),
+        }),
+        valid_from: None,
+        source_quote: None,
+    };
+    let fresh = store
+        .write_with_relation(write, &WriteContext::kind())
+        .unwrap()
+        .item
+        .unwrap();
+    let invalid = store.item(&old.id).unwrap().unwrap();
+    assert_eq!(invalid.invalid_reason.as_deref(), Some("replaced"));
+    assert_eq!(invalid.superseded_by.as_deref(), Some(fresh.id.as_str()));
+    store
+        .restore_invalid(&old.id, &WriteContext::user())
+        .unwrap();
+    let restored = store.item(&old.id).unwrap().unwrap();
+    assert!(restored.invalid_reason.is_none());
+    assert!(store.item(&fresh.id).unwrap().is_some(), "新条留着");
+}
+
+#[test]
+fn about_draft_saves_with_user_actor_and_drops_without_writing() {
+    let (store, _dir, _) = open();
+    let first = remember(&store, "先给结论");
+    let second = remember(&store, "用中文");
+    let edits = vec![
+        memory::types::AboutEdit {
+            op: "replace".to_owned(),
+            about_id: Some(first.id.clone()),
+            old: Some(first.body.clone()),
+            text: Some("回答先给结论，再给三条理由".to_owned()),
+        },
+        memory::types::AboutEdit {
+            op: "delete".to_owned(),
+            about_id: Some(second.id.clone()),
+            old: Some(second.body.clone()),
+            text: None,
+        },
+        memory::types::AboutEdit {
+            op: "add".to_owned(),
+            about_id: None,
+            old: None,
+            text: Some("测试只用 MiniMax 跑".to_owned()),
+        },
+    ];
+    let quote = "简单的事短点说，测试以后只用 MiniMax 跑";
+    let card = store.draft_about(quote, edits.clone()).unwrap();
+    assert_eq!(card.kind, "about_draft");
+    let saved = store
+        .resolve_about_draft(&card.card_ref, true, &WriteContext::user())
+        .unwrap();
+    assert_eq!(saved.status, "saved");
+    let about = store.view().unwrap().about_you;
+    assert_eq!(about.len(), 2, "改一条、删一条、加一条");
+    assert!(about.iter().any(|item| item.body == "测试只用 MiniMax 跑"));
+    assert!(
+        about
+            .iter()
+            .any(|item| item.body == "回答先给结论，再给三条理由")
+    );
+    let revisions = store.revisions(&first.id).unwrap();
+    assert_eq!(
+        revisions.last().unwrap().actor,
+        "user",
+        "保存按用户身份出新修订"
+    );
+    let sources = store.sources(&first.id).unwrap();
+    assert!(
+        sources
+            .iter()
+            .any(|source| source.quote.as_deref() == Some(quote))
+    );
+    let again = store
+        .resolve_about_draft(&card.card_ref, true, &WriteContext::user())
+        .unwrap();
+    assert_eq!(again.status, "saved");
+    assert_eq!(
+        store.revisions(&first.id).unwrap().len(),
+        revisions.len(),
+        "点两次不重复写"
+    );
+
+    let third = remember(&store, "不用这条");
+    let dropped = store
+        .draft_about(
+            quote,
+            vec![memory::types::AboutEdit {
+                op: "delete".to_owned(),
+                about_id: Some(third.id.clone()),
+                old: Some(third.body.clone()),
+                text: None,
+            }],
+        )
+        .unwrap();
+    let dropped_card = store
+        .resolve_about_draft(&dropped.card_ref, false, &WriteContext::user())
+        .unwrap();
+    assert_eq!(dropped_card.status, "dropped");
+    assert_eq!(
+        store.item(&third.id).unwrap().unwrap().status,
+        "active",
+        "不用的草稿不动「关于你」"
+    );
+}

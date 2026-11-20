@@ -12,6 +12,8 @@ export interface FixtureOptions {
   t059LongStream?: boolean;
  /// 预写根会话日志带三张程序记忆卡（许可/整理完/没跑成），验小卡渲染。
   memoryCards?: boolean;
+  /** 记忆替换卡/关于你草稿卡：预置记忆库 + 两轮回放（替换/两条都留、保存/不用）。 */
+  t073Cards?: boolean;
  /// 假模型脚本带记忆工具与做梦（记住/记一笔/攒够许可/整理/撤销）。
   memoryFlow?: boolean;
  /// 做梦第一次模型请求强制 400（失败卡原因用例）。

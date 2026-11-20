@@ -861,3 +861,127 @@ async fn memory_context_injection_is_read_only_framed() {
     );
     root.shutdown().await;
 }
+
+#[tokio::test]
+async fn memory_replace_and_about_cards_resolve_through_protocol() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    seed_memory_page(data.path());
+    let store = page_store(data.path());
+    let old = store
+        .write(
+            WriteOp::Remember {
+                title: "周报格式".to_owned(),
+                summary: String::new(),
+                body: "周报按三段写".to_owned(),
+                source_kind: "user".to_owned(),
+                source_ref: "replace-old".to_owned(),
+            },
+            &WriteContext::user(),
+        )
+        .unwrap()
+        .item
+        .unwrap();
+    store
+        .set_keys(
+            &old.id,
+            &[(memory::types::MemoryKeyKind::Keyword, "周报".to_owned())],
+        )
+        .unwrap();
+    let card = match store
+        .write_with_relation(
+            memory::types::MemoryWrite {
+                op: WriteOp::Remember {
+                    title: "周报两段".to_owned(),
+                    summary: String::new(),
+                    body: "周报只写两段".to_owned(),
+                    source_kind: "user".to_owned(),
+                    source_ref: "replace-new".to_owned(),
+                },
+                keys: vec![memory::types::MemoryKey {
+                    key_no: 0,
+                    kind: memory::types::MemoryKeyKind::Keyword,
+                    value: "周报".to_owned(),
+                }],
+                relation: Some(memory::types::RelationDecision::Contradict {
+                    target: old.id.clone(),
+                    reason: "三段和两段不能同时成立".to_owned(),
+                }),
+                valid_from: None,
+                source_quote: None,
+            },
+            &WriteContext::user(),
+        )
+        .unwrap_err()
+    {
+        memory::WriteError::NeedsCard { card, .. } => card,
+        other => panic!("应出替换卡：{other:?}"),
+    };
+    let draft = store
+        .draft_about(
+            "简单的事短点说",
+            vec![memory::types::AboutEdit {
+                op: "add".to_owned(),
+                about_id: None,
+                old: None,
+                text: Some("简单的事短点说".to_owned()),
+            }],
+        )
+        .unwrap();
+    let root = open_page_root(data.path(), cwd.path(), &server).await;
+
+    let response = root
+        .dispatch(service::Call::MemoryAction(service::MemoryActionRequest {
+            action: service::MemoryActionKind::ResolveReplace {
+                card: card.card_ref.clone(),
+                replace: true,
+            },
+        }))
+        .await
+        .expect("replace");
+    let service::Response::MemoryAction(action) = response else {
+        panic!("expected MemoryAction");
+    };
+    assert!(action.message.contains("替换了"), "{}", action.message);
+    let old_after = page_store(data.path()).item(&old.id).unwrap().unwrap();
+    assert_eq!(old_after.invalid_reason.as_deref(), Some("replaced"));
+
+    let response = root
+        .dispatch(service::Call::MemoryAction(service::MemoryActionRequest {
+            action: service::MemoryActionKind::ResolveAboutDraft {
+                card: draft.card_ref.clone(),
+                save: true,
+            },
+        }))
+        .await
+        .expect("about");
+    let service::Response::MemoryAction(action) = response else {
+        panic!("expected MemoryAction");
+    };
+    assert!(action.message.contains("关于你"), "{}", action.message);
+    assert!(
+        page_store(data.path())
+            .view()
+            .unwrap()
+            .about_you
+            .iter()
+            .any(|item| item.body == "简单的事短点说")
+    );
+    // 点第二次返回现状态，不重复写。
+    let before = page_store(data.path()).view().unwrap().about_you.len();
+    root.dispatch(service::Call::MemoryAction(service::MemoryActionRequest {
+        action: service::MemoryActionKind::ResolveAboutDraft {
+            card: draft.card_ref,
+            save: true,
+        },
+    }))
+    .await
+    .expect("about again");
+    assert_eq!(
+        page_store(data.path()).view().unwrap().about_you.len(),
+        before,
+        "点两次不重复写"
+    );
+    root.shutdown().await;
+}

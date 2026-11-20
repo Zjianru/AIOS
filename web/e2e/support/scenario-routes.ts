@@ -135,6 +135,11 @@ export function t054RouteFile(options: FixtureOptions): string | null {
 
 
 /** ：写任务/接受/bash/工作树这些场景的回放路由。 */
+export function t073RouteFile(options: FixtureOptions): string | null {
+  if (!options.t073Cards) return null;
+  return 't073-cards-routes.json';
+}
+
 export function t030RouteFile(options: FixtureOptions): string | null {
   if (!options.t030) return null;
   return 't030-routes-' + options.t030 + '.json';

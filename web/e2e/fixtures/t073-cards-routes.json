@@ -1,0 +1,14 @@
+{
+  "routes": [
+    {
+      "contains": "简单的事短点说",
+      "file": "t073-about-turn.jsonl",
+      "paceMs": 10
+    },
+    {
+      "contains": "周报以后只写两段",
+      "file": "t073-replace-turn.jsonl",
+      "paceMs": 10
+    }
+  ]
+}

@@ -36,6 +36,11 @@ fn item_view(item: &MemoryItem) -> MemoryItemView {
         revision: item.current_revision,
         updated_at: item.updated_at,
         pinned: item.pinned,
+        valid_from: item.valid_from,
+        valid_until: item.valid_until,
+        invalid_reason: item.invalid_reason.clone(),
+        superseded_by: item.superseded_by.clone(),
+        possibly_stale: item.possibly_stale,
     }
 }
 
@@ -419,6 +424,32 @@ pub fn action(
             };
             let message = dream.request_now().map_err(unavailable)?;
             Ok(outcome(&message))
+        }
+        MemoryActionKind::ResolveReplace { card, replace } => {
+            let record = store
+                .resolve_replace(card, *replace, &WriteContext::user())
+                .map_err(unavailable)?;
+            let message = if record.status == "replaced" {
+                "替换了：旧的失效，新的变成你定的。"
+            } else if record.status == "kept" {
+                "两条都留：旧的照旧。"
+            } else {
+                "这张卡已经处理过了。"
+            };
+            Ok(outcome(message))
+        }
+        MemoryActionKind::ResolveAboutDraft { card, save } => {
+            let record = store
+                .resolve_about_draft(card, *save, &WriteContext::user())
+                .map_err(unavailable)?;
+            let message = if record.status == "saved" {
+                "「关于你」按草稿改了。"
+            } else if record.status == "dropped" {
+                "没用这份草稿。「关于你」没动。"
+            } else {
+                "这张卡已经处理过了。"
+            };
+            Ok(outcome(message))
         }
     }
 }

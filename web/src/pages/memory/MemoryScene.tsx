@@ -80,11 +80,13 @@ function ItemRow({
   onEdit,
   onDelete,
   onPin,
+  onRestore,
 }: {
   item: MemoryItemView;
   onEdit?: () => void;
   onDelete?: () => void;
   onPin?: () => void;
+  onRestore?: () => void;
 }) {
   return (
     <div
@@ -93,7 +95,11 @@ function ItemRow({
       data-layer={item.layer}
       data-scope={item.scope}
       data-binding={item.binding}
-      className="flex items-start gap-2 border-b border-line-2 py-2 last:border-b-0"
+      data-invalid={item.invalidReason ?? ''}
+      className={
+        'flex items-start gap-2 border-b border-line-2 py-2 last:border-b-0' +
+        (item.invalidReason ? ' opacity-50' : '')
+      }
     >
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
@@ -103,6 +109,18 @@ function ItemRow({
           </span>
           {item.status === 'pinned' ? (
             <span className="shrink-0 text-2 text-ink-3">已定下来</span>
+          ) : null}
+          {item.binding === 'binding' && item.status !== 'pinned' ? (
+            <span className="shrink-0 text-2 text-ink-3">你定的</span>
+          ) : null}
+          {item.invalidReason ? (
+            <span className="shrink-0 text-2 text-ink-3" data-kind="memory-invalid">
+              {item.invalidReason === 'replaced'
+                ? '已失效 · 被替换'
+                : item.invalidReason === 'deleted'
+                  ? '已失效 · 已删除'
+                  : '已失效 · 到期限'}
+            </span>
           ) : null}
         </div>
         <p className="mt-0.5 whitespace-pre-wrap text-2 leading-5 text-ink-2">
@@ -121,6 +139,11 @@ function ItemRow({
         {onPin ? (
           <button type="button" data-action="memory-pin" onClick={onPin} className={primaryActionClass}>
             定下来
+          </button>
+        ) : null}
+        {onRestore ? (
+          <button type="button" data-action="memory-restore" onClick={onRestore} className={primaryActionClass}>
+            恢复
           </button>
         ) : null}
         {onDelete ? (
@@ -437,7 +460,8 @@ export function MemoryScene() {
               <div key={item.id}>
                 <ItemRow
                   item={item}
-                  onEdit={() => void startEdit(item)}
+                  onEdit={item.invalidReason ? undefined : () => void startEdit(item)}
+                  onRestore={item.invalidReason ? () => act({ kind: 'restore', id: item.id }) : undefined}
                   onDelete={() => act({ kind: 'delete', id: item.id })}
                 />
                 {editing?.item.id === item.id ? (
@@ -475,7 +499,8 @@ export function MemoryScene() {
                   <div key={item.id}>
                     <ItemRow
                       item={item}
-                      onEdit={() => void startEdit(item)}
+                      onEdit={item.invalidReason ? undefined : () => void startEdit(item)}
+                      onRestore={item.invalidReason ? () => act({ kind: 'restore', id: item.id }) : undefined}
                       onDelete={() => act({ kind: 'delete', id: item.id })}
                     />
                     {editing?.item.id === item.id ? (
@@ -512,6 +537,7 @@ export function MemoryScene() {
                       item={item}
                       onEdit={item.layer === 'note' ? undefined : () => void startEdit(item)}
                       onPin={item.layer === 'note' ? () => act({ kind: 'pin', id: item.id }) : undefined}
+                      onRestore={item.invalidReason ? () => act({ kind: 'restore', id: item.id }) : undefined}
                       onDelete={() => act({ kind: 'delete', id: item.id })}
                     />
                   </div>
