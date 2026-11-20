@@ -82,12 +82,21 @@ export function useMonitorLive(): void {
     let socket: WebSocket | null = null;
     let closed = false;
     let timer = 0;
-    let lastSeq = 0;
+    // 重连从各任务 0 补：lastSeq 是全局的，两个任务 seq 差大时会把另一个任务的
+    // 事件当成已读；这里按 task+attempt 记已收到的最大 seq，重复帧直接丢。
+    const seen = new Map<string, { attemptId: number; seq: number }>();
+    const accept = (taskId: string, attemptId: number, seq: number) => {
+      const key = taskId + ':' + attemptId;
+      const previous = seen.get(key);
+      if (previous && seq <= previous.seq) return false;
+      seen.set(key, { attemptId, seq });
+      return true;
+    };
     const open = () => {
       if (closed) return;
-      socket = connectMonitorSession(lastSeq, (frame) => {
+      socket = connectMonitorSession(0, (frame) => {
         if (frame.type === 'task-event') {
-          lastSeq = Math.max(lastSeq, frame.event.seq);
+          if (!accept(frame.taskId, frame.attemptId, frame.event.seq)) return;
           void loadTask(frame.taskId);
         } else if (frame.type === 'task-changed') {
           void loadSnapshot();
