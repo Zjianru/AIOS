@@ -10,7 +10,7 @@
  */
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ArrowUpRight, ChevronDown, FilePen, FolderOpen, PauseCircle, PlugZap, SendHorizontal, Square } from 'lucide-react';
+import { ChevronDown, FilePen, FolderOpen, PauseCircle, PlugZap, SendHorizontal, Square } from 'lucide-react';
 import { toast } from 'sonner';
 import { go } from '@/app/navigate';
 import { useRouteStore } from '@/app/routeStore';
@@ -671,8 +671,7 @@ export function TaskChatScene() {
               onClick={() => go('monitor:task:' + task.id)}
               className="flex shrink-0 items-center gap-0.5 rounded-btn px-1.5 py-1 text-2 text-ink-3 transition-colors hover:bg-hover hover:text-ink"
             >
-              诊断
-              <ArrowUpRight className="size-3.5" strokeWidth={1.8} />
+              {'诊断 ›'}
             </button>
             <TaskMenu
               running={task.running || task.backgroundRunning}
