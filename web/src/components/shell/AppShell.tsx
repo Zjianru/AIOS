@@ -29,6 +29,7 @@ import { TraceScene } from '@/pages/task/TraceScene';
 import { TaskChatScene } from '@/pages/taskchat/TaskChatScene';
 import { SettingsScene } from '@/pages/settings/SettingsScene';
 import { MemoryScene } from '@/pages/memory/MemoryScene';
+import { MonitorScene } from '@/pages/monitor/MonitorScene';
 import { PeriodPage } from '@/pages/placeholder/PeriodPage';
 
 export function AppShell() {
@@ -67,7 +68,8 @@ export function AppShell() {
       scene !== 'taskchat' &&
       scene !== 'work' &&
       scene !== 'now' &&
-      scene !== 'memory'
+      scene !== 'memory' &&
+      scene !== 'monitor'
     ) {
       go('kind');
     }
@@ -100,6 +102,7 @@ export function AppShell() {
       if (scene === 'empty' && route.id === 'now') return <EmptyNow />;
       if (scene === 'settings' && route.kind === 'settings') return <SettingsScene />;
       if (scene === 'memory') return <MemoryScene />;
+      if (scene === 'monitor') return <MonitorScene />;
       return <PeriodPage />;
     },
     [scene, route.id],

@@ -2,6 +2,8 @@
 
 use std::path::Path;
 
+use std::collections::BTreeMap;
+
 use chrono::{Datelike, Duration, TimeZone, Utc};
 use chrono_tz::Tz;
 use credentials::ConnectionInfo;
@@ -10,7 +12,7 @@ use session::EventKind;
 use tasks::{Stage, Store, Task, TaskId};
 
 use crate::protocol::{
-    MonitorAnomaly, MonitorAttempt, MonitorContextParts, MonitorProject, MonitorRange,
+    MonitorAnomaly, MonitorAttempt, MonitorContextParts, MonitorDay, MonitorProject, MonitorRange,
     MonitorRings, MonitorRunning, MonitorSnapshotResponse, MonitorTaskInfo, MonitorTaskRequest,
     MonitorTaskResponse, MonitorTaskSummary, MonitorTodo, MonitorUsageRow,
 };
@@ -24,6 +26,7 @@ struct Agg {
     commands: Vec<MonitorUsageRow>,
     tasks: Vec<MonitorTaskSummary>,
     anomalies: Vec<MonitorAnomaly>,
+    days: BTreeMap<String, MonitorDay>,
 }
 
 /// 监控消耗：按用户时区口径现算全部任务；Kind 对话不在任务库里，本票先不混入。
@@ -37,6 +40,7 @@ pub(crate) fn snapshot(
     kind_events: &[session::Event],
 ) -> Result<MonitorSnapshotResponse, ServiceError> {
     let now = Utc::now();
+    let tz: Tz = timezone.parse().unwrap_or(chrono_tz::UTC);
     let start = range_start(range, timezone, now.timestamp_millis());
     let keyring = credentials::Keyring::open_read_only(data_dir.to_path_buf(), None).ok();
     let connections = keyring
@@ -55,6 +59,7 @@ pub(crate) fn snapshot(
         commands: Vec::new(),
         tasks: Vec::new(),
         anomalies: Vec::new(),
+        days: BTreeMap::new(),
     };
     let mut rings = MonitorRings::default();
     for task in tasks {
@@ -63,6 +68,7 @@ pub(crate) fn snapshot(
             data_dir,
             &task,
             start,
+            tz,
             running
                 .contains(&task.id.as_str().to_owned())
                 .then_some(true),
@@ -95,7 +101,7 @@ pub(crate) fn snapshot(
                 _ => {}
             }
             rings.unpriced |= stats.unpriced;
-            agg.add_events(&filtered, None, &selection, &mut rings);
+            agg.add_events(&filtered, None, &selection, tz, &mut rings);
         }
     }
     let mut running_tasks = Vec::new();
@@ -152,6 +158,7 @@ pub(crate) fn snapshot(
         range,
         timezone: timezone.to_owned(),
         generated_at: now.timestamp_millis(),
+        days: agg.days.into_values().collect(),
         tasks: agg.tasks,
         projects: Vec::<MonitorProject>::new(),
         models,
@@ -178,6 +185,7 @@ impl Agg {
         data_dir: &Path,
         task: &Task,
         start: i64,
+        tz: Tz,
         running: Option<bool>,
         rings: &mut MonitorRings,
     ) -> Result<Option<MonitorTaskSummary>, ServiceError> {
@@ -252,7 +260,7 @@ impl Agg {
                 _ => {}
             }
             rings.unpriced |= stats.unpriced;
-            self.add_events(&filtered, Some(task.id.as_str()), &selection, rings);
+            self.add_events(&filtered, Some(task.id.as_str()), &selection, tz, rings);
         }
         summary.tool_calls = latest_events
             .iter()
@@ -277,6 +285,7 @@ impl Agg {
         events: &[session::Event],
         task_id: Option<&str>,
         selection: &session::ModelSelection,
+        tz: Tz,
         rings: &mut MonitorRings,
     ) {
         let mut step_at = 0_u64;
@@ -294,6 +303,7 @@ impl Agg {
                     };
                     let cost = self.price(&model_name, usage);
                     self.add_usage(&model_name, usage, cost);
+                    self.add_day_usage(tz, event.time, usage, cost);
                     rings.tokens = rings
                         .tokens
                         .saturating_add(usage.input_tokens.unwrap_or(0))
@@ -309,12 +319,14 @@ impl Agg {
                 }
                 EventKind::ToolCall { name, .. } => {
                     add_count(&mut self.tools, name);
+                    self.add_day_count(tz, event.time, true);
                 }
                 _ => {}
             }
         }
         for fact in crate::commands::command_facts(events) {
             add_count(&mut self.commands, &fact.program);
+            self.add_day_count(tz, fact.time, false);
         }
         for repeat in crate::commands::repeated_commands(events) {
             self.anomalies.push(MonitorAnomaly {
@@ -339,6 +351,44 @@ impl Agg {
             .or_else(|| self.connections.first())?;
         let price = stats::effective_price(connection, &self.catalog, model)?;
         stats::usage_cost_usd(usage, &price)
+    }
+
+    fn add_day_usage(&mut self, tz: Tz, time: u64, usage: &Usage, cost: Option<f64>) {
+        let day = self.day_entry(tz, time);
+        day.requests += 1;
+        day.input_tokens += usage.input_tokens.unwrap_or(0);
+        day.output_tokens += usage.output_tokens.unwrap_or(0);
+        match (day.cost_usd, cost) {
+            (Some(left), Some(right)) => day.cost_usd = Some(left + right),
+            (None, Some(right)) => day.cost_usd = Some(right),
+            _ => {}
+        }
+        if cost.is_none() && has_usage(usage) {
+            day.unpriced += 1;
+        }
+    }
+
+    fn add_day_count(&mut self, tz: Tz, time: u64, tool: bool) {
+        let day = self.day_entry(tz, time);
+        if tool {
+            day.tool_calls += 1;
+        } else {
+            day.command_calls += 1;
+        }
+    }
+
+    fn day_entry(&mut self, tz: Tz, time: u64) -> &mut MonitorDay {
+        let key = day_key(tz, time);
+        self.days.entry(key.clone()).or_insert(MonitorDay {
+            day: key,
+            cost_usd: None,
+            unpriced: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            requests: 0,
+            tool_calls: 0,
+            command_calls: 0,
+        })
     }
 
     fn add_usage(&mut self, key: &str, usage: &Usage, cost: Option<f64>) {
@@ -542,6 +592,16 @@ fn stage_name(stage: Stage) -> String {
         Stage::Closed => "closed",
     }
     .to_owned()
+}
+
+fn day_key(tz: Tz, time_ms: u64) -> String {
+    Utc.timestamp_millis_opt(time_ms as i64)
+        .single()
+        .unwrap_or_default()
+        .with_timezone(&tz)
+        .date_naive()
+        .format("%Y-%m-%d")
+        .to_string()
 }
 
 fn range_start(range: MonitorRange, timezone: &str, now_ms: i64) -> i64 {
@@ -762,6 +822,7 @@ mod bucket_tests {
             commands: Vec::new(),
             tasks: Vec::new(),
             anomalies: Vec::new(),
+            days: BTreeMap::new(),
         };
         let events = vec![
             call("t1", "ls", serde_json::json!({})),
@@ -786,6 +847,7 @@ mod bucket_tests {
             &events,
             Some("task-1"),
             &selection,
+            chrono_tz::UTC,
             &mut MonitorRings::default(),
         );
         let tool_keys: Vec<&str> = agg.tools.iter().map(|row| row.key.as_str()).collect();
@@ -839,5 +901,144 @@ mod bucket_tests {
                 .requests,
             1
         );
+    }
+}
+
+#[cfg(test)]
+mod daily_tests {
+    use super::*;
+    use chrono::TimeZone;
+    use model::Message;
+
+    fn assistant(time: u64, tokens: u64) -> session::Event {
+        session::Event::new(
+            1,
+            time,
+            EventKind::AssistantMessage {
+                turn: 1,
+                step: 1,
+                message: Message::assistant(
+                    vec![model::ContentBlock::text("ok")],
+                    "deepseek",
+                    "deepseek-flash",
+                ),
+                stream: Vec::new(),
+                usage: Some(Usage {
+                    input_tokens: Some(tokens),
+                    output_tokens: Some(tokens / 2),
+                    cache_read_input_tokens: Some(0),
+                    cache_creation_input_tokens: Some(0),
+                }),
+                interrupted: None,
+                effort: None,
+                effort_wanted: None,
+                request_at: None,
+                context_parts: None,
+            },
+        )
+    }
+
+    fn tool(time: u64, name: &str) -> session::Event {
+        session::Event::new(
+            2,
+            time,
+            EventKind::ToolCall {
+                turn: 1,
+                step: 1,
+                call_id: name.to_owned(),
+                name: name.to_owned(),
+                arguments: "{}".to_owned(),
+            },
+        )
+    }
+
+    #[test]
+    fn two_local_days_get_the_events_not_the_task_ends() {
+        let shanghai = "Asia/Shanghai".parse::<Tz>().unwrap();
+        let day_one = chrono::FixedOffset::east_opt(8 * 3600)
+            .unwrap()
+            .with_ymd_and_hms(2026, 11, 19, 23, 30, 0)
+            .unwrap()
+            .timestamp_millis() as u64;
+        let day_two = day_one + 2 * 3600 * 1000;
+        let mut agg = Agg {
+            connections: Vec::new(),
+            catalog: model::catalog::snapshot(),
+            models: Vec::new(),
+            tools: Vec::new(),
+            commands: Vec::new(),
+            tasks: Vec::new(),
+            anomalies: Vec::new(),
+            days: BTreeMap::new(),
+        };
+        let selection = session::ModelSelection {
+            connection: "deepseek".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            effort_wanted: "high".to_owned(),
+        };
+        agg.add_events(
+            &[assistant(day_one, 1_000), assistant(day_two, 1_000)],
+            Some("task-1"),
+            &selection,
+            shanghai,
+            &mut MonitorRings::default(),
+        );
+        let days: Vec<&MonitorDay> = agg.days.values().collect();
+        assert_eq!(days.len(), 2, "{days:?}");
+        assert_eq!(days[0].day, "2026-11-19");
+        assert_eq!(days[1].day, "2026-11-20");
+        assert_eq!(days[0].requests, 1);
+        assert_eq!(days[1].requests, 1);
+        assert_eq!(days[0].input_tokens, 1_000);
+        assert_eq!(days[1].input_tokens, 1_000);
+        assert_eq!(days[0].output_tokens, 500);
+        assert_eq!(days[1].output_tokens, 500);
+    }
+
+    #[test]
+    fn utc_midnight_boundary_lands_on_the_user_timezone_day() {
+        let shanghai = "Asia/Shanghai".parse::<Tz>().unwrap();
+        let timestamp = Utc
+            .with_ymd_and_hms(2026, 11, 19, 16, 30, 0)
+            .unwrap()
+            .timestamp_millis() as u64;
+        assert_eq!(day_key(shanghai, timestamp), "2026-11-20");
+        assert_eq!(day_key(chrono_tz::UTC, timestamp), "2026-11-19");
+    }
+
+    #[test]
+    fn tool_events_fall_on_their_own_day() {
+        let shanghai = "Asia/Shanghai".parse::<Tz>().unwrap();
+        let day_one = chrono::FixedOffset::east_opt(8 * 3600)
+            .unwrap()
+            .with_ymd_and_hms(2026, 11, 19, 12, 0, 0)
+            .unwrap()
+            .timestamp_millis() as u64;
+        let day_two = day_one + 24 * 3600 * 1000;
+        let mut agg = Agg {
+            connections: Vec::new(),
+            catalog: model::catalog::snapshot(),
+            models: Vec::new(),
+            tools: Vec::new(),
+            commands: Vec::new(),
+            tasks: Vec::new(),
+            anomalies: Vec::new(),
+            days: BTreeMap::new(),
+        };
+        let events = vec![tool(day_one, "ls"), tool(day_two, "calendar")];
+        let selection = session::ModelSelection {
+            connection: "deepseek".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            effort_wanted: "high".to_owned(),
+        };
+        agg.add_events(
+            &events,
+            Some("task-1"),
+            &selection,
+            shanghai,
+            &mut MonitorRings::default(),
+        );
+        assert_eq!(agg.days["2026-11-19"].tool_calls, 1);
+        assert_eq!(agg.days["2026-11-20"].tool_calls, 1);
     }
 }

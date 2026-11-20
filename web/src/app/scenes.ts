@@ -58,6 +58,7 @@ export const SCENES: Record<string, SceneDef> = {
   notify: { key: 'notify', panes: [{ id: 'main', title: '通知', minWidth: 520 }] },
   usage: { key: 'usage', panes: [{ id: 'main', title: '用量与费用', minWidth: 520 }] },
   settings: { key: 'settings', panes: [{ id: 'main', title: '设置', minWidth: 520 }] },
+  monitor: { key: 'monitor', panes: [{ id: 'main', title: '监控', minWidth: 520 }] },
   newproj: { key: 'newproj', panes: [{ id: 'main', title: '新建项目', minWidth: 520 }] },
   welcome: { key: 'welcome', panes: [{ id: 'main', title: '欢迎引导', minWidth: 520 }] },
   empty: { key: 'empty', panes: [{ id: 'main', title: '空状态预览', minWidth: 520 }] },

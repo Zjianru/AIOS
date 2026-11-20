@@ -16,6 +16,8 @@ pub struct CommandFact {
     pub program: String,
     pub failed: bool,
     pub result: String,
+    /// 结果事件时间（unix 毫秒）：监控按用户时区落天用。
+    pub time: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,6 +70,7 @@ pub fn command_facts(events: &[session::Event]) -> Vec<CommandFact> {
                     command,
                     failed: command_failed(error.is_some(), &result),
                     result,
+                    time: event.time,
                 });
             }
             _ => {}
