@@ -8,6 +8,7 @@
 //! AIOS 适配：data-dir 代替 DSH home（不读 ~/.dsh）；digest 用仓库已有的 FNV-1a 前 16 hex
 //! 代替 SHA-1（不新增依赖，去重语义相同：去首尾空白后的内容 identity）；项目根标记探测
 //! 失败时退化为 cwd（不照 DSH 抛错，记为 known）；无文件系统 provider，用 tokio::fs 直接异步读。
+use std::sync::Arc;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
@@ -103,7 +104,8 @@ pub struct InstructionState {
     /// Kind：项目链只给路径，不整份注入。
     project_paths_only: bool,
     /// 最近一次发现的完整内容（不随增量消息丢），压缩固定块用。
-    current_full: Option<String>,
+    /// 独立锁，压缩回调不等指令能力自己的异步锁。
+    current_full: Arc<std::sync::RwLock<Option<String>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -117,9 +119,18 @@ impl InstructionState {
         self.project_paths_only = project_paths_only;
     }
 
-    /// 当前 owner 的完整指令文本；没有指令文件时为 None。
+    /// 当前 owner 的完整指令文本（保留给测试/诊断；压缩固定块走独立 handle）。
+    #[allow(dead_code)]
     pub fn current_full(&self) -> Option<String> {
-        self.current_full.clone()
+        self.current_full
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// 压缩固定块用的独立读口：只拿这块内容的锁，不碰 InstructionState。
+    pub fn current_full_handle(&self) -> Arc<std::sync::RwLock<Option<String>>> {
+        Arc::clone(&self.current_full)
     }
 
     /// 从已有会话消息对账（续接）：按 DSH 的 visibleInstructionChanges 折叠带类型来源。
@@ -176,7 +187,10 @@ impl InstructionState {
                 }
             }
         }
-        self.current_full = if files.is_empty() {
+        *self
+            .current_full
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = if files.is_empty() {
             None
         } else {
             Some(render_agent_instruction_set(&files, false).0)

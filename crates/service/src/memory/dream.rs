@@ -1271,6 +1271,9 @@ mod tests {
                 interrupted: None,
                 effort: None,
                 effort_wanted: None,
+
+                request_at: None,
+                context_parts: None,
             },
         )
     }

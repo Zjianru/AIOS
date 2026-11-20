@@ -1045,6 +1045,9 @@ mod tests {
                         stream: Vec::new(),
                         usage: None,
                         interrupted: None,
+
+                        request_at: None,
+                        context_parts: None,
                     },
                 ])
                 .unwrap();

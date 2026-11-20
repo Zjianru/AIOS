@@ -29,6 +29,7 @@ mod web;
 pub mod work;
 mod worktree;
 
+pub mod commands;
 pub mod fx;
 pub mod memory;
 pub mod models;

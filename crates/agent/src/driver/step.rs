@@ -21,6 +21,7 @@ use super::*;
 pub(super) struct StepContext {
     messages: Vec<Message>,
     tool_request: model::ToolRequest,
+    context_parts: session::ContextParts,
     /// 本步按条件开出的工具名；没开出的既不在表里，也不能执行。
     enabled: Arc<std::collections::BTreeSet<String>>,
     cancel: CancelToken,
@@ -168,14 +169,56 @@ pub(super) async fn prepare_step(
         tools: tool_schemas,
         history: tool_history,
     };
+    let context_parts = estimate_context_parts(&messages, &tool_request);
     // 取消令牌共用 agent 的 abort 标志 + Notify：等响应头阶段也能被打断。
     let cancel = CancelToken::new(Arc::clone(abort), Arc::clone(&inner.cancel_notify));
     Ok(Some(StepContext {
         messages,
         tool_request,
+        context_parts,
         enabled,
         cancel,
     }))
+}
+
+fn is_task_book_rpc(id: &str) -> bool {
+    [
+        "assignment:",
+        "continue:",
+        "resume:",
+        "status:",
+        "task-update:",
+        "task-requirement:",
+        "task-cc:",
+    ]
+    .iter()
+    .any(|prefix| id.starts_with(prefix))
+}
+
+fn estimate_context_parts(
+    messages: &[Message],
+    tool_request: &model::ToolRequest,
+) -> session::ContextParts {
+    let mut parts = session::ContextParts::default();
+    for message in messages {
+        let cost = crate::compaction::estimate_message(message);
+        if message.role == model::Role::Assistant {
+            parts.model_replies += cost;
+        } else if message.role == model::Role::Tool {
+            parts.tool_results += cost;
+        } else if matches!(
+            &message.source,
+            model::MessageSource::User { rpc_id: Some(id) } if is_task_book_rpc(id)
+        ) {
+            parts.task_book_messages += cost;
+        } else {
+            parts.fixed_block += cost;
+        }
+    }
+    parts.tool_definitions = serde_json::to_string(&tool_request.tools)
+        .map(|text| tools::estimate_text_tokens(&text) as u64)
+        .unwrap_or(0);
+    parts
 }
 
 /// 一个 step：写 system/user 事件，从日志派生请求，流式收模型输出，
@@ -193,6 +236,7 @@ pub(super) async fn run_step(
     let StepContext {
         mut messages,
         tool_request,
+        context_parts,
         enabled,
         cancel,
     } = context;
@@ -212,6 +256,10 @@ pub(super) async fn run_step(
     let mut attempt_stream = AssistantStreamAccumulator::new();
     let mut attempt: u32 = 0;
     let mut overflow_retries = 0_u32;
+    let mut facts = RequestFacts {
+        request_at: 0,
+        context_parts: context_parts.clone(),
+    };
     'attempts: loop {
         if abort.load(Ordering::SeqCst) {
             return Ok(StepEnd::Aborted);
@@ -228,6 +276,7 @@ pub(super) async fn run_step(
             run: Some(inner.id().as_str().to_owned()),
             turn: Some(turn),
         });
+        facts.request_at = now_ms();
         let mut stream = match inner.model.stream(&messages, &tool_request, &cancel).await {
             Ok(stream) => stream,
             Err(error) => {
@@ -310,6 +359,7 @@ pub(super) async fn run_step(
                     &open,
                     &usage,
                     &attempt_stream,
+                    &facts,
                 )
                 .await;
             }
@@ -325,6 +375,7 @@ pub(super) async fn run_step(
                     &open,
                     &usage,
                     &attempt_stream,
+                    &facts,
                 )
                 .await;
             }
@@ -339,6 +390,7 @@ pub(super) async fn run_step(
                     &open,
                     &usage,
                     &attempt_stream,
+                    &facts,
                 )
                 .await;
                 }
@@ -416,12 +468,13 @@ pub(super) async fn run_step(
                             &open,
                             &usage,
                             &attempt_stream,
+                            &facts,
                         )
                         .await;
                     }
                     // 流已经开过：这次尝试没有可见消息，照 DSH agent.ts:567-580 先落
                     // assistant/attempt（帧保留），再决定重试/收尾。
-                    append_attempt(inner, turn, step, &attempt_stream).await?;
+                    append_attempt(inner, turn, step, &attempt_stream, &facts).await?;
                     match decide_retry(
                         inner,
                         &cancel,
@@ -457,6 +510,7 @@ pub(super) async fn run_step(
                     &open,
                     &usage,
                     &attempt_stream,
+                    &facts,
                 )
                 .await;
             }
@@ -465,7 +519,17 @@ pub(super) async fn run_step(
     }
     // 流已收完但取消在结算前到了：照 DSH 的 for-await 后 throwIfAborted 走中断前缀。
     if abort.load(Ordering::SeqCst) {
-        return interrupted_step(inner, turn, step, &blocks, &open, &usage, &attempt_stream).await;
+        return interrupted_step(
+            inner,
+            turn,
+            step,
+            &blocks,
+            &open,
+            &usage,
+            &attempt_stream,
+            &facts,
+        )
+        .await;
     }
     let Some(finish) = finish else {
         return Err(AgentError::Model(ModelError::new(
@@ -496,6 +560,8 @@ pub(super) async fn run_step(
             stream: attempt_stream.snapshot(),
             usage: usage.clone(),
             interrupted: None,
+            request_at: Some(facts.request_at),
+            context_parts: Some(facts.context_parts.clone()),
         }])
         .await?;
     emit_usage(inner, &usage);
@@ -680,4 +746,168 @@ pub(super) async fn run_step(
         return Ok(StepEnd::Aborted);
     }
     Ok(StepEnd::Continue)
+}
+
+#[cfg(test)]
+mod context_parts_tests {
+    use super::*;
+    use model::{ContentBlock, Message, MessageSource, Role, ToolSchema};
+    use serde_json::json;
+
+    fn message(role: Role, source: MessageSource, text: &str) -> Message {
+        Message {
+            id: model::MessageId::generate(),
+            role,
+            content: vec![ContentBlock::text(text)],
+            source,
+            tool_call_id: None,
+            is_error: None,
+        }
+    }
+
+    /// 已知 usage：按请求里的文本/工具定义字符数独立折算（不是复用被测估算器）。
+    fn known_usage(messages: &[Message], tools: &[ToolSchema]) -> model::Usage {
+        let mut chars = 0_usize;
+        for message in messages {
+            for block in &message.content {
+                if let Some(text) = block.as_text() {
+                    chars += text.chars().count();
+                }
+            }
+        }
+        for schema in tools {
+            chars += schema.name.chars().count();
+            chars += schema.description.chars().count();
+            chars += schema.parameters.to_string().chars().count();
+        }
+        model::Usage {
+            input_tokens: Some(
+                (chars.div_ceil(4) + messages.len() * 4 + tools.len() * 4 + 4) as u64,
+            ),
+            ..model::Usage::default()
+        }
+    }
+
+    fn assert_close(parts: &session::ContextParts, usage: u64) {
+        let sum = parts.fixed_block
+            + parts.tool_definitions
+            + parts.task_book_messages
+            + parts.model_replies
+            + parts.tool_results;
+        let diff = sum.abs_diff(usage);
+        assert!(
+            diff as f64 / usage as f64 <= 0.30,
+            "五块估算和 {sum} 与 usage {usage} 偏差超过 30%：{parts:?}"
+        );
+    }
+
+    fn tool(name: &str, description: &str, parameters: serde_json::Value) -> ToolSchema {
+        ToolSchema {
+            name: name.to_owned(),
+            description: description.to_owned(),
+            parameters,
+            defer_loading: false,
+        }
+    }
+
+    #[test]
+    fn large_tool_definitions_stay_within_thirty_percent() {
+        let mut tools = Vec::new();
+        for index in 0..12 {
+            tools.push(tool(
+                &format!("tool-{index}"),
+                &"Read and inspect a resource with enough description text to count. ".repeat(4),
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Absolute path to inspect"},
+                        "limit": {"type": "number", "description": "Maximum lines"}
+                    },
+                    "required": ["path"]
+                }),
+            ));
+        }
+        let messages = vec![
+            message(
+                Role::System,
+                MessageSource::SystemPrompt,
+                &"You are AIOS. ".repeat(200),
+            ),
+            Message::user_text_with_request_id(
+                "把安装步骤补上，并解释为什么这么改。".repeat(20),
+                "assignment:task-1",
+            ),
+            Message::assistant(
+                vec![ContentBlock::text("先看 README 和现有命令。".repeat(20))],
+                "deepseek",
+                "deepseek-flash",
+            ),
+            Message::tool_result(
+                "call-1",
+                "README 里没有安装步骤，package.json 有 scripts。".repeat(20),
+                false,
+            ),
+        ];
+        let usage = known_usage(&messages, &tools).input_tokens.unwrap_or(0);
+        let request = model::ToolRequest {
+            tools,
+            history: None,
+        };
+        assert_close(&estimate_context_parts(&messages, &request), usage);
+    }
+
+    #[test]
+    fn compaction_checkpoint_stays_within_thirty_percent() {
+        let tools = vec![
+            tool("read", "Read a file", json!({"type": "object"})),
+            tool("write", "Write a file", json!({"type": "object"})),
+            tool("bash", "Run a command", json!({"type": "object"})),
+        ];
+        let mut checkpoint = message(
+            Role::User,
+            MessageSource::default(),
+            "## 在办的事\n- 修安装步骤\n",
+        );
+        checkpoint.source = MessageSource::CompactCheckpoint {
+            compaction_id: "c-1".to_owned(),
+            source_command_id: None,
+        };
+        let messages = vec![
+            message(
+                Role::System,
+                MessageSource::SystemPrompt,
+                &"You are AIOS. ".repeat(100),
+            ),
+            message(
+                Role::User,
+                MessageSource::AgentInstructions {
+                    form: "instructions".to_owned(),
+                    baseline: true,
+                    baseline_identity: Some("baseline".to_owned()),
+                    changes: Vec::new(),
+                },
+                &"项目规则：README 要有安装步骤。".repeat(10),
+            ),
+            message(
+                Role::User,
+                MessageSource::MemoryContext {
+                    identity: "memory-v1".to_owned(),
+                },
+                &"记忆：用户喜欢短结论。".repeat(10),
+            ),
+            checkpoint,
+            Message::assistant(
+                vec![ContentBlock::text("继续改 README。".repeat(10))],
+                "deepseek",
+                "deepseek-flash",
+            ),
+            Message::user_text("现在把安装步骤补上。".repeat(10)),
+        ];
+        let usage = known_usage(&messages, &tools).input_tokens.unwrap_or(0);
+        let request = model::ToolRequest {
+            tools,
+            history: None,
+        };
+        assert_close(&estimate_context_parts(&messages, &request), usage);
+    }
 }

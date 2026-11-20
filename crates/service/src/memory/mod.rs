@@ -618,6 +618,9 @@ mod index_tests {
                 interrupted: None,
                 effort: None,
                 effort_wanted: None,
+
+                request_at: None,
+                context_parts: None,
             }])
             .unwrap();
         let runtime = MemoryRuntime::open(dir.path()).unwrap();

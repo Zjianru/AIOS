@@ -35,6 +35,9 @@ fn message_event(seq: u64, text: &str) -> Event {
             stream: vec![chunk(text)],
             usage: Some(usage()),
             interrupted: None,
+
+            request_at: None,
+            context_parts: None,
         },
     )
 }
@@ -47,6 +50,9 @@ fn attempt_event(seq: u64, text: &str) -> Event {
             turn: 1,
             step: 1,
             stream: vec![chunk(text)],
+
+            request_at: None,
+            context_parts: None,
         },
     )
 }

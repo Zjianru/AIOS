@@ -6,9 +6,10 @@
 use model::{Message, MessageSource};
 
 /// 唯一一张程序消息表。
-pub(crate) const PROGRAM_MESSAGE_PREFIXES: [&str; 6] = [
+pub(crate) const PROGRAM_MESSAGE_PREFIXES: [&str; 7] = [
     "task-report:",
     "task-stop:",
+    "task-cc:",
     "gate-verdict:",
     "upstream-changed:",
     "appointment-wake:",
@@ -47,12 +48,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn table_is_exactly_the_six_prefixes() {
+    fn table_is_exactly_the_seven_prefixes() {
         assert_eq!(
             PROGRAM_MESSAGE_PREFIXES,
             [
                 "task-report:",
                 "task-stop:",
+                "task-cc:",
                 "gate-verdict:",
                 "upstream-changed:",
                 "appointment-wake:",
@@ -61,11 +63,11 @@ mod tests {
         );
         assert!(is_program_rpc("task-report:t:r"));
         assert!(is_program_rpc("task-stop:t:1"));
+        assert!(is_program_rpc("task-cc:t:r"));
         assert!(is_program_rpc("gate-verdict:g:r"));
         assert!(is_program_rpc("upstream-changed:u:d:r"));
         assert!(is_program_rpc("appointment-wake:a:r"));
         assert!(is_program_rpc("restart:boot"));
         assert!(!is_program_rpc("confirm:card-1"));
-        assert!(!is_program_rpc("task-cc:t:r"));
     }
 }

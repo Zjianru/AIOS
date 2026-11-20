@@ -42,6 +42,9 @@ fn assistant_event(seq: u64, turn: u64, text: &str) -> session::Event {
             interrupted: None,
             effort: None,
             effort_wanted: None,
+
+            request_at: None,
+            context_parts: None,
         },
     )
 }
@@ -53,9 +56,10 @@ fn conversation_turn(hits: &[SearchHit]) -> Option<u64> {
     })
 }
 
-const PROGRAM_MESSAGES: [(&str, &str); 6] = [
+const PROGRAM_MESSAGES: [(&str, &str); 7] = [
     ("中继卡里的查完了摘要", "task-report:task-1:report-1"),
     ("用户让停任务", "task-stop:task-1:attempt-1"),
+    ("任务对话里的抄送", "task-cc:input-1"),
     ("启动中断要接续", "restart:boot-1"),
     ("门判定通过了", "gate-verdict:gate-1:report-1"),
     ("上游变了要重核", "upstream-changed:up-1:down-1:report-1"),
@@ -133,6 +137,9 @@ fn backfill_uses_the_same_filter_and_turn() {
                 interrupted: None,
                 effort: None,
                 effort_wanted: None,
+
+                request_at: None,
+                context_parts: None,
             },
         ])
         .unwrap();

@@ -981,6 +981,9 @@ fn measure_work_latency_on_a_long_session() {
                 interrupted: None,
                 effort: None,
                 effort_wanted: None,
+
+                request_at: None,
+                context_parts: None,
             },
         ));
         seq += 1;

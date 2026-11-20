@@ -66,6 +66,9 @@ fn answer(turn: u64, step: u64, text: &str) -> EventKind {
         interrupted: None,
         effort: None,
         effort_wanted: None,
+
+        request_at: None,
+        context_parts: None,
     }
 }
 
@@ -659,6 +662,9 @@ async fn stats_are_computed_from_all_events_and_catalog_prices() {
                 interrupted: None,
                 effort: None,
                 effort_wanted: None,
+
+                request_at: None,
+                context_parts: None,
             });
         } else {
             for step in 1..=25 {

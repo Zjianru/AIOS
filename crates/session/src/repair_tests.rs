@@ -32,6 +32,9 @@ fn assistant_tool_call(time: u64) -> Event {
             stream: Vec::new(),
             usage: None,
             interrupted: None,
+
+            request_at: None,
+            context_parts: None,
         },
     )
 }
@@ -232,6 +235,9 @@ fn two_pending_calls_events() -> Vec<Event> {
                 stream: Vec::new(),
                 usage: None,
                 interrupted: None,
+
+                request_at: None,
+                context_parts: None,
             },
         ),
     ]

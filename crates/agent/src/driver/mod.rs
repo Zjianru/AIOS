@@ -383,10 +383,15 @@ impl Inner {
         // 不从 derive_messages 捡，否则第二次压缩前这些消息已被上次 Replace 藏掉。
         let mut fixed_block_sources: Vec<crate::CompactionFixedBlockSource> = Vec::new();
         {
-            let state = Arc::clone(&instruction_state);
+            let state = instruction_state
+                .try_lock()
+                .expect("初始化期间指令状态无人持有")
+                .current_full_handle();
             fixed_block_sources.push(Arc::new(move || {
-                let guard = state.try_lock().ok()?;
-                let text = guard.current_full()?;
+                let text = state
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone()?;
                 Some(crate::CompactionFixedBlock {
                     kind: "instructions".to_owned(),
                     identity: "instructions".to_owned(),
