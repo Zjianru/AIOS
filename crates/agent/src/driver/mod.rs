@@ -71,7 +71,7 @@ pub(crate) struct Inner {
     /// 报告后保留宿主；命令结束只落事件，不投 inbox、不唤醒。
     background_only: AtomicBool,
     compaction_profile: crate::CompactionProfile,
-    compaction_fixed_block: Option<crate::CompactionFixedBlockSource>,
+    compaction_fixed_blocks: Vec<crate::CompactionFixedBlockSource>,
     identity_prompt: Option<String>,
 
     pub(crate) model: DeepSeek,
@@ -141,55 +141,11 @@ impl LoopAccess for Inner {
         self.compaction_profile
     }
     fn compaction_fixed_blocks(&self) -> Vec<crate::CompactionFixedBlock> {
-        let derived = self
-            .store
-            .lock()
-            .expect("agent 会话锁被毒化")
-            .derive_messages();
-        let mut blocks: Vec<crate::CompactionFixedBlock> = Vec::new();
-        for message in derived {
-            let (kind, identity) = match &message.source {
-                model::MessageSource::AgentInstructions {
-                    baseline_identity, ..
-                } => (
-                    "instructions",
-                    baseline_identity.clone().unwrap_or_default(),
-                ),
-                model::MessageSource::SkillCatalog { entries, .. } => (
-                    "skills",
-                    entries
-                        .iter()
-                        .map(|entry| entry.name.clone())
-                        .collect::<Vec<_>>()
-                        .join(","),
-                ),
-                model::MessageSource::MemoryContext { identity } => ("memory", identity.clone()),
-                _ => continue,
-            };
-            let text = message
-                .content
-                .iter()
-                .filter_map(|block| match block {
-                    model::ContentBlock::Text { text, .. } => Some(text.as_str()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            if text.is_empty() {
-                continue;
-            }
-            blocks.retain(|block| block.kind != kind);
-            blocks.push(crate::CompactionFixedBlock {
-                kind: kind.to_owned(),
-                identity,
-                text,
-            });
-        }
-        if let Some(source) = &self.compaction_fixed_block
-            && let Some(block) = source()
-        {
-            blocks.push(block);
-        }
+        let mut blocks: Vec<crate::CompactionFixedBlock> = self
+            .compaction_fixed_blocks
+            .iter()
+            .filter_map(|source| source())
+            .collect();
         blocks.sort_by_key(|block| match block.kind.as_str() {
             "instructions" => 0,
             "skills" => 1,
@@ -199,6 +155,7 @@ impl LoopAccess for Inner {
         });
         blocks
     }
+
     fn data_dir(&self) -> &Path {
         &self.data_dir
     }
@@ -422,6 +379,46 @@ impl Inner {
                 skill_roots,
                 bundled_skills.clone(),
             );
+        // 固定块从 owner 的当前完整版本取：指令/skill/记忆/任务书各一个 source。
+        // 不从 derive_messages 捡，否则第二次压缩前这些消息已被上次 Replace 藏掉。
+        let mut fixed_block_sources: Vec<crate::CompactionFixedBlockSource> = Vec::new();
+        {
+            let state = Arc::clone(&instruction_state);
+            fixed_block_sources.push(Arc::new(move || {
+                let guard = state.try_lock().ok()?;
+                let text = guard.current_full()?;
+                Some(crate::CompactionFixedBlock {
+                    kind: "instructions".to_owned(),
+                    identity: "instructions".to_owned(),
+                    text,
+                })
+            }));
+        }
+        {
+            let state = Arc::clone(&skill_catalog);
+            fixed_block_sources.push(Arc::new(move || {
+                let text = state.lock().ok()?.current_text()?;
+                Some(crate::CompactionFixedBlock {
+                    kind: "skills".to_owned(),
+                    identity: "skills".to_owned(),
+                    text,
+                })
+            }));
+        }
+        if let Some(provider) = &config.memory_context {
+            let provider = Arc::clone(provider);
+            fixed_block_sources.push(Arc::new(move || {
+                let context = provider().ok()??;
+                (!context.text.trim().is_empty()).then_some(crate::CompactionFixedBlock {
+                    kind: "memory".to_owned(),
+                    identity: context.identity,
+                    text: context.text,
+                })
+            }));
+        }
+        if let Some(task) = config.compaction_fixed_block.clone() {
+            fixed_block_sources.push(task);
+        }
         crate::todo_capability::TodoCapability::rehydrate(&tool_session, store.events());
         // 画布状态从日志折叠；重开会话后 canvas 工具接着改同一个画布。
         tool_session.set_canvases(session::canvases(store.events()));
@@ -446,7 +443,7 @@ impl Inner {
             pre_compaction_instruction: config.pre_compaction_instruction.clone(),
             background_only: std::sync::atomic::AtomicBool::new(false),
             compaction_profile: config.compaction_profile,
-            compaction_fixed_block: config.compaction_fixed_block.clone(),
+            compaction_fixed_blocks: fixed_block_sources,
             identity_prompt: config.identity_prompt.clone(),
             no_wait: config.no_wait,
             write_scope: config.write_scope.clone(),

@@ -102,6 +102,8 @@ pub struct InstructionState {
     scopes: BTreeMap<String, ScopeState>,
     /// Kind：项目链只给路径，不整份注入。
     project_paths_only: bool,
+    /// 最近一次发现的完整内容（不随增量消息丢），压缩固定块用。
+    current_full: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -113,6 +115,11 @@ struct ScopeState {
 impl InstructionState {
     pub fn set_project_paths_only(&mut self, project_paths_only: bool) {
         self.project_paths_only = project_paths_only;
+    }
+
+    /// 当前 owner 的完整指令文本；没有指令文件时为 None。
+    pub fn current_full(&self) -> Option<String> {
+        self.current_full.clone()
     }
 
     /// 从已有会话消息对账（续接）：按 DSH 的 visibleInstructionChanges 折叠带类型来源。
@@ -169,6 +176,11 @@ impl InstructionState {
                 }
             }
         }
+        self.current_full = if files.is_empty() {
+            None
+        } else {
+            Some(render_agent_instruction_set(&files, false).0)
+        };
         // 照 DSH：没有可见基线且当前没有任何指令文件时不注入（不产生空基线消息）。
         if self.visible_identity.is_none() && files.is_empty() {
             return None;

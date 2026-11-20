@@ -17,9 +17,16 @@ use tools::{BundledSkill, ToolKey, catalog_description, discover_skill_catalog};
 pub struct SkillCatalogState {
     published_digest: Option<String>,
     logged_warnings: BTreeSet<String>,
+    /// 最近一次发布的完整目录文本；压缩固定块用。
+    current_text: Option<String>,
 }
 
 impl SkillCatalogState {
+    /// 当前 owner 的完整 skill 目录文本；没发布过为 None。
+    pub fn current_text(&self) -> Option<String> {
+        self.current_text.clone()
+    }
+
     /// 从既有会话消息对账（续接）：按带类型 source 折叠最后一次目录发布的 identity。
     pub fn rehydrate(&mut self, messages: &[Message]) {
         for message in messages {
@@ -32,6 +39,14 @@ impl SkillCatalogState {
                 continue;
             };
             self.published_digest = Some(digest_entries(entries, *incomplete));
+            self.current_text = Some(
+                message
+                    .content
+                    .iter()
+                    .filter_map(|block| block.as_text())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
         }
     }
 
@@ -94,6 +109,7 @@ impl SkillCatalogState {
             render_catalog_first(&entries, discovery.incomplete, &unavailable)
         };
         self.published_digest = Some(digest);
+        self.current_text = Some(text.clone());
         Some(Message::skill_catalog(
             text,
             published,
