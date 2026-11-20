@@ -1,7 +1,6 @@
 //! 接缝 1：后台任务完成通知与 JobCompleted 事件（测试清单第 4 条 + 票面加项）。
 
 use std::fs;
-use std::time::Duration;
 
 use crate::common::{
     FINAL_TEXT_SSE, SequenceResponder, setup_agent, sse, tool_calls_with_inputs_sse,
@@ -12,6 +11,25 @@ use serde_json::json;
 use tools::ToolSet;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer};
+
+/// 等会话日志里真的落下 job/settled（完成信号，不轮询、不猜时长）。
+async fn wait_job_settled(
+    events: &mut tokio::sync::broadcast::Receiver<session::Event>,
+) -> session::EventKind {
+    loop {
+        match events.recv().await {
+            Ok(event) => {
+                if matches!(event.kind, session::EventKind::JobSettled { .. }) {
+                    return event.kind;
+                }
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                panic!("会话事件流先关了，等不到 job/settled");
+            }
+        }
+    }
+}
 
 #[tokio::test]
 async fn background_job_completion_notifies_next_request() {
@@ -46,20 +64,18 @@ async fn background_job_completion_notifies_next_request() {
     );
 
     let mut events = agent.subscribe();
+    let mut settled_events = agent.subscribe_session_events();
     fs::write(cwd.path().join("go"), "").unwrap();
-
-    let notified = tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if server.received_requests().await.unwrap().len() >= 3 {
-                return true;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap_or(false);
-    assert!(notified, "完成通知没有开启下一轮请求");
+    let settled = wait_job_settled(&mut settled_events).await;
+    let session::EventKind::JobSettled { status, .. } = settled else {
+        unreachable!()
+    };
+    assert_eq!(status, "completed");
     agent.idle().await;
+    assert!(
+        server.received_requests().await.unwrap().len() >= 3,
+        "完成通知没有开启下一轮请求"
+    );
 
     let requests = server.received_requests().await.unwrap();
     let last = String::from_utf8(requests.last().unwrap().body.clone()).unwrap();
@@ -87,7 +103,7 @@ async fn idle_agent_with_a_running_background_job_can_still_be_stopped() {
                 "bash",
                 json!({
                     "description": "long",
-                    "command": "trap 'echo stopped > killed.txt' TERM; sleep 30",
+                    "command": "trap 'echo stopped > killed.txt' TERM; tail -f /dev/null",
                     "run_in_background": true
                 }),
             )])),
@@ -103,21 +119,15 @@ async fn idle_agent_with_a_running_background_job_can_still_be_stopped() {
     agent.idle().await;
     assert!(!agent.is_running(), "这一轮已经结束");
     assert_eq!(agent.background_turn(), Some(1), "后台命令还挂着第 1 轮");
+    let mut settled_events = agent.subscribe_session_events();
     agent.cancel_with(session::AbortCause::User);
-    let deadline = std::time::Instant::now() + Duration::from_secs(1);
-    while !cwd.path().join("killed.txt").exists() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "空闲停止没有在 1 秒内杀掉命令"
-        );
-        tokio::task::yield_now().await;
-    }
-    let settled = std::time::Instant::now() + Duration::from_secs(2);
-    while agent.background_turn().is_some() {
-        assert!(std::time::Instant::now() < settled, "杀完不留后台命令");
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    wait_job_settled(&mut settled_events).await;
+    assert!(
+        cwd.path().join("killed.txt").exists(),
+        "后台命令要真的收到 TERM"
+    );
+    agent.idle().await;
+    assert!(agent.background_turn().is_none(), "杀完不留后台命令");
     assert_eq!(
         server.received_requests().await.unwrap().len(),
         2,
@@ -162,7 +172,7 @@ impl wiremock::Respond for BusyScriptResponder {
                 sse(tool_calls_with_inputs_sse(&[(
                     "call_1",
                     "job_output",
-                    json!({"job_id": job_id, "wait": true, "timeout_ms": 5000}),
+                    json!({"job_id": job_id, "wait": true}),
                 )]))
             }
             _ => sse(FINAL_TEXT_SSE.to_owned()),
@@ -183,22 +193,9 @@ async fn job_completion_during_turn_arrives_as_next_step() {
         .await;
     let (agent, data_dir, cwd, session_id) = setup_agent(&server.uri(), ToolSet::builtin()).await;
 
-    let cwd_path = cwd.path().to_path_buf();
-    let notifier = tokio::spawn(async move {
-        // 等第一次请求已经在处理（turn 已开始）再放行后台任务。
-        for _ in 0..5000 {
-            if cwd_path.join("go").exists() {
-                return;
-            }
-            // T009.H6：等后台任务看到 go 文件再放行；文件轮询间隔
-            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-        }
-        std::fs::write(cwd_path.join("go"), "").unwrap();
-    });
-    // T009.H6：固定等 notifier 轮询落位后再放行；没有更早的同步信号
-    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    // 后台命令一开始就能看到放行文件：它会在本轮 job_output 等待里完成，
+    // 完成通知落到下一 step，不需要另起计时任务。
     std::fs::write(cwd.path().join("go"), "").unwrap();
-    notifier.abort();
 
     agent
         .send(UserMessage::text("一边跑后台一边干活"), Delivery::FollowUp)
@@ -305,17 +302,6 @@ impl wiremock::Respond for NoticeThenReadResponder {
     }
 }
 
-/// 轮询到 mock 收到至少 n 次请求（受控时序；不靠固定 sleep 猜时长）。
-async fn wait_requests(server: &MockServer, n: usize) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while server.received_requests().await.unwrap().len() < n {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "mock 没有在 5s 内收到 {n} 次请求"
-        );
-        tokio::task::yield_now().await;
-    }
-}
 /// T006.9（D4）：前台 bash 也照 DSH 记 job/registered + job/settled（有 registry 时每次调用都登记）。
 #[tokio::test]
 async fn foreground_bash_records_job_lifecycle_events() {
@@ -334,34 +320,26 @@ async fn foreground_bash_records_job_lifecycle_events() {
         .mount(&server)
         .await;
     let (agent, data_dir, _cwd, session_id) = setup_agent(&server.uri(), ToolSet::builtin()).await;
+    // 结算事件是这次日志写入的完成点，等它到了再读一次。
+    let mut settled_events = agent.subscribe_session_events();
     agent
         .send(UserMessage::text("前台跑一下"), Delivery::FollowUp)
         .await
         .unwrap();
     agent.idle().await;
-
-    // 生命周期事件由后台任务异步写日志，轮询到两条齐。
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    let (registered, settled) = loop {
-        let store = session::SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
-        let events = store.events();
-        let registered = events
-            .iter()
-            .find(|event| matches!(event.kind, session::EventKind::JobRegistered { .. }))
-            .cloned();
-        let settled = events
-            .iter()
-            .find(|event| matches!(event.kind, session::EventKind::JobSettled { .. }))
-            .cloned();
-        if let (Some(registered), Some(settled)) = (registered, settled) {
-            break (registered, settled);
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "5s 内没有写齐 job/registered 与 job/settled"
-        );
-        tokio::task::yield_now().await;
-    };
+    wait_job_settled(&mut settled_events).await;
+    let store = session::SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
+    let events = store.events();
+    let registered = events
+        .iter()
+        .find(|event| matches!(event.kind, session::EventKind::JobRegistered { .. }))
+        .cloned()
+        .expect("job/registered");
+    let settled = events
+        .iter()
+        .find(|event| matches!(event.kind, session::EventKind::JobSettled { .. }))
+        .cloned()
+        .expect("job/settled");
     assert!(
         registered.seq < settled.seq,
         "job/registered 先于 job/settled"
@@ -446,10 +424,13 @@ async fn background_job_completion_notice_matches_dsh_inline() {
         .await
         .unwrap();
     agent.idle().await;
-    wait_requests(&server, 2).await;
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    // job/settled 是后台完成点；等它再读后续通知那几轮。
+    let mut settled_events = agent.subscribe_session_events();
     std::fs::write(cwd.path().join("go"), "").unwrap();
-    wait_requests(&server, 4).await;
+    wait_job_settled(&mut settled_events).await;
     agent.idle().await;
+    assert_eq!(server.received_requests().await.unwrap().len(), 4);
 
     let requests = server.received_requests().await.unwrap();
     let bodies: Vec<String> = requests
@@ -493,10 +474,13 @@ async fn background_job_completion_notice_falls_back_without_consuming_output() 
         .await
         .unwrap();
     agent.idle().await;
-    wait_requests(&server, 2).await;
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    // job/settled 是后台完成点；等它再读后续通知那几轮。
+    let mut settled_events = agent.subscribe_session_events();
     std::fs::write(cwd.path().join("go"), "").unwrap();
-    wait_requests(&server, 4).await;
+    wait_job_settled(&mut settled_events).await;
     agent.idle().await;
+    assert_eq!(server.received_requests().await.unwrap().len(), 4);
 
     let requests = server.received_requests().await.unwrap();
     let bodies: Vec<String> = requests
@@ -542,10 +526,12 @@ async fn background_job_completion_notice_reports_no_new_output() {
         .await
         .unwrap();
     agent.idle().await;
-    wait_requests(&server, 2).await;
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    let mut settled_events = agent.subscribe_session_events();
     std::fs::write(cwd.path().join("go"), "").unwrap();
-    wait_requests(&server, 3).await;
+    wait_job_settled(&mut settled_events).await;
     agent.idle().await;
+    assert_eq!(server.received_requests().await.unwrap().len(), 3);
 
     let requests = server.received_requests().await.unwrap();
     let last = String::from_utf8_lossy(&requests.last().unwrap().body.clone()).into_owned();
@@ -578,7 +564,7 @@ async fn model_job_kill_suppresses_completion_notice() {
                     "call_0",
                     "bash",
                     json!({
-                        "description": "test command", "command": "sleep 30", "run_in_background": true
+                        "description": "test command", "command": "tail -f /dev/null", "run_in_background": true
                     }),
                 )])),
                 1 => {
@@ -603,44 +589,27 @@ async fn model_job_kill_suppresses_completion_notice() {
         })
         .mount(&server)
         .await;
-    let (agent, data_dir, _cwd, session_id) = setup_agent(&server.uri(), ToolSet::builtin()).await;
+    let (agent, _data_dir, _cwd, _session_id) =
+        setup_agent(&server.uri(), ToolSet::builtin()).await;
+    let mut settled_events = agent.subscribe_session_events();
     agent
         .send(UserMessage::text("后台跑一下再停掉"), Delivery::FollowUp)
         .await
         .unwrap();
     agent.idle().await;
-    wait_requests(&server, 3).await;
-    agent.idle().await;
-
-    // job/settled 仍写：status=killed、cause=kill（可与自然结束区分）。
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    let settled = loop {
-        let store = session::SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
-        let settled = store.events().iter().find_map(|event| match &event.kind {
-            session::EventKind::JobSettled {
-                job_id,
-                status,
-                cause,
-                ..
-            } => Some((job_id.clone(), status.clone(), cause.clone())),
-            _ => None,
-        });
-        if let Some(settled) = settled {
-            break settled;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "5s 内没有写 job/settled"
-        );
-        tokio::task::yield_now().await;
+    assert_eq!(server.received_requests().await.unwrap().len(), 3);
+    // job/settled 是完成点：status=killed、cause=kill（可与自然结束区分）。
+    let settled = wait_job_settled(&mut settled_events).await;
+    let session::EventKind::JobSettled { status, cause, .. } = settled else {
+        unreachable!()
     };
-    assert_eq!(settled.1, "killed");
-    assert_eq!(settled.2, "kill");
-
-    // 若错误地投递完成通知，会唤醒新一轮（第 4 次请求）；1s 内不应出现。
-    let extra = tokio::time::timeout(Duration::from_secs(1), wait_requests(&server, 4)).await;
-    assert!(
-        extra.is_err(),
+    assert_eq!(status, "killed");
+    assert_eq!(cause, "kill");
+    // 结算已发生；若错误地投完成通知，会唤醒第 4 次请求，idle 会把它跑完。
+    agent.idle().await;
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        3,
         "模型自己 job_kill 后不应再投完成通知（不应多开一轮）"
     );
 
@@ -683,7 +652,7 @@ async fn fast_natural_finish_after_model_kill_suppresses_completion_notice() {
                     "bash",
                     json!({
                         "description": "test command",
-                        "command": "trap 'printf x > got-term' TERM; while [ ! -f go ]; do :; done; printf 'done'",
+                        "command": "trap 'exit 0' TERM; tail -f /dev/null",
                         "run_in_background": true
                     }),
                 )])),
@@ -709,60 +678,29 @@ async fn fast_natural_finish_after_model_kill_suppresses_completion_notice() {
         })
         .mount(&server)
         .await;
-    let (agent, data_dir, cwd, session_id) = setup_agent(&server.uri(), ToolSet::builtin()).await;
-    // 看到 SIGTERM 已到达（request_kill 原子置标记之后才发信号）再让命令自然结束。
-    let cwd_path = cwd.path().to_path_buf();
-    let watcher = tokio::spawn(async move {
-        for _ in 0..5000 {
-            if cwd_path.join("got-term").exists() {
-                std::fs::write(cwd_path.join("go"), "").unwrap();
-                return;
-            }
-            tokio::task::yield_now().await;
-        }
-        panic!("5s 内没等到 SIGTERM");
-    });
+    let (agent, _data_dir, _cwd, _session_id) =
+        setup_agent(&server.uri(), ToolSet::builtin()).await;
+    let mut settled_events = agent.subscribe_session_events();
     agent
         .send(UserMessage::text("后台跑一下再停掉"), Delivery::FollowUp)
         .await
         .unwrap();
     agent.idle().await;
-    watcher.await.unwrap();
-    wait_requests(&server, 3).await;
-    agent.idle().await;
-
-    // job/settled 仍写：自然完成 status=completed、cause=kill（DSH settleCause）。
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    let settled = loop {
-        let store = session::SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
-        let settled = store.events().iter().find_map(|event| match &event.kind {
-            session::EventKind::JobSettled {
-                job_id,
-                status,
-                cause,
-                ..
-            } => Some((job_id.clone(), status.clone(), cause.clone())),
-            _ => None,
-        });
-        if let Some(settled) = settled {
-            break settled;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "5s 内没有写 job/settled"
-        );
-        tokio::task::yield_now().await;
+    assert_eq!(server.received_requests().await.unwrap().len(), 3);
+    // job/settled 是完成点：SIGTERM 后 trap 自己 exit 0，自然完成 status=completed、cause=kill。
+    let settled = wait_job_settled(&mut settled_events).await;
+    let session::EventKind::JobSettled { status, cause, .. } = settled else {
+        unreachable!()
     };
-    assert_eq!(settled.1, "completed", "自然完成照 producer 事实");
+    assert_eq!(status, "completed", "自然完成照 producer 事实");
     assert_eq!(
-        settled.2, "kill",
+        cause, "kill",
         "kill 请求后自然完成，DSH settleCause 仍是 kill"
     );
-
-    // 若错误地投递完成通知，会唤醒新一轮（第 4 次请求）；1s 内不应出现。
-    let extra = tokio::time::timeout(Duration::from_secs(1), wait_requests(&server, 4)).await;
-    assert!(
-        extra.is_err(),
+    agent.idle().await;
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        3,
         "kill 请求后立刻自然完成也不应投重复完成通知"
     );
     let requests = server.received_requests().await.unwrap();
@@ -790,7 +728,7 @@ async fn settled_event_may_follow_turn_end_for_background_job() {
                 "bash",
                 json!({
                     "description": "slow background",
-                    "command": "sleep 1; printf done",
+                    "command": "mkfifo go_pipe; read -r _ < go_pipe; printf done",
                     "run_in_background": true
                 }),
             )])),
@@ -800,33 +738,26 @@ async fn settled_event_may_follow_turn_end_for_background_job() {
         .mount(&server)
         .await;
     let (agent, data_dir, _cwd, session_id) = setup_agent(&server.uri(), ToolSet::builtin()).await;
+    let mut settled_events = agent.subscribe_session_events();
     agent
         .send(UserMessage::text("后台跑一下"), Delivery::FollowUp)
         .await
         .unwrap();
     agent.idle().await;
+    // 回合已经结束，再放行后台任务：settled 必然晚于 turn/end。
+    std::fs::write(_cwd.path().join("go_pipe"), "go").unwrap();
+    wait_job_settled(&mut settled_events).await;
 
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    let (turn_end, settled) = loop {
-        let store = session::SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
-        let events = store.events();
-        let turn_end = events
-            .iter()
-            .find(|event| matches!(event.kind, session::EventKind::TurnEnd { .. }))
-            .cloned();
-        let settled = events
-            .iter()
-            .find(|event| matches!(event.kind, session::EventKind::JobSettled { .. }))
-            .cloned();
-        if let (Some(turn_end), Some(settled)) = (turn_end, settled) {
-            break (turn_end, settled);
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "10s 内没有写齐 turn/end 与 job/settled"
-        );
-        tokio::task::yield_now().await;
-    };
+    let store = session::SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
+    let events = store.events();
+    let turn_end = events
+        .iter()
+        .find(|event| matches!(event.kind, session::EventKind::TurnEnd { .. }))
+        .expect("turn/end");
+    let settled = events
+        .iter()
+        .find(|event| matches!(event.kind, session::EventKind::JobSettled { .. }))
+        .expect("job/settled");
     assert!(
         settled.seq > turn_end.seq,
         "后台任务结算可以晚于 turn/end（DSH jobs docs）；实际 turn/end={} settled={}",
