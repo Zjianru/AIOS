@@ -74,3 +74,39 @@ test('监控：消耗、在跑、诊断三块走服务端快照，只读', async
     await fixture.close();
   }
 });
+
+test('在跑页的异常事实列表只显示服务端来的 detail', async ({ page }) => {
+  test.setTimeout(120_000);
+  const fixture = await startKernelFixture();
+  try {
+    await page.route('**/api', async (route) => {
+      let method = '';
+      try {
+        method = (route.request().postDataJSON() as { method?: string }).method ?? '';
+      } catch {
+        // 非 JSON 请求原样放行。
+      }
+      if (method !== 'monitor-snapshot') {
+        await route.continue();
+        return;
+      }
+      const response = await route.fetch();
+      const body = (await response.json()) as {
+        anomalies?: { kind: string; taskId?: string; detail: string }[];
+      };
+      body.anomalies = [
+        { kind: 'request-longest', detail: '本次 1200ms，此前最长 500ms' },
+        { kind: 'same-command', detail: '连跑 2 次，结果一样：cargo test -q' },
+      ];
+      await route.fulfill({ response, json: body });
+    });
+    await page.goto(urlOf(fixture, '#monitor?tab=live'));
+    await expect(page.locator('[data-page="monitor"]')).toBeVisible({ timeout: 30_000 });
+    const facts = page.locator('[data-kind="monitor-fact"]');
+    await expect(facts).toHaveCount(2, { timeout: 20_000 });
+    await expect(facts.nth(0)).toContainText('本次 1200ms，此前最长 500ms');
+    await expect(facts.nth(1)).toContainText('连跑 2 次，结果一样：cargo test -q');
+  } finally {
+    await fixture.close();
+  }
+});

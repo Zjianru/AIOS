@@ -139,12 +139,39 @@ pub fn first_token_ms(event: &session::Event) -> Option<u64> {
     first.checked_sub(*request_at)
 }
 
+/// 一次已完成模型请求的时长：最后帧时间 - requestAt；没有 requestAt 或流就「没采到」。
+pub fn request_duration_ms(event: &session::Event) -> Option<u64> {
+    let (request_at, stream) = match &event.kind {
+        EventKind::AssistantMessage {
+            request_at, stream, ..
+        }
+        | EventKind::AssistantAttempt {
+            request_at, stream, ..
+        } => (request_at.as_ref()?, stream),
+        _ => return None,
+    };
+    let last = stream.iter().filter_map(stream_last_frame_time).max()?;
+    last.checked_sub(*request_at)
+}
+
 /// 这次请求的五块上下文估算；旧日志没采到。
 pub fn context_parts(event: &session::Event) -> Option<&session::ContextParts> {
     match &event.kind {
         EventKind::AssistantMessage { context_parts, .. }
         | EventKind::AssistantAttempt { context_parts, .. } => context_parts.as_ref(),
         _ => None,
+    }
+}
+
+fn stream_last_frame_time(record: &model::AssistantStreamRecord) -> Option<u64> {
+    match record {
+        model::AssistantStreamRecord::TextChunks { time0, dt, .. }
+        | model::AssistantStreamRecord::ReasoningChunks { time0, dt, .. }
+        | model::AssistantStreamRecord::ToolCallChunks { time0, dt, .. } => Some(
+            dt.iter()
+                .fold(*time0, |time, step| time.saturating_add(*step)),
+        ),
+        model::AssistantStreamRecord::Chunk { time, .. } => Some(*time),
     }
 }
 

@@ -218,6 +218,7 @@ impl Agg {
             .map(stage_name)
             .unwrap_or_else(|_| "pending".to_owned());
         let mut latest_events = Vec::new();
+        let mut task_events = Vec::new();
         for attempt in task.runs.iter().flat_map(|run| &run.attempts) {
             let Some(conversation) = &attempt.conversation else {
                 continue;
@@ -234,6 +235,7 @@ impl Agg {
                 .filter(|event| event.time >= start as u64)
                 .cloned()
                 .collect();
+            task_events.extend(filtered.iter().cloned());
             if !all.is_empty() {
                 latest_events = all;
             }
@@ -261,6 +263,14 @@ impl Agg {
             }
             rings.unpriced |= stats.unpriced;
             self.add_events(&filtered, Some(task.id.as_str()), &selection, tz, rings);
+        }
+        if let Some(anomaly) = longest_request_anomaly(
+            &task_events,
+            task.id.as_str(),
+            running.unwrap_or(false),
+            Utc::now().timestamp_millis().max(0) as u64,
+        ) {
+            self.anomalies.push(anomaly);
         }
         summary.tool_calls = latest_events
             .iter()
@@ -552,6 +562,66 @@ fn context_used(events: &[session::Event]) -> u64 {
         }
     }
     0
+}
+
+/// 本次请求 vs 同任务此前已完成请求最长；只写事实，不设阈值。
+fn longest_request_anomaly(
+    events: &[session::Event],
+    task_id: &str,
+    running: bool,
+    now_ms: u64,
+) -> Option<MonitorAnomaly> {
+    let mut timings: Vec<(u64, u64)> = events
+        .iter()
+        .filter_map(|event| {
+            stats::request_duration_ms(event).map(|duration| (event.time, duration))
+        })
+        .collect();
+    timings.sort_by_key(|(time, _)| *time);
+    // 日志在请求结束前没有 requestAt；在飞这一段从本步 step/start 起算，页面卡片也用它。
+    let in_flight = running
+        .then(|| open_step_start(events))
+        .flatten()
+        .map(|start| now_ms.saturating_sub(start));
+    let (current, in_flight) = match in_flight {
+        Some(duration) => (duration, true),
+        None => (*timings.last().map(|(_, duration)| duration)?, false),
+    };
+    let completed = if in_flight {
+        timings
+            .iter()
+            .map(|(_, duration)| *duration)
+            .collect::<Vec<_>>()
+    } else {
+        timings[..timings.len().saturating_sub(1)]
+            .iter()
+            .map(|(_, duration)| *duration)
+            .collect::<Vec<_>>()
+    };
+    let prior = completed.into_iter().max();
+    let suffix = if in_flight { "（在飞）" } else { "" };
+    let detail = match prior {
+        Some(prior) => format!("本次 {current}ms{suffix}，此前最长 {prior}ms"),
+        None => format!("本次 {current}ms{suffix}，此前没有可比的"),
+    };
+    Some(MonitorAnomaly {
+        kind: "request-longest".to_owned(),
+        task_id: Some(task_id.to_owned()),
+        detail,
+    })
+}
+
+/// 最后一个还没 step/end 的 step/start 时间。
+fn open_step_start(events: &[session::Event]) -> Option<u64> {
+    let mut open = None;
+    for event in events {
+        match &event.kind {
+            EventKind::StepStart { .. } => open = Some(event.time),
+            EventKind::StepEnd { .. } => open = None,
+            _ => {}
+        }
+    }
+    open
 }
 
 fn sum_usage(events: &[session::Event], pick: impl Fn(&Usage) -> Option<u64>) -> u64 {
@@ -1131,6 +1201,218 @@ mod t075_usage_tests {
         assert_eq!(entry.input_tokens, 8_540, "不能把最后一条 usage 再加一遍");
         assert_eq!(entry.requests, 2, "两次 assistant 请求");
         assert_eq!(entry.output_tokens, 200);
+    }
+
+    fn timed(seq: u64, time: u64, request_at: u64, last_frame: u64) -> session::Event {
+        let duration = last_frame - request_at;
+        session::Event::new(
+            seq,
+            time,
+            session::EventKind::AssistantMessage {
+                turn: 1,
+                step: 1,
+                message: Message::assistant(
+                    vec![model::ContentBlock::text("ok")],
+                    "deepseek",
+                    "deepseek-flash",
+                ),
+                stream: vec![model::AssistantStreamRecord::TextChunks {
+                    time0: request_at,
+                    index: 0,
+                    dt: vec![duration],
+                    texts: vec!["a".to_owned(), "b".to_owned()],
+                }],
+                usage: Some(usage(10, 5)),
+                interrupted: None,
+                effort: None,
+                effort_wanted: None,
+                request_at: Some(request_at),
+                context_parts: None,
+            },
+        )
+    }
+
+    fn task_with_events(
+        data: &std::path::Path,
+        cwd: &std::path::Path,
+        store: &Store,
+        events: Vec<session::EventKind>,
+    ) -> tasks::Task {
+        let now = 1_700_000_000_000_i64;
+        let task = store
+            .create_task(
+                tasks::NewTask {
+                    title: "异常事实任务".to_owned(),
+                    requirement: "跑".to_owned(),
+                    dod: "跑完".to_owned(),
+                    cwd: cwd.to_path_buf(),
+                    conversation: tasks::ConversationId::new("kind"),
+                    model: tasks::ModelChoice {
+                        connection: "deepseek".to_owned(),
+                        model: "deepseek-flash".to_owned(),
+                        effort_wanted: "high".to_owned(),
+                    },
+                    tools: Vec::new(),
+                },
+                now,
+            )
+            .unwrap();
+        let attempt = store.begin_attempt(&task.id, now).unwrap();
+        let mut session = session::SessionStore::create(data, cwd).unwrap();
+        session.append(&events).unwrap();
+        store
+            .attach_session(
+                &task.id,
+                attempt,
+                tasks::ConversationId::new(session.id().to_string()),
+            )
+            .unwrap();
+        task
+    }
+
+    #[test]
+    fn snapshot_wires_longest_request_anomaly() {
+        let (data, cwd, store) = super::tests::temp_store();
+        let now = chrono::Utc::now().timestamp_millis() as u64;
+        let mut first = timed(1, now - 10_000, now - 10_000, now - 9_000);
+        let mut second = timed(2, now - 5_000, now - 5_000, now - 3_000);
+        if let session::EventKind::AssistantMessage { turn, .. } = &mut first.kind {
+            *turn = 1;
+        }
+        if let session::EventKind::AssistantMessage { turn, .. } = &mut second.kind {
+            *turn = 2;
+        }
+        let task = task_with_events(
+            data.path(),
+            cwd.path(),
+            &store,
+            vec![
+                session::EventKind::TurnStart { turn: 1 },
+                first.kind,
+                session::EventKind::TurnStart { turn: 2 },
+                second.kind,
+            ],
+        );
+        let snapshot =
+            snapshot(&store, data.path(), MonitorRange::Today, "UTC", &[], 3, &[]).unwrap();
+        let anomaly = snapshot
+            .anomalies
+            .iter()
+            .find(|anomaly| anomaly.task_id.as_deref() == Some(task.id.as_str()))
+            .expect("snapshot 应带最长请求事实");
+        assert_eq!(anomaly.kind, "request-longest");
+        assert_eq!(anomaly.detail, "本次 2000ms，此前最长 1000ms");
+    }
+
+    #[test]
+    fn longest_request_compares_with_previous_max_and_handles_no_prior() {
+        let events = vec![
+            timed(1, 100, 1_000, 1_500),
+            timed(2, 200, 2_000, 2_900),
+            timed(3, 300, 3_000, 3_700),
+        ];
+        let anomaly = longest_request_anomaly(&events, "task-1", false, 0).unwrap();
+        assert_eq!(anomaly.kind, "request-longest");
+        assert_eq!(anomaly.detail, "本次 700ms，此前最长 900ms");
+        let single = longest_request_anomaly(&events[..1], "task-1", false, 0).unwrap();
+        assert_eq!(single.detail, "本次 500ms，此前没有可比的");
+        let missing = timed(4, 400, 3_000, 3_700);
+        let session::EventKind::AssistantMessage { .. } = missing.kind else {
+            unreachable!()
+        };
+        let mut missing = missing;
+        if let session::EventKind::AssistantMessage {
+            request_at, stream, ..
+        } = &mut missing.kind
+        {
+            *request_at = None;
+            stream.clear();
+        }
+        assert!(longest_request_anomaly(&[missing], "task-1", false, 0).is_none());
+    }
+
+    #[test]
+    fn in_flight_request_uses_open_step_start_until_now() {
+        let now = 3_000;
+        let completed = timed(1, 1_000, 1_000, 1_500);
+        let mut open =
+            session::Event::new(2, 1_800, session::EventKind::StepStart { turn: 2, step: 1 });
+        // 只保留 step/start，后面还没有 assistant/message（在飞）。
+        open.time = 1_800;
+        let anomaly = longest_request_anomaly(&[completed, open], "task-1", true, now).unwrap();
+        assert_eq!(anomaly.detail, "本次 1200ms（在飞），此前最长 500ms");
+        let no_prior = longest_request_anomaly(
+            &[session::Event::new(
+                1,
+                1_000,
+                session::EventKind::StepStart { turn: 1, step: 1 },
+            )],
+            "task-1",
+            true,
+            2_000,
+        )
+        .unwrap();
+        assert_eq!(no_prior.detail, "本次 1000ms（在飞），此前没有可比的");
+    }
+
+    #[test]
+    fn repeated_same_command_is_one_fact_and_other_bash_resets() {
+        let bash = |seq, call: &str, command: &str| {
+            session::Event::new(
+                seq,
+                10,
+                session::EventKind::ToolCall {
+                    turn: 1,
+                    step: 1,
+                    call_id: call.to_owned(),
+                    name: "bash".to_owned(),
+                    arguments: serde_json::json!({"command": command}).to_string(),
+                },
+            )
+        };
+        let result = |seq, call: &str, text: &str| {
+            session::Event::new(
+                seq,
+                20,
+                session::EventKind::ToolResult {
+                    turn: 1,
+                    step: 1,
+                    message: Message::tool_result(call, text, false),
+                    error: None,
+                    meta: None,
+                },
+            )
+        };
+        let read = |seq| {
+            session::Event::new(
+                seq,
+                15,
+                session::EventKind::ToolCall {
+                    turn: 1,
+                    step: 1,
+                    call_id: "read".to_owned(),
+                    name: "read".to_owned(),
+                    arguments: serde_json::json!({"path": "a"}).to_string(),
+                },
+            )
+        };
+        let events = vec![
+            bash(1, "c1", "cargo test -q"),
+            result(2, "c1", "ok"),
+            read(3),
+            bash(4, "c2", "cargo test -q"),
+            result(5, "c2", "ok"),
+            bash(6, "c3", "cargo test -q"),
+            result(7, "c3", "ok"),
+            bash(8, "c4", "cargo test -q"),
+            result(9, "c4", "different"),
+            bash(10, "c5", "ls"),
+            result(11, "c5", "ok"),
+        ];
+        let facts = crate::commands::repeated_commands(&events);
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].count, 3);
+        assert_eq!(facts[0].command, "cargo test -q");
     }
 
     #[test]
