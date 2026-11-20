@@ -19,7 +19,9 @@ use crate::{ServiceError, stats};
 struct Agg {
     connections: Vec<ConnectionInfo>,
     catalog: model::catalog::CatalogSnapshot,
-    rows: Vec<MonitorUsageRow>,
+    models: Vec<MonitorUsageRow>,
+    tools: Vec<MonitorUsageRow>,
+    commands: Vec<MonitorUsageRow>,
     tasks: Vec<MonitorTaskSummary>,
     anomalies: Vec<MonitorAnomaly>,
 }
@@ -48,7 +50,9 @@ pub(crate) fn snapshot(
     let mut agg = Agg {
         connections,
         catalog,
-        rows: Vec::new(),
+        models: Vec::new(),
+        tools: Vec::new(),
+        commands: Vec::new(),
         tasks: Vec::new(),
         anomalies: Vec::new(),
     };
@@ -104,7 +108,6 @@ pub(crate) fn snapshot(
             queue.push(task.clone());
         }
     }
-    let (models, tools, commands) = split_rows(agg.rows);
     // 做梦只进消耗合计/环：自己的会话不在任务库里，按 dream_run 的 usage_json 补。
     if let Ok(memory) = memory::MemoryStore::open(data_dir.join("memory.sqlite"))
         && let Ok(runs) = memory.dream_runs(10_000)
@@ -139,6 +142,9 @@ pub(crate) fn snapshot(
             rings.unpriced |= cost.is_none();
         }
     }
+    let models = std::mem::take(&mut agg.models);
+    let tools = std::mem::take(&mut agg.tools);
+    let commands = std::mem::take(&mut agg.commands);
     let mut anomalies = agg.anomalies;
     anomalies.sort_by(|a, b| a.kind.cmp(&b.kind));
     let anomalous = anomalies.len() as u64;
@@ -287,7 +293,7 @@ impl Agg {
                         _ => selection.model.clone(),
                     };
                     let cost = self.price(&model_name, usage);
-                    self.add_row("model", &model_name, 1, usage, cost);
+                    self.add_usage(&model_name, usage, cost);
                     rings.tokens = rings
                         .tokens
                         .saturating_add(usage.input_tokens.unwrap_or(0))
@@ -302,13 +308,13 @@ impl Agg {
                     }
                 }
                 EventKind::ToolCall { name, .. } => {
-                    self.add_counts("tool", name);
+                    add_count(&mut self.tools, name);
                 }
                 _ => {}
             }
         }
         for fact in crate::commands::command_facts(events) {
-            self.add_counts("command", &fact.program);
+            add_count(&mut self.commands, &fact.program);
         }
         for repeat in crate::commands::repeated_commands(events) {
             self.anomalies.push(MonitorAnomaly {
@@ -317,11 +323,7 @@ impl Agg {
                 detail: format!("连跑 {} 次，结果一样：{}", repeat.count, repeat.command),
             });
         }
-        rings.unpriced |= self.rows.iter().any(|row| row.unpriced);
-        let _ = self
-            .connections
-            .iter()
-            .find(|connection| connection.id == selection.connection);
+        rings.unpriced |= self.models.iter().any(|row| row.unpriced);
     }
 
     fn price(&self, model: &str, usage: &Usage) -> Option<f64> {
@@ -339,9 +341,9 @@ impl Agg {
         stats::usage_cost_usd(usage, &price)
     }
 
-    fn add_row(&mut self, kind: &str, key: &str, requests: u64, usage: &Usage, cost: Option<f64>) {
-        if let Some(row) = self.rows.iter_mut().find(|row| row.key == key) {
-            row.requests += requests;
+    fn add_usage(&mut self, key: &str, usage: &Usage, cost: Option<f64>) {
+        if let Some(row) = self.models.iter_mut().find(|row| row.key == key) {
+            row.requests += 1;
             row.input_tokens += usage.input_tokens.unwrap_or(0);
             row.output_tokens += usage.output_tokens.unwrap_or(0);
             row.cache_read_tokens += usage.cache_read_input_tokens.unwrap_or(0);
@@ -354,10 +356,10 @@ impl Agg {
             row.unpriced |= cost.is_none() && has_usage(usage);
             return;
         }
-        self.rows.push(MonitorUsageRow {
+        self.models.push(MonitorUsageRow {
             key: key.to_owned(),
             label: key.to_owned(),
-            requests,
+            requests: 1,
             input_tokens: usage.input_tokens.unwrap_or(0),
             output_tokens: usage.output_tokens.unwrap_or(0),
             cache_read_tokens: usage.cache_read_input_tokens.unwrap_or(0),
@@ -365,53 +367,25 @@ impl Agg {
             cost_usd: cost,
             unpriced: cost.is_none() && has_usage(usage),
         });
-        let _ = kind;
-    }
-
-    fn add_counts(&mut self, kind: &str, key: &str) {
-        if let Some(row) = self
-            .rows
-            .iter_mut()
-            .find(|row| row.key == key && row.requests > 0)
-        {
-            row.requests += 1;
-            return;
-        }
-        self.rows.push(MonitorUsageRow {
-            key: key.to_owned(),
-            label: key.to_owned(),
-            requests: 1,
-            input_tokens: 0,
-            output_tokens: 0,
-            cache_read_tokens: 0,
-            cache_write_tokens: 0,
-            cost_usd: None,
-            unpriced: false,
-        });
-        let _ = kind;
     }
 }
 
-fn split_rows(
-    rows: Vec<MonitorUsageRow>,
-) -> (
-    Vec<MonitorUsageRow>,
-    Vec<MonitorUsageRow>,
-    Vec<MonitorUsageRow>,
-) {
-    let mut models = Vec::new();
-    let mut tools = Vec::new();
-    let mut commands = Vec::new();
-    for row in rows {
-        if row.input_tokens > 0 || row.output_tokens > 0 {
-            models.push(row);
-        } else if row.key.starts_with('c') || row.key.contains("cargo") || row.key.contains("git") {
-            commands.push(row);
-        } else {
-            tools.push(row);
-        }
+fn add_count(rows: &mut Vec<MonitorUsageRow>, key: &str) {
+    if let Some(row) = rows.iter_mut().find(|row| row.key == key) {
+        row.requests += 1;
+        return;
     }
-    (models, tools, commands)
+    rows.push(MonitorUsageRow {
+        key: key.to_owned(),
+        label: key.to_owned(),
+        requests: 1,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        cost_usd: None,
+        unpriced: false,
+    });
 }
 
 /// 监控诊断：一个任务/Attempt 的 attempts、五块、todo、事件；Kind 没有任务，查不到就是找错对象。
@@ -742,5 +716,128 @@ mod tests {
         assert_eq!(snapshot.tasks.len(), 200);
         assert!(snapshot.rings.tokens >= 200 * 20 * 1_100);
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+}
+
+#[cfg(test)]
+mod bucket_tests {
+    use super::*;
+    use model::Message;
+
+    fn call(call_id: &str, name: &str, arguments: serde_json::Value) -> session::Event {
+        session::Event::new(
+            1,
+            10,
+            EventKind::ToolCall {
+                turn: 1,
+                step: 1,
+                call_id: call_id.to_owned(),
+                name: name.to_owned(),
+                arguments: arguments.to_string(),
+            },
+        )
+    }
+
+    fn result(call_id: &str, text: &str) -> session::Event {
+        session::Event::new(
+            2,
+            20,
+            EventKind::ToolResult {
+                turn: 1,
+                step: 1,
+                message: Message::tool_result(call_id, text, false),
+                error: None,
+                meta: None,
+            },
+        )
+    }
+
+    #[test]
+    fn ls_and_calendar_do_not_cross_tool_and_command_buckets() {
+        let mut agg = Agg {
+            connections: Vec::new(),
+            catalog: model::catalog::snapshot(),
+            models: Vec::new(),
+            tools: Vec::new(),
+            commands: Vec::new(),
+            tasks: Vec::new(),
+            anomalies: Vec::new(),
+        };
+        let events = vec![
+            call("t1", "ls", serde_json::json!({})),
+            result("t1", "a.txt"),
+            call("t2", "calendar", serde_json::json!({})),
+            result("t2", "周一"),
+            call("b1", "bash", serde_json::json!({"command": "ls -la"})),
+            result("b1", "a.txt"),
+            call(
+                "b2",
+                "bash",
+                serde_json::json!({"command": "calendar --today"}),
+            ),
+            result("b2", "周一"),
+        ];
+        let selection = session::ModelSelection {
+            connection: "deepseek".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            effort_wanted: "high".to_owned(),
+        };
+        agg.add_events(
+            &events,
+            Some("task-1"),
+            &selection,
+            &mut MonitorRings::default(),
+        );
+        let tool_keys: Vec<&str> = agg.tools.iter().map(|row| row.key.as_str()).collect();
+        let command_keys: Vec<&str> = agg.commands.iter().map(|row| row.key.as_str()).collect();
+        assert!(
+            tool_keys.contains(&"ls"),
+            "ls 工具应进 tools：{tool_keys:?}"
+        );
+        assert!(
+            tool_keys.contains(&"calendar"),
+            "calendar 工具应进 tools：{tool_keys:?}"
+        );
+        assert!(
+            command_keys.contains(&"ls"),
+            "ls 命令应进 commands：{command_keys:?}"
+        );
+        assert!(
+            command_keys.contains(&"calendar"),
+            "calendar 命令应进 commands：{command_keys:?}"
+        );
+        assert!(agg.models.is_empty(), "没有模型用量就不该有 models 行");
+        assert_eq!(
+            agg.tools
+                .iter()
+                .find(|row| row.key == "ls")
+                .unwrap()
+                .requests,
+            1
+        );
+        assert_eq!(
+            agg.tools
+                .iter()
+                .find(|row| row.key == "calendar")
+                .unwrap()
+                .requests,
+            1
+        );
+        assert_eq!(
+            agg.commands
+                .iter()
+                .find(|row| row.key == "ls")
+                .unwrap()
+                .requests,
+            1
+        );
+        assert_eq!(
+            agg.commands
+                .iter()
+                .find(|row| row.key == "calendar")
+                .unwrap()
+                .requests,
+            1
+        );
     }
 }
