@@ -82,6 +82,7 @@ pub(crate) trait LoopAccess: Send + Sync {
     fn tools(&self) -> &ToolSet;
     fn tool_session(&self) -> &Arc<ToolSessionState>;
     fn model(&self) -> &DeepSeek;
+    fn conversation_id(&self) -> &session::SessionId;
     fn cwd(&self) -> &Path;
     fn data_dir(&self) -> &Path;
     /// 宿主现在已存的工具凭证；每步求值一次（产品装配提供，读不出来按没存）。
@@ -117,6 +118,14 @@ pub(crate) trait LoopAccess: Send + Sync {
     fn is_running(&self) -> bool;
     /// 最近一轮的 turn 号（手动压缩写进 compaction/* 事件）。
     fn last_turn(&self) -> u64;
+    /// 压缩模板：默认 ThinAgent 编码模板。
+    fn compaction_profile(&self) -> crate::CompactionProfile {
+        crate::CompactionProfile::Thin
+    }
+    /// 压缩时要重铺的固定块；默认没有。
+    fn compaction_fixed_blocks(&self) -> Vec<crate::CompactionFixedBlock> {
+        Vec::new()
+    }
     /// 压缩前记一笔的钩子；默认没有。
     fn pre_compaction(&self) -> Option<&crate::PreCompactionHook> {
         None
@@ -189,6 +198,7 @@ pub(crate) enum HookEvent<'a> {
     TurnStopping {
         turn: u64,
         host: &'a dyn LoopAccess,
+        reason: &'a session::TurnEndReason,
     },
 }
 
@@ -359,6 +369,7 @@ pub(crate) struct CapabilityStates {
     pub spill_max_inline_tokens: usize,
     pub memory_identity: Arc<tokio::sync::Mutex<Option<String>>>,
     pub memory_context: Option<crate::MemoryContextProvider>,
+    pub memory_delivery: Option<crate::MemoryDeliveryHook>,
 }
 /// 固定顺序的功能注册表；顺序=strategy §2 功能表的拆票顺序（compaction→…→jobs）。
 /// per-Agent 构造：ZST 能力每 Agent Box 一份，ask 能力持有该 Agent 的 AskState。
@@ -379,6 +390,7 @@ impl CapabilityRegistry {
                 Box::new(crate::memory_capability::MemoryCapability::new((
                     states.memory_identity,
                     states.memory_context,
+                    states.memory_delivery,
                 ))),
                 Box::new(SkillCapability::new((
                     states.skill_catalog,
@@ -560,6 +572,9 @@ mod dispatch_contract_tests {
     struct NoopHost;
 
     impl LoopAccess for NoopHost {
+        fn conversation_id(&self) -> &session::SessionId {
+            unimplemented!()
+        }
         fn session(&self) -> &Mutex<SessionStore> {
             unimplemented!()
         }

@@ -802,6 +802,52 @@ impl MemoryStore {
         Ok(updated)
     }
 
+    /// 记一条送达/使用日志；调用方只在 TurnEnd succeeded 时记 sent。
+    pub fn record_delivery(
+        &self,
+        ids: &[String],
+        conversation_id: &str,
+        turn: u64,
+        kind: &str,
+    ) -> Result<(), MemoryError> {
+        let at = (self.clock)();
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for id in ids {
+            tx.execute(
+                "INSERT OR IGNORE INTO memory_delivery (memory_id, conversation_id, turn, kind, at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    id,
+                    conversation_id,
+                    i64::try_from(turn).unwrap_or(0),
+                    kind,
+                    at
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// 一条记忆的送达/使用日志（测试/页面读）。
+    pub fn deliveries(&self, id: &str) -> Result<Vec<(String, u64, String, i64)>, MemoryError> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT conversation_id, turn, kind, at FROM memory_delivery WHERE memory_id = ?1 ORDER BY at",
+        )?;
+        let rows = stmt.query_map(params![id], |row| {
+            Ok((
+                row.get(0)?,
+                row.get::<_, i64>(1)? as u64,
+                row.get(2)?,
+                row.get(3)?,
+            ))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(MemoryError::Sqlite)
+    }
+
     /// 存一张待决的「关于你」草稿卡；edits 已由服务核过原话/旧条。
     pub fn draft_about(
         &self,
@@ -2094,12 +2140,265 @@ fn pin_item(tx: &rusqlite::Transaction<'_>, id: &str, now: i64) -> Result<Memory
     )
 }
 
+fn dream_validation_error(code: &'static str, index: usize, detail: String) -> MemoryError {
+    MemoryError::DreamValidation(crate::error::DreamValidationError {
+        code,
+        message: format!("第 {} 处：{detail}", index + 1),
+    })
+}
+
+type DreamTargetRow = (String, String, i64, String, String, String, Option<String>);
+
+fn normalized_title(value: &str) -> String {
+    value.trim().to_lowercase()
+}
+
+fn normalized_content(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn validate_dream_changes(
+    tx: &rusqlite::Transaction<'_>,
+    changes: &[DreamChangeInput],
+) -> Result<(), MemoryError> {
+    use std::collections::HashSet;
+    let mut seen_ids: HashSet<String> = HashSet::new();
+    let mut seen_new_titles: HashSet<String> = HashSet::new();
+    for (index, change) in changes.iter().enumerate() {
+        if change.reason.trim().is_empty() {
+            return Err(dream_validation_error(
+                "missing_reason",
+                index,
+                "每处改动都要写一句 reason".to_owned(),
+            ));
+        }
+        if change.title.trim().is_empty() && !matches!(change.action, DreamAction::Retire) {
+            return Err(dream_validation_error(
+                "invalid_op",
+                index,
+                "除 retire 外 title 不能为空".to_owned(),
+            ));
+        }
+        let Some(memory_id) = change.memory_id.as_deref() else {
+            if !matches!(change.action, DreamAction::NewNote) {
+                return Err(dream_validation_error(
+                    "invalid_op",
+                    index,
+                    "没有 memory_id 的改动只能是 new_note".to_owned(),
+                ));
+            }
+            // 用户删过/撤销过的内容，不换个新笔记写回来（去空白、忽略大小写）。
+            let wanted = normalized_content(&format!("{}{}", change.title, change.body));
+            let mut removed = tx.prepare(
+                "SELECT title, body, status, invalid_reason FROM memory WHERE layer = 'note'",
+            )?;
+            let rows = removed.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            })?;
+            for row in rows {
+                let (old_title, old_body, status, invalid_reason) = row?;
+                let gone = status != "active" || invalid_reason.as_deref() == Some("deleted");
+                if gone && normalized_content(&format!("{old_title}{old_body}")) == wanted {
+                    return Err(dream_validation_error(
+                        "user_removed",
+                        index,
+                        "这段内容用户删过，不写回".to_owned(),
+                    ));
+                }
+            }
+            let title = normalized_title(&change.title);
+            if title.is_empty() {
+                return Err(dream_validation_error(
+                    "title_collision",
+                    index,
+                    "新笔记标题不能为空".to_owned(),
+                ));
+            }
+            if seen_new_titles.contains(&title) {
+                return Err(dream_validation_error(
+                    "duplicate_change",
+                    index,
+                    "同一轮里新笔记标题重复".to_owned(),
+                ));
+            }
+            seen_new_titles.insert(title.clone());
+            let collision: Option<String> = tx
+                .query_row(
+                    "SELECT id FROM memory WHERE layer = 'note' AND status = 'active' AND lower(trim(title)) = ?1 LIMIT 1",
+                    params![title],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if collision.is_some() {
+                return Err(dream_validation_error(
+                    "title_collision",
+                    index,
+                    format!("已有同名笔记「{}」", change.title.trim()),
+                ));
+            }
+            continue;
+        };
+        if matches!(change.action, DreamAction::NewNote) {
+            return Err(dream_validation_error(
+                "invalid_op",
+                index,
+                "new_note 不能带 memory_id".to_owned(),
+            ));
+        }
+        if !seen_ids.insert(memory_id.to_owned()) {
+            return Err(dream_validation_error(
+                "duplicate_change",
+                index,
+                format!("同一轮里 {memory_id} 改了不止一次"),
+            ));
+        }
+        let row: Option<DreamTargetRow> = tx
+            .query_row(
+                "SELECT layer, status, current_revision, title, summary, body, invalid_reason FROM memory WHERE id = ?1",
+                params![memory_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((layer, status, revision, title, summary, body, invalid_reason)) = row else {
+            return Err(dream_validation_error(
+                "target_missing",
+                index,
+                format!("没有 {memory_id} 这条笔记"),
+            ));
+        };
+        if status == "quarantine" || invalid_reason.as_deref() == Some("deleted") {
+            return Err(dream_validation_error(
+                "user_removed",
+                index,
+                "用户删过/撤销过的内容不写回".to_owned(),
+            ));
+        }
+        if status != "active" {
+            return Err(dream_validation_error(
+                "target_missing",
+                index,
+                format!("{memory_id} 不是 active"),
+            ));
+        }
+        if layer != "note" {
+            // 让原有 dream_apply 的 Refused 继续负责这条边界。
+            continue;
+        }
+        let latest: Option<(String, String)> = tx
+            .query_row(
+                "SELECT actor, reason FROM memory_revision WHERE memory_id = ?1 ORDER BY revision DESC LIMIT 1",
+                params![memory_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        if let Some((actor, reason)) = latest
+            && actor == "user"
+            && reason != "dream_undo"
+        {
+            return Err(dream_validation_error(
+                "user_edited",
+                index,
+                "用户改过的笔记，做梦不覆盖".to_owned(),
+            ));
+        }
+        if let Some(expected) = change.before_revision
+            && expected != u64::try_from(revision).unwrap_or(0)
+        {
+            return Err(dream_validation_error(
+                "revision_mismatch",
+                index,
+                format!("before_revision={expected}，库里是 {revision}"),
+            ));
+        }
+        let untouched = change.title == title
+            && change.summary == summary
+            && change.body == body
+            && !matches!(change.action, DreamAction::Retire);
+        if untouched {
+            return Err(dream_validation_error(
+                "unchanged",
+                index,
+                "内容逐字节没变".to_owned(),
+            ));
+        }
+        let next_title = normalized_title(&change.title);
+        if !matches!(change.action, DreamAction::Retire) && !next_title.is_empty() {
+            let collision: Option<String> = tx
+                .query_row(
+                    "SELECT id FROM memory WHERE layer = 'note' AND status = 'active' AND id != ?1 AND lower(trim(title)) = ?2 LIMIT 1",
+                    params![memory_id, next_title],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(other) = collision {
+                return Err(dream_validation_error(
+                    "title_collision",
+                    index,
+                    format!("和已有笔记 {other} 重名"),
+                ));
+            }
+        }
+        let source_count: i64 = tx.query_row(
+            "SELECT count(*) FROM memory_source WHERE memory_id = ?1",
+            params![memory_id],
+            |row| row.get(0),
+        )?;
+        if matches!(change.action, DreamAction::Retire)
+            && source_count > 0
+            && change.dropped_sources.is_empty()
+        {
+            return Err(dream_validation_error(
+                "dropped_source",
+                index,
+                "retire 会丢出处，要在 dropped_sources 里列出并写 reason".to_owned(),
+            ));
+        }
+        for ref_name in &change.dropped_sources {
+            let exists: Option<i64> = tx
+                .query_row(
+                    "SELECT 1 FROM memory_source WHERE memory_id = ?1 AND source_ref = ?2 LIMIT 1",
+                    params![memory_id, ref_name],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if exists.is_none() {
+                return Err(dream_validation_error(
+                    "dropped_source",
+                    index,
+                    format!("{memory_id} 没有出处 {ref_name}"),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn dream_apply(
     tx: &rusqlite::Transaction<'_>,
     run: &crate::types::DreamRunInput,
     changes: &[DreamChangeInput],
     now: i64,
 ) -> Result<WriteOutcome, MemoryError> {
+    validate_dream_changes(tx, changes)?;
     tx.execute(
         "INSERT OR REPLACE INTO dream_run (id, started_at, ended_at, outcome, model, usage_json, report_json, error) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, '')",
         params![run.id, run.started_at, run.ended_at, run.outcome, run.model, run.usage_json, run.report_json],
@@ -2152,6 +2451,12 @@ fn dream_apply(
             "INSERT INTO memory_revision (memory_id, revision, title, summary, body, source_kind, source_ref, reason, dream_run_id, actor, created_at, valid_from) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'dream', ?10, ?10)",
             params![memory_id, after as i64, title, summary, body, item.source_kind, item.source_ref, change.reason, run.id, now],
         )?;
+        for ref_name in &change.dropped_sources {
+            tx.execute(
+                "DELETE FROM memory_source WHERE memory_id = ?1 AND source_ref = ?2",
+                params![memory_id, ref_name],
+            )?;
+        }
         fts_put(tx, &memory_id, item.layer, title, body)?;
         tx.execute(
             "INSERT OR REPLACE INTO dream_change (run_id, memory_id, before_revision, after_revision, action, reason) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",

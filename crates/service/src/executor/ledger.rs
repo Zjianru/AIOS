@@ -3,6 +3,51 @@
 use super::*;
 
 impl TaskRuntime {
+    /// 一次 Attempt 的任务书 JSON；launch 和压缩固定块共用同一段构造。
+    pub(crate) fn assignment_value(
+        &self,
+        task: &Task,
+        include_empty_ledger: bool,
+    ) -> serde_json::Value {
+        let ledger = self.ledger_section(task);
+        let mut assignment = serde_json::json!({
+            "task_id": task.id.as_str(),
+            "title": task.title,
+            "requirement": task.requirement,
+            "dod": task.dod,
+            "cwd": task.effective_cwd().to_string_lossy(),
+        });
+        if let Some(scope) = task.effective_write_scope() {
+            assignment["write_scope"] = serde_json::json!(scope.to_string_lossy());
+        }
+        let upstream = self.upstream_results_for(task);
+        if !upstream.is_empty() {
+            assignment["upstream_results"] = serde_json::json!(upstream);
+        }
+        if !ledger.is_empty() || include_empty_ledger {
+            assignment["ledger"] = serde_json::json!(ledger);
+        }
+        assignment
+    }
+
+    /// 压缩替换里重带的任务书+账本原文；只有当前 Attempt 有效。
+    pub(crate) fn compaction_task_block(
+        &self,
+        task_id: &TaskId,
+        attempt_id: AttemptId,
+    ) -> Option<agent::CompactionFixedBlock> {
+        let task = self.store.task(task_id).ok()??;
+        if task.latest_attempt().map(|attempt| attempt.id) != Some(attempt_id) {
+            return None;
+        }
+        let assignment = self.assignment_value(&task, true);
+        Some(agent::CompactionFixedBlock {
+            kind: "task".to_owned(),
+            identity: format!("{}:{}:{}", task.id, attempt_id, task.requirement_version()),
+            text: format!("以下是程序重带的任务书与账本原文，不是新任务：\n{assignment}"),
+        })
+    }
+
     /// ：给这一次 Attempt 的账本段；空账本为空串。读库失败只记日志、不挡开工。
     pub(crate) fn ledger_section(&self, task: &Task) -> String {
         match crate::ledger::ledger_for(&self.store, task) {
@@ -11,84 +56,6 @@ impl TaskRuntime {
                 eprintln!("任务 {} 的账本读不出来：{error}", task.id);
                 String::new()
             }
-        }
-    }
-
-    /// ：压缩成功要 Steer 的消息和 request id；空账本返回 None。
-    pub(crate) fn ledger_after_compaction_payload(
-        &self,
-        task: &Task,
-        compaction_id: &str,
-    ) -> Option<(String, UserMessage)> {
-        let ledger = self.ledger_section(task);
-        if ledger.is_empty() {
-            return None;
-        }
-        Some((
-            format!("ledger-after-compaction:{compaction_id}"),
-            UserMessage::text(format!("账本（压缩后重带）\n{ledger}")),
-        ))
-    }
-
-    /// 的发送接缝：空账本不调用 send；发送结果原样交给调用方（生产侧只记日志）。
-    pub(crate) async fn steer_ledger_with<F>(
-        &self,
-        task: &Task,
-        compaction_id: &str,
-        send: F,
-    ) -> Result<bool, String>
-    where
-        F: FnOnce(
-            String,
-            UserMessage,
-        ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<(), String>> + Send>,
-        >,
-    {
-        let Some((request_id, message)) = self.ledger_after_compaction_payload(task, compaction_id)
-        else {
-            return Ok(false);
-        };
-        send(request_id, message).await.map(|()| true)
-    }
-
-    /// ：压缩成功后把当前账本 Steer 回会话；空账本不发，失败只记日志。
-    pub(crate) async fn steer_ledger_after_compaction(
-        &self,
-        task_id: TaskId,
-        attempt_id: AttemptId,
-        conversation: SessionId,
-        compaction_id: String,
-    ) {
-        let Ok(Some(task)) = self.store.task(&task_id) else {
-            return;
-        };
-        if task.latest_attempt().map(|attempt| attempt.id) != Some(attempt_id) {
-            return;
-        }
-        let host = self
-            .running
-            .lock()
-            .expect("thinagent 表锁被毒化")
-            .get(conversation.as_str())
-            .map(|running| Arc::clone(&running.host));
-        let Some(host) = host else {
-            return;
-        };
-        let task_id = task.id.clone();
-        if let Err(error) = self
-            .steer_ledger_with(&task, &compaction_id, move |request_id, message| {
-                let host = Arc::clone(&host);
-                Box::pin(async move {
-                    host.send_message(&request_id, message, DeliveryMode::Steer)
-                        .await
-                        .map(|_| ())
-                        .map_err(|error| error.to_string())
-                })
-            })
-            .await
-        {
-            eprintln!("压缩后账本没送回任务 {task_id}：{error}");
         }
     }
 

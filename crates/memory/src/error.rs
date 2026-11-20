@@ -1,5 +1,18 @@
 use std::path::PathBuf;
 
+/// 做梦改动校验的问题：code 是给模型重写的一句话分类。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DreamValidationError {
+    pub code: &'static str,
+    pub message: String,
+}
+
+impl std::fmt::Display for DreamValidationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}: {}", self.code, self.message)
+    }
+}
+
 /// 记忆库的错误；库内部只暴露「打不开、版本不对、被拒、没有这条」这几类。
 #[derive(Debug, thiserror::Error)]
 pub enum MemoryError {
@@ -21,6 +34,8 @@ pub enum MemoryError {
     NotFound(String),
     #[error("记忆库设置在 {0} 上写失败")]
     Path(PathBuf),
+    #[error("做梦改动没过校验：{0}")]
+    DreamValidation(DreamValidationError),
 }
 
 /// 带关系写入的错误：普通库错误、需要模型先判关系、或者 binding 矛盾要出卡。

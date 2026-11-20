@@ -67,6 +67,8 @@ pub(crate) const SUMMARY_OPEN_TAG: &str = "<compacted-summary>";
 pub(crate) const SUMMARY_CLOSE_TAG: &str = "</compacted-summary>";
 
 /// DSH compaction-basic 的摘要指令（原样照抄；作为追加在回放历史后的最后一条 user 消息）。
+const KIND_COMPACTION_INSTRUCTION: &str = "You are now acting as a compaction engine for AIOS Kind, the coordinator agent. Condense the conversation ABOVE into a structured checkpoint that lets another model resume the work with no loss of essential context.\n\nKeep exactly these seven sections, in order, terse bullets, write \"(none)\" when empty:\n\n## 在办的事和对谁的承诺\n- [what is in progress and who was promised what]\n\n## 在等什么、等谁\n- [waiting on what/who]\n\n## 任务 id 和状态\n- [task id: state]\n\n## 最近用户原话\n- [messageId: verbatim user words that matter]\n\n## 已定下的约定\n- [settled conventions/decisions]\n\n## 产出文件\n- [id/path only; do not paste file bodies]\n\n## 下一步\n- [single next action]\n\nRules: drop finished process and raw tool output; when something can be read again by id or path, keep only its id/path; never invent facts or ids; do not mention that this is a summarization request; output only the checkpoint.";
+
 const COMPACTION_INSTRUCTION: &str = "You are now acting as a compaction engine for this AI coding assistant. Condense the conversation ABOVE into a structured checkpoint that lets another model resume the work with no loss of essential context.\n\nOutput EXACTLY the Markdown structure below: keep every section, in order. Use terse bullets, not prose paragraphs. Write \"(none)\" for an empty section — never drop a section.\n\n## Primary Request and Intent\n- [the user's original and evolving goals; quote verbatim where the exact wording matters]\n\n## Key Technical Concepts\n- [technologies, frameworks, patterns, and conventions in play]\n\n## Files and Code\n- [exact path: why it matters, key changes or snippets]\n\n## Errors and Fixes\n- [error: how it was resolved, plus any related user feedback]\n\n## Pending Jobs\n- [explicitly requested work not yet completed]\n\n## Current Work\n- [precisely what was in progress at this checkpoint]\n\n## Next Step\n- [the single next action, directly in line with the most recent request, or \"(none)\"]\n\n## Critical Context\n- [decisions and their rationale, constraints, user preferences, open questions, data needed to continue]\n\nRules:\n- Write concise English engineering prose. Preserve exact file paths, commands, error strings, identifiers, numeric values, function signatures, and syntax fragments.\n- Capture user feedback and explicit instructions faithfully, especially corrections.\n- Do NOT mention this summarization request or that the context was compacted.\n- Output only the checkpoint text: do not call any tool or take any other action.\n- If the conversation already contains a <compacted-summary> block, it is a PRIOR checkpoint. Do not copy it forward verbatim: preserve still-true facts, drop stale ones, and merge newer information into a single consolidated summary under the same structure.";
 
 /// 一次请求的压缩预算（阈值与保留比例照 DSH 公式）。
@@ -348,6 +350,7 @@ async fn compact_once(
     let shadowed_seqs: Vec<u64> = derived[1..split].iter().map(|(seq, _)| *seq).collect();
     let prefix: Vec<Message> = selected[..split].to_vec();
     let shadowed_token_count = estimate_messages(&prefix);
+    let fixed_blocks = host.compaction_fixed_blocks();
 
     // id 带进程/纳秒成分：续接或新进程都不会和旧 id 撞车。
     let nanos = std::time::SystemTime::now()
@@ -380,7 +383,18 @@ async fn compact_once(
         .map_err(|error| manual_error(trigger, ManualCompactionErrorCode::Persistence, error))?;
     let start_seq = start_seqs[0];
 
-    let summary = match summarize(host, &prefix, policy.summary_max_tokens).await {
+    let summary = match summarize(
+        host,
+        &prefix,
+        policy.summary_max_tokens,
+        if host.compaction_profile() == crate::CompactionProfile::Kind {
+            KIND_COMPACTION_INSTRUCTION
+        } else {
+            COMPACTION_INSTRUCTION
+        },
+    )
+    .await
+    {
         Ok(summary) => summary,
         Err(error) => {
             let message = error.to_string();
@@ -484,6 +498,8 @@ async fn compact_once(
         &compaction_id,
         source_command_id.as_deref(),
         &summary_blocks,
+        &fixed_blocks,
+        host.compaction_profile(),
     );
     let mut source_event_seqs = vec![start_seq, summary_seq];
     source_event_seqs.extend(shadowed_seqs.iter().copied());
@@ -530,12 +546,25 @@ fn checkpoint_message(
     compaction_id: &str,
     source_command_id: Option<&str>,
     summary: &[ContentBlock],
+    fixed_blocks: &[crate::CompactionFixedBlock],
+    profile: crate::CompactionProfile,
 ) -> Message {
-    let mut content = vec![ContentBlock::text(format!(
-        "{COMPACTION_PREAMBLE}\n\n{SUMMARY_OPEN_TAG}"
-    ))];
+    let mut content = vec![ContentBlock::text(COMPACTION_PREAMBLE)];
+    if !fixed_blocks.is_empty() {
+        let mut text = String::from("以下是程序重带的固定块原文，不是新任务：");
+        for block in fixed_blocks {
+            text.push_str(&format!("\n\n[{}]\n{}", block.kind, block.text));
+        }
+        content.push(ContentBlock::text(text));
+    }
+    content.push(ContentBlock::text(SUMMARY_OPEN_TAG));
     content.extend(summary.iter().cloned());
     content.push(ContentBlock::text(SUMMARY_CLOSE_TAG));
+    if profile == crate::CompactionProfile::Kind {
+        content.push(ContentBlock::text(
+            "摘要里只有 id 的东西，用工具按 id 重新读，不要凭摘要还原。",
+        ));
+    }
     Message::with_source(
         MessageId::generate(),
         Role::User,
@@ -594,9 +623,10 @@ async fn summarize(
     host: &dyn LoopAccess,
     prefix: &[Message],
     max_tokens: u32,
+    instruction: &str,
 ) -> Result<SummaryOutcome, AgentError> {
     let mut input = prefix.to_vec();
-    input.push(Message::user_text(COMPACTION_INSTRUCTION));
+    input.push(Message::user_text(instruction));
     // 摘要请求与主请求用同一份工具表/投影：没开出的工具不能进摘要请求。
     let (tools, history) = {
         let store = host.session().lock().expect("agent 会话锁被毒化");
@@ -709,6 +739,83 @@ mod tests {
         );
     }
 
+    #[test]
+    fn checkpoint_puts_fixed_blocks_before_summary_and_hints_once_for_kind() {
+        let blocks = vec![
+            crate::CompactionFixedBlock {
+                kind: "instructions".to_owned(),
+                identity: "i1".to_owned(),
+                text: "工作区指令原文".to_owned(),
+            },
+            crate::CompactionFixedBlock {
+                kind: "task".to_owned(),
+                identity: "t1".to_owned(),
+                text: "任务书原文".to_owned(),
+            },
+        ];
+        let summary = vec![ContentBlock::text("摘要正文")];
+        let message = checkpoint_message(
+            "compaction-test",
+            None,
+            &summary,
+            &blocks,
+            crate::CompactionProfile::Kind,
+        );
+        let text = message
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let instruction_at = text.find("工作区指令原文").expect("指令在");
+        let task_at = text.find("任务书原文").expect("任务书在");
+        let summary_at = text.find("摘要正文").expect("摘要在");
+        assert!(instruction_at < summary_at, "指令在摘要前");
+        assert!(task_at < summary_at, "任务书在摘要前");
+        assert_eq!(
+            text.matches("摘要里只有 id 的东西").count(),
+            1,
+            "Kind id 提示只一次"
+        );
+        let thin = checkpoint_message(
+            "compaction-thin",
+            None,
+            &summary,
+            &blocks,
+            crate::CompactionProfile::Thin,
+        );
+        let thin_text = thin
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !thin_text.contains("摘要里只有 id 的东西"),
+            "ThinAgent 不收 id 提示"
+        );
+        for section in [
+            "在办的事和对谁的承诺",
+            "在等什么、等谁",
+            "任务 id 和状态",
+            "最近用户原话",
+            "已定下的约定",
+            "产出文件",
+            "下一步",
+        ] {
+            assert!(
+                KIND_COMPACTION_INSTRUCTION.contains(section),
+                "缺 {section}"
+            );
+        }
+    }
+
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::sync::{Arc, Mutex};
@@ -766,6 +873,9 @@ mod tests {
     }
 
     impl LoopAccess for RecordingHost {
+        fn conversation_id(&self) -> &session::SessionId {
+            unimplemented!()
+        }
         fn session(&self) -> &Mutex<session::SessionStore> {
             &self.store
         }

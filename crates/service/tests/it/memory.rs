@@ -786,6 +786,8 @@ async fn memory_actions_write_and_push_changed_version() {
                     summary: String::new(),
                     body: "整理出来的".to_owned(),
                     action: memory::types::DreamAction::NewNote,
+                    before_revision: None,
+                    dropped_sources: Vec::new(),
                     reason: "page".to_owned(),
                 }],
             },
@@ -982,6 +984,31 @@ async fn memory_replace_and_about_cards_resolve_through_protocol() {
         page_store(data.path()).view().unwrap().about_you.len(),
         before,
         "点两次不重复写"
+    );
+    root.shutdown().await;
+}
+
+#[tokio::test]
+async fn memory_delivery_is_recorded_after_a_successful_turn() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    seed_memory_page(data.path());
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(crate::common::SequenceResponder::new(vec![sse(
+            &crate::common::text_sse("好"),
+        )]))
+        .mount(&server)
+        .await;
+    let root = open_page_root(data.path(), cwd.path(), &server).await;
+    send_page_turn(&root, "delivery-turn", "记住：回答先给结论").await;
+    let store = page_store(data.path());
+    let about = store.view().unwrap().about_you[0].clone();
+    let deliveries = store.deliveries(&about.id).unwrap();
+    assert!(
+        deliveries.iter().any(|(_, _, kind, _)| kind == "sent"),
+        "TurnEnd succeeded 后要有 sent 送达账：{deliveries:?}"
     );
     root.shutdown().await;
 }
