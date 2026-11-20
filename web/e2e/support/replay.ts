@@ -37,12 +37,12 @@ export function startReplay(
  // 双会话（Kind + ThinAgent）按请求体各回各的脚本；路由文件里帧间隔逐条给。
   const routeFile =
     routesFile === undefined
-      ? (restartRouteFile(options) ??
+      ? (t030RouteFile(options) ??
+        restartRouteFile(options) ??
         t057RouteFile(options) ??
         t056RouteFile(options) ??
         t055RouteFile(options) ??
         t073RouteFile(options) ??
-        t030RouteFile(options) ??
         t013RouteFile(options) ??
         t052RouteFile(options) ??
         t053RouteFile(options) ??

@@ -112,9 +112,10 @@ test('在跑页的异常事实列表只显示服务端来的 detail', async ({ p
   }
 });
 
-test('监控 WS：开页后新任务收到 TaskEvent', async ({ page, browser }) => {
+test('监控 WS：开页后新任务 TaskEvent，双任务 seq 差大重连不漏不重', async ({ page, browser }) => {
   test.setTimeout(180_000);
-  const fixture = await startKernelFixture({ t030: 'write' });
+  // t029 的就绪夹具：一条 Kind 会话里 4 个 task_accept，甲乙跑长流；不新造夹具。
+  const fixture = await startKernelFixture({ t029Restart: 'main', t075TwoTasks: true });
   const frames: { taskId: string; seq: number }[] = [];
   page.on('websocket', (socket) => {
     socket.on('framereceived', (received) => {
@@ -136,9 +137,56 @@ test('监控 WS：开页后新任务收到 TaskEvent', async ({ page, browser })
     const kindPage = await browser.newPage();
     try {
       await kindPage.goto(urlOf(fixture, '#kind'));
-      await sendKind(kindPage, '把 hello.txt 的判重改成按 url');
-      await expect.poll(() => ids().length, { timeout: 60_000 }).toBeGreaterThanOrEqual(1);
-      expect(ids().length).toBeGreaterThanOrEqual(1);
+      await sendKind(kindPage, '帮我派四个任务');
+      await expect.poll(() => ids().length, { timeout: 60_000 }).toBeGreaterThanOrEqual(2);
+      const taskIds = ids().slice(0, 2);
+      expect(taskIds.length).toBe(2);
+      // 两任务都跑出若干事件再断线；甲乙长流让 seq 继续拉大。
+      await expect
+        .poll(() => taskIds.every((taskId) => frames.filter((frame) => frame.taskId === taskId).length >= 3), {
+          timeout: 60_000,
+        })
+        .toBe(true);
+      const before = frames.length;
+      await page.reload();
+      await expect(page.locator('[data-page="monitor"]')).toBeVisible({ timeout: 30_000 });
+      // 页面重载关掉旧 WS；新开一条真实 WS 从各任务 0 补，收集 3 秒。
+      const reconnected = await page.evaluate(async () => {
+        const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
+        const socket = new WebSocket(protocol + '://' + location.host + '/ws?monitor=1&lastSeq=0');
+        const got: { taskId: string; seq: number }[] = [];
+        await new Promise<void>((resolve) => {
+          const done = setTimeout(() => {
+            socket.close();
+            resolve();
+          }, 3000);
+          socket.onmessage = (message) => {
+            try {
+              const frame = JSON.parse(String(message.data)) as {
+                type?: string;
+                taskId?: string;
+                event?: { seq?: number };
+              };
+              if (frame.type === 'task-event' && frame.taskId && typeof frame.event?.seq === 'number') {
+                got.push({ taskId: frame.taskId, seq: frame.event.seq });
+              }
+            } catch {
+              // 非 JSON 帧不管。
+            }
+          };
+          void done;
+        });
+        return got;
+      });
+      for (const taskId of taskIds) {
+        const pre = frames.slice(0, before).filter((frame) => frame.taskId === taskId).map((frame) => frame.seq);
+        const after = reconnected.filter((frame) => frame.taskId === taskId).map((frame) => frame.seq);
+        expect(pre.length, taskId + ' 首连要有帧').toBeGreaterThan(0);
+        expect(after.length, taskId + ' 重连要补到').toBeGreaterThan(0);
+        expect(after[0], taskId + ' 从 0 补').toBe(1);
+        expect(new Set(after).size, taskId + ' 重连连接内重复').toBe(after.length);
+        for (const seq of pre) expect(after, taskId + ' 重连补齐首连 seq ' + seq).toContain(seq);
+      }
     } finally {
       await kindPage.close();
     }
