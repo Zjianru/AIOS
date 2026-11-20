@@ -42,6 +42,14 @@ pub enum Frame {
         #[serde(rename = "taskId")]
         task_id: String,
     },
+    /// 监控订阅里一个任务会话的 live 事件（带任务/Attempt 标签）。
+    TaskEvent {
+        #[serde(rename = "taskId")]
+        task_id: String,
+        #[serde(rename = "attemptId")]
+        attempt_id: u64,
+        event: ServiceEvent,
+    },
 }
 
 /// AgentEvent 的线上形状（只挑页面要的；只增不改）。
@@ -158,6 +166,9 @@ pub(crate) struct WsQuery {
     /// 只读任务对话：连这个任务当前 Attempt 的会话；省略时连根会话（旧页面行为不变）。
     #[serde(default)]
     task: Option<String>,
+    /// 监控订阅：monitor=1 时连所有在跑任务的事件；旧连接不变。
+    #[serde(default)]
+    monitor: Option<String>,
 }
 
 /// T011.4：事件流的连上/断开记录（reason 在 Drop 兜底写）。
@@ -219,7 +230,11 @@ pub(crate) async fn ws_handler(
     }
     let last_seq = query.last_seq.unwrap_or(0);
     let task = query.task;
-    upgrade.on_upgrade(move |socket| ws_session(socket, state, last_seq, task))
+    let monitor = query
+        .monitor
+        .as_deref()
+        .is_some_and(|value| value == "1" || value == "true");
+    upgrade.on_upgrade(move |socket| ws_session(socket, state, last_seq, task, monitor))
 }
 
 async fn send_value(socket: &mut WebSocket, value: &serde_json::Value) -> bool {
@@ -242,8 +257,13 @@ async fn ws_session(
     state: Arc<AppState>,
     last_seq: u64,
     task: Option<String>,
+    monitor: bool,
 ) {
     let _stream_ops = StreamOps::open(&state);
+    if monitor {
+        ws_monitor_session(&mut socket, &state, last_seq).await;
+        return;
+    }
     match task {
         Some(task_id) => ws_task_session(&mut socket, &state, &task_id, last_seq).await,
         None => ws_root_session(&mut socket, &state, last_seq).await,
@@ -256,6 +276,127 @@ async fn send_error(socket: &mut WebSocket, message: &str) -> bool {
         &serde_json::json!({"type": "error", "message": message}),
     )
     .await
+}
+
+/// 监控连接：ready 后补各在跑任务的 backlog，再转发 TaskEvent；掉帧发 task-changed 让页面重读。
+async fn ws_monitor_session(socket: &mut WebSocket, state: &AppState, last_seq: u64) {
+    let info = state.host.info();
+    if !send_frame(
+        socket,
+        &Frame::Ready {
+            session_id: info.session_id.clone(),
+            protocol_version: info.protocol_version,
+            root: info.root.clone(),
+            context: info.context,
+            host: info.host.clone(),
+        },
+    )
+    .await
+    {
+        return;
+    }
+    let Some(runtime) = state.host.task_runtime() else {
+        return;
+    };
+    let live = match runtime.monitor_live(last_seq).await {
+        Ok(live) => live,
+        Err(error) => {
+            let _ = send_error(socket, &error.to_string()).await;
+            return;
+        }
+    };
+    let known_tasks: Vec<String> = live.tasks.iter().map(|task| task.task_id.clone()).collect();
+    for task in &live.tasks {
+        for event in &task.follow.events {
+            if !send_frame(
+                socket,
+                &Frame::TaskEvent {
+                    task_id: task.task_id.clone(),
+                    attempt_id: task.attempt_id,
+                    event: event.clone(),
+                },
+            )
+            .await
+            {
+                return;
+            }
+        }
+    }
+    enum MonitorMsg {
+        Event {
+            task_id: String,
+            attempt_id: u64,
+            event: ServiceEvent,
+        },
+        Changed(String),
+    }
+    let (sender, mut receiver) = tokio::sync::mpsc::channel::<MonitorMsg>(256);
+    for mut task in live.tasks {
+        let sender = sender.clone();
+        tokio::spawn(async move {
+            loop {
+                match task.events.recv().await {
+                    Ok(event) => {
+                        if sender
+                            .send(MonitorMsg::Event {
+                                task_id: task.task_id.clone(),
+                                attempt_id: task.attempt_id,
+                                event,
+                            })
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        if sender
+                            .send(MonitorMsg::Changed(task.task_id.clone()))
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Closed) => return,
+                }
+            }
+        });
+    }
+    let mut changed = live.changed;
+    loop {
+        tokio::select! {
+            message = receiver.recv() => match message {
+                Some(MonitorMsg::Event { task_id, attempt_id, event }) => {
+                    if !send_frame(socket, &Frame::TaskEvent { task_id, attempt_id, event }).await { return; }
+                }
+                Some(MonitorMsg::Changed(task_id)) => {
+                    if !send_frame(socket, &Frame::TaskChanged { task_id }).await { return; }
+                }
+                None => return,
+            },
+            message = changed.recv() => match message {
+                Ok(task_id) => {
+                    if !send_frame(socket, &Frame::TaskChanged { task_id }).await { return; }
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    // 任务事实变化也掉了：让页面按已知任务重读快照。
+                    if known_tasks.is_empty() {
+                        if !send_frame(socket, &Frame::TaskChanged { task_id: String::new() }).await { return; }
+                    } else {
+                        for task_id in &known_tasks {
+                            if !send_frame(socket, &Frame::TaskChanged { task_id: task_id.clone() }).await { return; }
+                        }
+                    }
+                }
+                Err(broadcast::error::RecvError::Closed) => return,
+            },
+            incoming = socket.recv() => match incoming {
+                Some(Ok(message)) if !matches!(message, Message::Close(_)) => continue,
+                _ => return,
+            },
+        }
+    }
 }
 
 /// 任务对话的连接：同样是 ready → 补齐 → live；live 没接上时只补齐，不出 live 帧。

@@ -171,7 +171,10 @@ fn opening_sends_ready_before_events_in_order() {
         .iter()
         .filter_map(|frame| match frame {
             Frame::Event { event } => Some(event.seq),
-            Frame::Ready { .. } | Frame::Agent { .. } | Frame::TaskChanged { .. } => None,
+            Frame::Ready { .. }
+            | Frame::Agent { .. }
+            | Frame::TaskChanged { .. }
+            | Frame::TaskEvent { .. } => None,
         })
         .collect();
     assert_eq!(seqs, vec![3, 4], "事件按 seq 顺序、ready 之后");
@@ -220,7 +223,10 @@ fn reconnect_follows_from_last_seq_without_duplicates() {
         .iter()
         .filter_map(|frame| match frame {
             Frame::Event { event } => Some(event.seq),
-            Frame::Ready { .. } | Frame::Agent { .. } | Frame::TaskChanged { .. } => None,
+            Frame::Ready { .. }
+            | Frame::Agent { .. }
+            | Frame::TaskChanged { .. }
+            | Frame::TaskEvent { .. } => None,
         })
         .collect();
     assert_eq!(seqs, vec![5, 6], "重连补齐从 lastSeq 之后开始、不重复");
@@ -277,4 +283,18 @@ fn cross_port_origin_is_rejected() {
 fn missing_origin_and_fetch_metadata_is_allowed() {
     let headers = headers("127.0.0.1:1417");
     assert!(web::check_origin(&headers).is_ok());
+}
+
+#[test]
+fn task_event_frame_carries_task_attempt_and_event() {
+    let frame = Frame::TaskEvent {
+        task_id: "task-1".to_owned(),
+        attempt_id: 2,
+        event: event(7, "assistant/message"),
+    };
+    let json = serde_json::to_value(&frame).unwrap();
+    assert_eq!(json["type"], "task-event");
+    assert_eq!(json["taskId"], "task-1");
+    assert_eq!(json["attemptId"], 2);
+    assert_eq!(json["event"]["seq"], 7);
 }

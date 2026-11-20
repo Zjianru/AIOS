@@ -1198,3 +1198,35 @@ async fn write_task_thin_agent_skills_have_no_investigator() {
     );
     assert!(first.contains("task_report"), "写任务仍有 task_report");
 }
+
+#[tokio::test]
+async fn monitor_snapshot_round_trips_through_the_root_host() {
+    let fixture = Fixture::new().await;
+    let response = fixture
+        .host
+        .dispatch(service::Call::MonitorSnapshot(
+            service::MonitorSnapshotRequest {
+                range: service::MonitorRange::Last7Days,
+                timezone: "UTC".to_owned(),
+            },
+        ))
+        .await
+        .expect("监控快照");
+    let service::Response::MonitorSnapshot(snapshot) = response else {
+        panic!("期望 MonitorSnapshot");
+    };
+    assert_eq!(snapshot.range, service::MonitorRange::Last7Days);
+    assert_eq!(snapshot.timezone, "UTC");
+    assert!(snapshot.tasks.is_empty());
+    assert!(snapshot.models.is_empty());
+
+    let error = fixture
+        .host
+        .dispatch(service::Call::MonitorTask(service::MonitorTaskRequest {
+            task_id: "kind".to_owned(),
+            attempt_id: None,
+        }))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("Kind 不诊断"), "{error}");
+}

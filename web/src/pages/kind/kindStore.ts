@@ -446,6 +446,7 @@ function applyFrame(frame: Frame): void {
     return;
   }
   if (frame.type === 'task-changed') return;
+  if (frame.type === 'task-event') return;
   applyAgentEvent(frame.event);
 }
 

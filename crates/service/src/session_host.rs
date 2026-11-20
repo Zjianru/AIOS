@@ -139,6 +139,9 @@ impl ServiceHost {
             Call::Work(_) => Err(ServiceError::TaskUnavailable(
                 "工作快照只能由根宿主读".to_owned(),
             )),
+            Call::MonitorSnapshot(_) | Call::MonitorTask(_) => Err(ServiceError::TaskUnavailable(
+                "监控只能由根宿主读".to_owned(),
+            )),
             Call::TaskAcceptMany(_) => Err(ServiceError::TaskUnavailable(
                 "组接受只能由根宿主做".to_owned(),
             )),

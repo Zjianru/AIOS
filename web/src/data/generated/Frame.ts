@@ -12,4 +12,4 @@ export type Frame = { "type": "ready", sessionId?: string | null, protocolVersio
 /**
  * T009.5：host: {home}（页面用来缩写路径）。
  */
-host: HostLocation, } | { "type": "event", event: ServiceEvent, } | { "type": "agent", event: AgentEventWire, } | { "type": "task-changed", taskId: string, };
+host: HostLocation, } | { "type": "event", event: ServiceEvent, } | { "type": "agent", event: AgentEventWire, } | { "type": "task-changed", taskId: string, } | { "type": "task-event", taskId: string, attemptId: number, event: ServiceEvent, };

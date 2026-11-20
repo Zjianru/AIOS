@@ -33,6 +33,7 @@ pub mod commands;
 pub mod fx;
 pub mod memory;
 pub mod models;
+pub(crate) mod monitor_facts;
 pub(crate) mod program_messages;
 pub mod quota;
 mod root;
@@ -47,8 +48,8 @@ pub use delivery::{DeliveryRecord, delivery_for};
 pub use error::*;
 pub use exa::EXA_DEFAULT_BASE_URL;
 pub use executor::{
-    AppointmentCancelTool, TASKS_DB_FILE, THIN_TOOLS, THIN_WRITE_BASH_TOOLS, THIN_WRITE_TOOLS,
-    TaskLive, TaskRuntime, TaskStopTool, TaskStream,
+    AppointmentCancelTool, MonitorLive, MonitorLiveTask, TASKS_DB_FILE, THIN_TOOLS,
+    THIN_WRITE_BASH_TOOLS, THIN_WRITE_TOOLS, TaskLive, TaskRuntime, TaskStopTool, TaskStream,
 };
 pub use protocol::*;
 pub use root::{

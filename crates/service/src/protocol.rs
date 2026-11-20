@@ -107,6 +107,10 @@ pub enum Call {
     TaskContinue(TaskContinueRequest),
     /// T055：工作页/「现在」共用的工作快照（全部任务事实 + 五种「等你」项）。
     Work(WorkRequest),
+    /// 监控消耗：按用户时区口径现算全部任务/模型/工具/命令合计。
+    MonitorSnapshot(MonitorSnapshotRequest),
+    /// 监控诊断：一个任务/Attempt 的链路事实；Kind 不诊断。
+    MonitorTask(MonitorTaskRequest),
     /// T055.2：勾选后的组接受（每项带勾选那一刻看到的报告与版本）。
     TaskAcceptMany(TaskAcceptManyRequest),
     /// 记忆页读取（M02/M05/M11）：关于你/条目/日记/隔离区/做梦/搜索/小卡状态。
@@ -180,6 +184,8 @@ pub enum Response {
     TaskContinue(TaskContinueResponse),
     /// T055：工作页/「现在」共用的工作快照。
     Work(WorkResponse),
+    MonitorSnapshot(MonitorSnapshotResponse),
+    MonitorTask(MonitorTaskResponse),
     /// T055.2：组接受的结果（通过的一起记，没通过的逐项回原因）。
     TaskAcceptMany(TaskAcceptManyResponse),
     /// 记忆页读取的完整视图。
@@ -1624,7 +1630,7 @@ pub struct MemoryActionResponse {
 ///
 /// 连接上的旧价格乘数后来整条删掉，不升版本：两个请求里的这个字段本来就可省略，旧页再发
 /// 由 serde 当未知字段忽略；响应里少了它，旧页读到 undefined 也不会拿去定价。
-pub const PROTOCOL_VERSION: u64 = 22;
+pub const PROTOCOL_VERSION: u64 = 23;
 
 /// 日历读取：不带 appointmentId 读全部；带 week 时额外给那周的计划点。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -1855,4 +1861,221 @@ pub struct HostInfo {
     pub context: ContextUsage,
     /// ready 帧加 host: {home}；不加 clientId。
     pub host: HostLocation,
+}
+
+/// 监控消耗的范围口径：Today=用户时区当天 0 点起；Last7Days=含今天往前 7 天；Month=当月 1 日起。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "kebab-case")]
+pub enum MonitorRange {
+    Today,
+    Last7Days,
+    Month,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct MonitorSnapshotRequest {
+    pub range: MonitorRange,
+    /// IANA 时区名（用户本机）；空/不认识时按 UTC。
+    pub timezone: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct MonitorTaskRequest {
+    #[serde(rename = "taskId")]
+    pub task_id: String,
+    #[serde(rename = "attemptId", default, skip_serializing_if = "Option::is_none")]
+    pub attempt_id: Option<u64>,
+}
+
+/// 一条任务/模型/工具/命令的耗用事实。金额没有价时为 None，unpriced=true。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct MonitorUsageRow {
+    pub key: String,
+    pub label: String,
+    pub requests: u64,
+    #[serde(rename = "inputTokens")]
+    pub input_tokens: u64,
+    #[serde(rename = "outputTokens")]
+    pub output_tokens: u64,
+    #[serde(rename = "cacheReadTokens")]
+    pub cache_read_tokens: u64,
+    #[serde(rename = "cacheWriteTokens")]
+    pub cache_write_tokens: u64,
+    #[serde(rename = "costUsd", default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    pub unpriced: bool,
+}
+
+/// 任务卡/在跑卡共用的一条任务摘要；项目归属先留 Option（None=未归项目）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct MonitorTaskSummary {
+    #[serde(rename = "taskId")]
+    pub task_id: String,
+    pub title: String,
+    pub state: String,
+    pub model: String,
+    #[serde(rename = "projectId", default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(rename = "attemptId", default, skip_serializing_if = "Option::is_none")]
+    pub attempt_id: Option<u64>,
+    pub running: bool,
+    #[serde(rename = "startedAt", default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<i64>,
+    #[serde(rename = "endedAt", default, skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<i64>,
+    pub requests: u64,
+    #[serde(rename = "inputTokens")]
+    pub input_tokens: u64,
+    #[serde(rename = "outputTokens")]
+    pub output_tokens: u64,
+    #[serde(rename = "costUsd", default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    pub unpriced: bool,
+    #[serde(rename = "toolCalls")]
+    pub tool_calls: u64,
+    #[serde(rename = "contextUsed")]
+    pub context_used: u64,
+    #[serde(rename = "contextWindow")]
+    pub context_window: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct MonitorProject {
+    #[serde(rename = "projectId")]
+    pub project_id: String,
+    pub label: String,
+    #[serde(rename = "costUsd", default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    pub unpriced: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+pub struct MonitorRings {
+    #[serde(rename = "costUsd", default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    pub unpriced: bool,
+    #[serde(rename = "busyMs")]
+    pub busy_ms: u64,
+    #[serde(rename = "requestMs")]
+    pub request_ms: u64,
+    #[serde(rename = "toolMs")]
+    pub tool_ms: u64,
+    pub tokens: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct MonitorAnomaly {
+    pub kind: String,
+    #[serde(rename = "taskId", default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+pub struct MonitorRunning {
+    pub seats: u64,
+    pub running: u64,
+    pub queue: u64,
+    pub anomalous: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tasks: Vec<MonitorTaskSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct MonitorSnapshotResponse {
+    pub range: MonitorRange,
+    pub timezone: String,
+    #[serde(rename = "generatedAt")]
+    pub generated_at: i64,
+    #[serde(default)]
+    pub tasks: Vec<MonitorTaskSummary>,
+    #[serde(default)]
+    pub projects: Vec<MonitorProject>,
+    #[serde(default)]
+    pub models: Vec<MonitorUsageRow>,
+    #[serde(default)]
+    pub tools: Vec<MonitorUsageRow>,
+    #[serde(default)]
+    pub commands: Vec<MonitorUsageRow>,
+    pub rings: MonitorRings,
+    #[serde(default)]
+    pub anomalies: Vec<MonitorAnomaly>,
+    pub running: MonitorRunning,
+    #[serde(default)]
+    pub queue: Vec<MonitorTaskSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct MonitorTaskInfo {
+    #[serde(rename = "taskId")]
+    pub task_id: String,
+    pub title: String,
+    pub state: String,
+    pub model: String,
+    #[serde(rename = "projectId", default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    pub running: bool,
+    #[serde(
+        rename = "writeScope",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub write_scope: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct MonitorAttempt {
+    #[serde(rename = "attemptId")]
+    pub attempt_id: u64,
+    #[serde(rename = "startedAt")]
+    pub started_at: i64,
+    #[serde(rename = "endedAt", default, skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<i64>,
+    #[serde(rename = "sessionId", default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    pub requests: u64,
+    #[serde(rename = "inputTokens")]
+    pub input_tokens: u64,
+    #[serde(rename = "outputTokens")]
+    pub output_tokens: u64,
+    #[serde(rename = "costUsd", default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    pub unpriced: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct MonitorContextParts {
+    #[serde(rename = "fixedBlock")]
+    pub fixed_block: u64,
+    #[serde(rename = "toolDefinitions")]
+    pub tool_definitions: u64,
+    #[serde(rename = "taskBookMessages")]
+    pub task_book_messages: u64,
+    #[serde(rename = "modelReplies")]
+    pub model_replies: u64,
+    #[serde(rename = "toolResults")]
+    pub tool_results: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct MonitorTodo {
+    pub content: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct MonitorTaskResponse {
+    pub task: MonitorTaskInfo,
+    #[serde(default)]
+    pub attempts: Vec<MonitorAttempt>,
+    #[serde(
+        rename = "contextParts",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub context_parts: Option<MonitorContextParts>,
+    #[serde(default)]
+    pub todo: Vec<MonitorTodo>,
+    #[serde(default)]
+    pub events: Vec<ServiceEvent>,
 }
