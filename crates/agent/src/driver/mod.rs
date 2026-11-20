@@ -102,6 +102,8 @@ pub(crate) struct Inner {
     /// 串行化 inbox 变更：保证日志里的 splice 顺序 = 内存队列的应用顺序。
     inbox_mutations: tokio::sync::Mutex<()>,
     state: Mutex<RunState>,
+    /// 当前在飞模型请求的 requestAt；请求结束/重试用 Drop guard 清掉。
+    in_flight_request_at: Mutex<Option<u64>>,
     pub(crate) events: broadcast::Sender<AgentEvent>,
     /// 日志事件的 live 广播（服务事件面；seq/type/data 直接来自日志事实）。
     session_events: broadcast::Sender<session::Event>,
@@ -473,6 +475,7 @@ impl Inner {
                 wake_requested: false,
                 last_turn,
             }),
+            in_flight_request_at: Mutex::new(None),
             events,
             session_events,
             self_ref: std::sync::OnceLock::new(),
@@ -974,6 +977,19 @@ impl Inner {
             self.state.lock().expect("agent 状态锁被毒化").phase,
             Phase::Running { .. }
         )
+    }
+
+    /// 在飞请求起点；只在模型请求发出到这一 Attempt 结束之间是 Some。
+    pub(crate) fn in_flight_request_at(&self) -> Option<u64> {
+        *self.in_flight_request_at.lock().expect("在飞请求锁被毒化")
+    }
+
+    pub(crate) fn set_in_flight_request_at(&self, at: u64) {
+        *self.in_flight_request_at.lock().expect("在飞请求锁被毒化") = Some(at);
+    }
+
+    pub(crate) fn clear_in_flight_request_at(&self) {
+        *self.in_flight_request_at.lock().expect("在飞请求锁被毒化") = None;
     }
 
     /// 手动 /compact：入口在 compaction 能力，driver 只派发（DoD1）。

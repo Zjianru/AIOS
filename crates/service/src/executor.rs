@@ -1102,7 +1102,7 @@ impl TaskRuntime {
             .lock()
             .expect("thinagent 表锁被毒化")
             .values()
-            .filter(|entry| !entry.retained && entry.host.agent().is_running())
+            .filter(|entry| !entry.retained)
             .map(|entry| {
                 (
                     entry.task_id.as_str().to_owned(),
@@ -1140,6 +1140,7 @@ impl TaskRuntime {
             request.range,
             &request.timezone,
             &self.running_tasks(),
+            &self.running_request_times(),
             self.exec_seats.load(Ordering::SeqCst) as u64,
             kind_events,
         )
@@ -1487,6 +1488,23 @@ impl TaskRuntime {
     /// 只在受理任务时读：已经派出去的任务冻结了自己的值，不跟着开关变。
     pub(crate) fn set_exec_bash(&self, bash: bool) {
         self.exec_bash.store(bash, Ordering::SeqCst);
+    }
+
+    /// 在飞请求的起点（task_id -> requestAt）；只给监控在飞异常用。
+    fn running_request_times(&self) -> std::collections::HashMap<String, u64> {
+        self.running
+            .lock()
+            .expect("thinagent 表锁被毒化")
+            .values()
+            .filter(|entry| !entry.retained)
+            .filter_map(|entry| {
+                entry
+                    .host
+                    .agent()
+                    .in_flight_request_at()
+                    .map(|at| (entry.task_id.as_str().to_owned(), at))
+            })
+            .collect()
     }
 
     /// 正在跑一轮的任务（按任务 id）。turn 结束的不算——席位在轮次结束时释放。
