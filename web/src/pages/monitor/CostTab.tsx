@@ -82,7 +82,7 @@ function DailyBars({ days }: { days: MonitorDay[] }) {
       <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 pl-14 text-1 text-ink-2">
         <span className="flex items-center gap-1.5">
           <i className="size-2 rounded-[2px]" style={{ background: MODEL_COLOR }} />
-          模型用量按事件时间落天
+          按发生那天算
         </span>
         <span className="text-ink-3">柱顶「+」：那天有轮没价格</span>
         <span className="text-ink-3">工具 {days.reduce((sum, day) => sum + day.toolCalls, 0)} 次 · 命令 {days.reduce((sum, day) => sum + day.commandCalls, 0)} 次</span>
@@ -191,7 +191,7 @@ export function CostTab() {
         <Kpi label="命令" value={commands.reduce((sum, row) => sum + row.requests, 0) || <Missing what="没跑过" />} sub="bash 程序次数" />
       </div>
 
-      <Card title="每天的柱" note="花费按任务开始日归属·范围外素灰">
+      <Card title="每天的柱" note="按发生那天算；范围内每天一根，没事件的天留空">
         <DailyBars days={snapshot.days} />
       </Card>
 

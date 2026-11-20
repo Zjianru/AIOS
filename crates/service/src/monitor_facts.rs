@@ -154,6 +154,7 @@ pub(crate) fn snapshot(
     let models = std::mem::take(&mut agg.models);
     let tools = std::mem::take(&mut agg.tools);
     let commands = std::mem::take(&mut agg.commands);
+    fill_days(&mut agg.days, range, tz, now.timestamp_millis());
     let mut anomalies = agg.anomalies;
     anomalies.sort_by(|a, b| a.kind.cmp(&b.kind));
     let anomalous = anomalies.len() as u64;
@@ -617,10 +618,14 @@ fn longest_request_anomaly(
 fn human_duration(ms: u64) -> String {
     if ms < 1_000 {
         format!("{ms}毫秒")
+    } else if ms < 10_000 {
+        format!("{:.1}秒", ms as f64 / 1_000.0)
     } else if ms < 60_000 {
         format!("{}秒", ms / 1_000)
     } else {
-        format!("{}分钟", ms / 60_000)
+        let minutes = ms / 60_000;
+        let seconds = (ms % 60_000) / 1_000;
+        format!("{minutes}分{seconds:02}秒")
     }
 }
 
@@ -650,6 +655,34 @@ fn stage_name(stage: Stage) -> String {
         Stage::Closed => "closed",
     }
     .to_owned()
+}
+
+/// 范围内每天都给一根柱；没事件的天留空（不伪造 0 之外的账）。
+fn fill_days(days: &mut BTreeMap<String, MonitorDay>, range: MonitorRange, tz: Tz, now_ms: i64) {
+    let start = Utc
+        .timestamp_millis_opt(range_start(range, tz.name(), now_ms))
+        .single();
+    let Some(start) = start else { return };
+    let today = Utc
+        .timestamp_millis_opt(now_ms)
+        .single()
+        .map(|now| now.with_timezone(&tz).date_naive());
+    let Some(today) = today else { return };
+    let mut date = start.with_timezone(&tz).date_naive();
+    while date <= today {
+        let key = date.format("%Y-%m-%d").to_string();
+        days.entry(key.clone()).or_insert(MonitorDay {
+            day: key,
+            cost_usd: None,
+            unpriced: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            requests: 0,
+            tool_calls: 0,
+            command_calls: 0,
+        });
+        date += Duration::days(1);
+    }
 }
 
 fn day_key(tz: Tz, time_ms: u64) -> String {
@@ -747,6 +780,7 @@ mod tests {
         )
         .unwrap();
         assert!(snapshot.tasks.is_empty());
+        assert_eq!(snapshot.days.len(), 1, "今天也要有一根空柱");
         assert!(snapshot.models.is_empty());
         assert_eq!(snapshot.running.seats, 3);
         assert!(snapshot.rings.cost_usd.is_none());
@@ -1337,7 +1371,7 @@ mod t075_usage_tests {
             .find(|anomaly| anomaly.task_id.as_deref() == Some(task.id.as_str()))
             .expect("snapshot 应带最长请求事实");
         assert_eq!(anomaly.kind, "request-longest");
-        assert_eq!(anomaly.detail, "本次 2秒，此前最长 1秒");
+        assert_eq!(anomaly.detail, "本次 2.0秒，此前最长 1.0秒");
     }
 
     #[test]
@@ -1362,7 +1396,7 @@ mod t075_usage_tests {
         )
         .unwrap();
         assert_eq!(anomaly.kind, "request-longest");
-        assert_eq!(anomaly.detail, "本次 2秒，此前最长 900毫秒");
+        assert_eq!(anomaly.detail, "本次 2.1秒，此前最长 900毫秒");
         let missing = timed(5, 500, 5_000, 5_700);
         let mut missing = missing;
         if let session::EventKind::AssistantMessage {
@@ -1377,8 +1411,10 @@ mod t075_usage_tests {
 
     #[test]
     fn human_duration_uses_minutes_seconds_milliseconds() {
-        assert_eq!(human_duration(840_000), "14分钟");
+        assert_eq!(human_duration(840_000), "14分00秒");
         assert_eq!(human_duration(21_000), "21秒");
+        assert_eq!(human_duration(1_500), "1.5秒");
+        assert_eq!(human_duration(10_000), "10秒");
         assert_eq!(human_duration(800), "800毫秒");
     }
 
@@ -1387,7 +1423,7 @@ mod t075_usage_tests {
         let completed = timed(1, 1_000, 1_000, 1_500);
         let anomaly =
             longest_request_anomaly(&[completed], "task-1", true, Some(1_800), 3_000).unwrap();
-        assert_eq!(anomaly.detail, "本次 1秒（在飞），此前最长 500毫秒");
+        assert_eq!(anomaly.detail, "本次 1.2秒（在飞），此前最长 500毫秒");
         assert!(longest_request_anomaly(&[], "task-1", true, Some(2_000), 2_500).is_none());
     }
 
