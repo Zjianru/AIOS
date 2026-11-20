@@ -13,6 +13,8 @@ pub enum MemoryError {
     SchemaUnsupported { found: u64, supported: u64 },
     #[error("记忆库的配置不对：{0}")]
     StorageConfig(String),
+    #[error("记忆库迁移失败：{0}")]
+    Migration(String),
     #[error("这个身份不能做这个记忆写入：{0}")]
     Refused(&'static str),
     #[error("没有这条记忆：{0}")]

@@ -6,6 +6,7 @@ use memory::types::{
     WriteOp,
 };
 use memory::{MemoryError, MemoryStore};
+use rusqlite::OptionalExtension;
 use tempfile::TempDir;
 
 fn open() -> (MemoryStore, TempDir, Arc<AtomicI64>) {
@@ -454,7 +455,7 @@ fn dream_run_id_and_note_targets_are_checked() {
 }
 
 #[test]
-fn schema_version_is_two_after_actor_column() {
+fn schema_version_is_three_after_schema_migration() {
     let (store, dir, _) = open();
     drop(store);
     let conn = rusqlite::Connection::open(dir.path().join("memory.sqlite")).unwrap();
@@ -465,7 +466,11 @@ fn schema_version_is_two_after_actor_column() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(value, "2");
+    assert_eq!(value, "3");
+    let user_version: i64 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(user_version, 3);
 }
 
 #[test]
@@ -758,4 +763,293 @@ fn revisions_record_who_changed_them() {
         store.revisions(&note.id).unwrap().last().unwrap().actor,
         "dream"
     );
+}
+
+fn v2_database(dir: &TempDir) -> std::path::PathBuf {
+    let path = dir.path().join("memory.sqlite");
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+         CREATE TABLE memory (
+             id TEXT PRIMARY KEY, layer TEXT NOT NULL, binding TEXT NOT NULL,
+             scope TEXT NOT NULL, project_id TEXT, role_id TEXT,
+             title TEXT NOT NULL, summary TEXT NOT NULL, body TEXT NOT NULL,
+             source_kind TEXT NOT NULL, source_ref TEXT NOT NULL,
+             created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+             deleted_at INTEGER, purge_after INTEGER, status TEXT NOT NULL,
+             current_revision INTEGER NOT NULL, pinned INTEGER NOT NULL DEFAULT 0
+         );
+         CREATE TABLE memory_revision (
+             id INTEGER PRIMARY KEY AUTOINCREMENT, memory_id TEXT NOT NULL,
+             revision INTEGER NOT NULL, title TEXT NOT NULL, summary TEXT NOT NULL,
+             body TEXT NOT NULL, source_kind TEXT NOT NULL, source_ref TEXT NOT NULL,
+             reason TEXT NOT NULL, dream_run_id TEXT, undo_of INTEGER,
+             actor TEXT NOT NULL DEFAULT 'system', created_at INTEGER NOT NULL,
+             UNIQUE(memory_id, revision)
+         );
+         CREATE TABLE diary_entry (
+             id TEXT PRIMARY KEY, day TEXT NOT NULL, seq INTEGER NOT NULL,
+             text TEXT NOT NULL, source_ref TEXT NOT NULL, created_at INTEGER NOT NULL
+         );
+         CREATE VIRTUAL TABLE memory_fts USING fts5(
+             kind, memory_id UNINDEXED, title, body, source_json UNINDEXED,
+             tokenize='trigram'
+         );",
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO kv (key, value) VALUES ('schema_version', '2'), ('version', '0')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO memory (id, layer, binding, scope, title, summary, body, source_kind, source_ref, created_at, updated_at, status, current_revision, pinned)
+         VALUES ('mem-old', 'about_you', 'binding', 'personal', '旧标题', '旧摘要', '旧正文 old-body', 'user', 'old:1', 111, 111, 'active', 1, 0)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO memory_revision (memory_id, revision, title, summary, body, source_kind, source_ref, reason, dream_run_id, actor, created_at)
+         VALUES ('mem-old', 1, '旧标题', '旧摘要', '旧正文 old-body', 'user', 'old:1', 'created', NULL, 'system', 111)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO diary_entry (id, day, seq, text, source_ref, created_at)
+         VALUES ('diary-old', '1970-01-01', 1, '旧日记', 'diary:old', 111)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO memory_fts (kind, memory_id, title, body, source_json)
+         VALUES ('about_you', 'mem-old', '旧标题', '旧正文 old-body', '{}')",
+        [],
+    )
+    .unwrap();
+    path
+}
+
+fn table_columns(conn: &rusqlite::Connection, table: &str) -> Vec<String> {
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .unwrap();
+    stmt.query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+#[test]
+fn v2_migrates_columns_sources_and_fts_with_backup_report() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = v2_database(&dir);
+    let store = MemoryStore::open(&path).unwrap();
+    let report = store.migration_report().expect("迁移报告");
+    assert_eq!((report.from_version, report.to_version), (2, 3));
+    assert_eq!(report.missing_original, 1, "旧行没有原文，报告要写行数");
+    let backup = report.backup.clone().expect("备份路径");
+    assert!(backup.ends_with("memory.db.v2.bak"), "{backup}");
+    assert!(std::path::Path::new(&backup).exists(), "迁移前备份要在");
+    assert!(store.item("mem-old").unwrap().is_some(), "旧条目还在");
+    assert!(store.keys("mem-old").unwrap().is_empty(), "旧数据没有钥匙");
+    assert!(
+        store.sources("mem-old").unwrap().is_empty(),
+        "旧数据不插 source 行"
+    );
+    assert!(
+        store
+            .search("旧标题", 10)
+            .unwrap()
+            .iter()
+            .any(|hit| matches!(hit, SearchHit::Memory(found) if found.id == "mem-old")),
+        "FTS 重建后旧标题还能搜到"
+    );
+    drop(store);
+
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let user_version: i64 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(user_version, 3);
+    for column in [
+        "valid_from",
+        "valid_until",
+        "invalid_reason",
+        "superseded_by",
+        "possibly_stale",
+    ] {
+        assert!(
+            table_columns(&conn, "memory").contains(&column.to_owned()),
+            "{column}"
+        );
+        assert!(
+            table_columns(&conn, "memory_revision").contains(&column.to_owned()),
+            "{column} revision"
+        );
+    }
+    for table in [
+        "memory_key",
+        "memory_source",
+        "memory_relation",
+        "memory_delivery",
+        "memory_card",
+    ] {
+        let exists: Option<String> = conn
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                rusqlite::params![table],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert!(exists.is_some(), "{table} 要建出来");
+    }
+    assert!(table_columns(&conn, "memory_fts").contains(&"keys".to_owned()));
+    assert_eq!(
+        table_columns(&conn, "memory_card"),
+        vec!["card_ref", "kind", "status", "payload_json"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    );
+    let valid_from: i64 = conn
+        .query_row(
+            "SELECT valid_from FROM memory WHERE id = 'mem-old'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(valid_from, 111, "valid_from=created_at");
+    let revision_valid_from: i64 = conn
+        .query_row(
+            "SELECT valid_from FROM memory_revision WHERE memory_id = 'mem-old'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(revision_valid_from, 111);
+    let nulls: (Option<i64>, Option<String>, Option<String>, i64) = conn
+        .query_row(
+            "SELECT valid_until, invalid_reason, superseded_by, possibly_stale FROM memory WHERE id = 'mem-old'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(nulls, (None, None, None, 0));
+    let key_rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM memory_key", [], |row| row.get(0))
+        .unwrap();
+    let source_rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM memory_source", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!((key_rows, source_rows), (0, 0));
+
+    // 二次迁移幂等：不重复写、不再出报告、备份不丢。
+    let again = MemoryStore::open(&path).unwrap();
+    assert!(again.migration_report().is_none());
+    assert!(std::path::Path::new(&backup).exists());
+    assert_eq!(again.item("mem-old").unwrap().unwrap().title, "旧标题");
+    assert!(again.keys("mem-old").unwrap().is_empty());
+}
+
+#[test]
+fn failed_migration_rolls_back_to_v2_and_leaves_backup() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = v2_database(&dir);
+    let result = MemoryStore::open_with_failed_migration_for_test(&path);
+    assert!(
+        matches!(result, Err(MemoryError::Migration(_))),
+        "应该报迁移失败"
+    );
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let schema: String = conn
+        .query_row(
+            "SELECT value FROM kv WHERE key = 'schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(schema, "2", "失败整事务回滚，库仍 v2");
+    assert!(!table_columns(&conn, "memory").contains(&"valid_from".to_owned()));
+    assert!(
+        dir.path().join("memory.db.v2.bak").exists(),
+        "失败也留着备份"
+    );
+    drop(conn);
+    // 不自动恢复：下一次正常打开走真实迁移，而不是拿备份覆盖。
+    let store = MemoryStore::open(&path).unwrap();
+    assert_eq!(store.migration_report().unwrap().from_version, 2);
+    assert_eq!(store.item("mem-old").unwrap().unwrap().title, "旧标题");
+}
+
+#[test]
+fn keys_are_written_removed_and_searched_from_fts() {
+    let (store, _dir, _) = open();
+    let item = remember(&store, "回答先给结论");
+    assert!(store.keys(&item.id).unwrap().is_empty(), "不从标题造钥匙");
+    store
+        .set_keys(
+            &item.id,
+            &[(
+                memory::types::MemoryKeyKind::Keyword,
+                "zzunique-key".to_owned(),
+            )],
+        )
+        .unwrap();
+    let keys = store.keys(&item.id).unwrap();
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0].value, "zzunique-key");
+    let item_id = item.id.clone();
+    let hits = store.search("zzunique-key", 10).unwrap();
+    assert!(
+        hits.iter()
+            .any(|hit| matches!(hit, SearchHit::Memory(found) if found.id == item_id)),
+        "{hits:?}"
+    );
+    store
+        .set_keys(
+            &item.id,
+            &[(
+                memory::types::MemoryKeyKind::Keyword,
+                "other-key".to_owned(),
+            )],
+        )
+        .unwrap();
+    assert!(
+        store.search("zzunique-key", 10).unwrap().is_empty(),
+        "旧钥匙同事务删掉"
+    );
+    assert!(
+        store
+            .search("other-key", 10)
+            .unwrap()
+            .iter()
+            .any(|hit| matches!(hit, SearchHit::Memory(found) if found.id == item.id)),
+        "新钥匙要能搜到"
+    );
+    store.set_keys(&item.id, &[]).unwrap();
+    assert!(store.keys(&item.id).unwrap().is_empty());
+    assert!(store.search("other-key", 10).unwrap().is_empty());
+}
+
+#[test]
+fn sources_are_explicit_and_title_does_not_create_keys() {
+    let (store, _dir, _) = open();
+    let item = remember(&store, "回答先给结论");
+    assert!(
+        store.search("回答先给结论", 10).unwrap().is_empty()
+            || !store
+                .keys(&item.id)
+                .unwrap()
+                .iter()
+                .any(|key| key.value.contains("回答")),
+        "不从标题造钥匙"
+    );
+    store
+        .add_source(&item.id, "message", "root:3", Some("原话：回答先给结论"))
+        .unwrap();
+    let sources = store.sources(&item.id).unwrap();
+    assert_eq!(sources.len(), 1);
+    assert_eq!(sources[0].source_ref, "root:3");
+    assert_eq!(sources[0].quote.as_deref(), Some("原话：回答先给结论"));
 }
