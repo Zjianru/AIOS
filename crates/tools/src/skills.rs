@@ -76,6 +76,8 @@ pub struct BundledSkill {
     /// 正文提到的工具；这些工具不在装配出来的工具集里时，skill 不进目录。
     /// 自带 skill 不能指向一个不存在的工具（CLI 没有服务独有的查询/联网工具）。
     pub tools: &'static [&'static str],
+    /// 只给只读工具表的 skill（没有 write/edit/bash/后台任务）。
+    pub read_only: bool,
     /// 凭证没存时目录里写给模型的一句话：说明它现在不可用、让用户去哪填。
     /// 不需要条件的 skill 留空。
     pub unavailable_hint: &'static str,
@@ -96,6 +98,7 @@ pub fn bundled_skills() -> &'static [BundledSkill] {
             raw: include_str!("../bundled/aios-settings/SKILL.md"),
             requires: None,
             tools: &["aios_query", "propose_action"],
+            read_only: false,
             unavailable_hint: "",
         },
         BundledSkill {
@@ -103,6 +106,7 @@ pub fn bundled_skills() -> &'static [BundledSkill] {
             raw: include_str!("../bundled/aios-tasks/SKILL.md"),
             requires: None,
             tools: &["task_accept", "task_stop", "task_update", "propose_action"],
+            read_only: false,
             unavailable_hint: "",
         },
         BundledSkill {
@@ -110,6 +114,7 @@ pub fn bundled_skills() -> &'static [BundledSkill] {
             raw: include_str!("../bundled/aios-calendar/SKILL.md"),
             requires: None,
             tools: &["aios_query", "propose_action", "appointment_cancel"],
+            read_only: false,
             unavailable_hint: "",
         },
         BundledSkill {
@@ -126,6 +131,7 @@ pub fn bundled_skills() -> &'static [BundledSkill] {
                 "memory_undo_dream",
                 "memory_delete_note",
             ],
+            read_only: false,
             unavailable_hint: "",
         },
         BundledSkill {
@@ -133,6 +139,7 @@ pub fn bundled_skills() -> &'static [BundledSkill] {
             raw: include_str!("../bundled/investigator/SKILL.md"),
             requires: None,
             tools: &["task_report"],
+            read_only: true,
             unavailable_hint: "",
         },
         BundledSkill {
@@ -140,6 +147,7 @@ pub fn bundled_skills() -> &'static [BundledSkill] {
             raw: include_str!("../bundled/web/SKILL.md"),
             requires: Some(crate::ToolKey::Exa),
             tools: &["web_search", "web_fetch"],
+            read_only: false,
             unavailable_hint: "Web search and page reading are unavailable: no Exa API key is saved. If the user asks you to search the web or read a link, say you cannot yet and tell them to save an Exa API key in the settings page (设置 › 模型与连接 › 联网搜索), then ask them to try again.",
         },
     ];
@@ -152,10 +160,16 @@ pub fn bundled_skills() -> &'static [BundledSkill] {
 /// aios_query/propose_action/web，aios-settings 和 web 照常可用；investigator 只要
 /// task_report，也就是只有 ThinAgent 看得到。
 pub fn bundled_skills_for(tools: &ToolSet) -> Vec<BundledSkill> {
+    // 只读任务：THIN_TOOLS 里没有 write/edit/bash/job_*；写任务/开 bash 不装只读 skill。
+    let read_only_tools = tools.get("write").is_none()
+        && tools.get("edit").is_none()
+        && tools.get("bash").is_none()
+        && tools.get("job_output").is_none();
     bundled_skills()
         .iter()
         .copied()
         .filter(|skill| skill.tools.iter().all(|name| tools.get(name).is_some()))
+        .filter(|skill| !skill.read_only || read_only_tools)
         .collect()
 }
 

@@ -514,7 +514,7 @@ fn bundled_web_skill_needs_the_exa_key_and_names_its_tools() {
 /// ThinAgent 有，才看得到。其余自带 skill 也照工具表过滤。
 #[test]
 fn investigator_skill_is_only_visible_where_task_report_is_assembled() {
-    let mut thin = ToolSet::builtin();
+    let mut thin = ToolSet::empty();
     for name in ["web_search", "web_fetch", "task_report"] {
         thin.push_shared(Arc::new(NamedTool(name)));
     }
@@ -525,6 +525,18 @@ fn investigator_skill_is_only_visible_where_task_report_is_assembled() {
     assert!(names.contains(&"investigator"), "{names:?}");
     assert!(names.contains(&"web"), "{names:?}");
     assert!(!names.contains(&"aios-settings"), "{names:?}");
+
+    // 写任务：THIN_WRITE_TOOLS 有 write/edit，investigator 只读，不进目录。
+    let mut writing = ToolSet::empty();
+    for name in ["web_search", "web_fetch", "task_report", "write", "edit"] {
+        writing.push_shared(Arc::new(NamedTool(name)));
+    }
+    let names: Vec<&str> = bundled_skills_for(&writing)
+        .iter()
+        .map(|skill| skill.name)
+        .collect();
+    assert!(!names.contains(&"investigator"), "{names:?}");
+    assert!(names.contains(&"web"), "{names:?}");
 
     let mut kind = ToolSet::builtin();
     for name in ["aios_query", "propose_action", "web_search", "web_fetch"] {

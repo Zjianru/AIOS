@@ -25,10 +25,6 @@ Keep the DoD in view: answer what the DoD asks for, and say where each fact came
 
 ## Report
 
-Call `task_report` exactly once when you have a result, and state one of:
+Call `task_report` exactly once when you have a result; its tool description defines `ready`, `blocked` and `failed`. Put the answer and the evidence it rests on in `summary`; put one concrete question in `question` only when only the user can answer it.
 
-- `ready`: the DoD is met; `summary` is the answer itself, with the evidence it rests on.
-- `blocked`: you cannot continue without something you do not have (a missing tool, permission, file, credential or answer). Write what is missing and what the user must do, and put one concrete question in `question` when only the user can answer it.
-- `failed`: you tried and the work cannot produce the result; say what failed and what you already found.
-
-Do not report progress. The user sees the report as a card; the Kind conversation hears it as a message. Do not repeat the request, and do not claim work you did not do.
+The user sees the report as a card; the Kind conversation hears it as a message. Do not repeat the request, and do not claim work you did not do.

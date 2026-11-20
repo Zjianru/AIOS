@@ -1181,3 +1181,20 @@ async fn kind_first_request_has_project_rules_path_not_the_full_file() {
         "Kind 不拿整份项目规则：{body}"
     );
 }
+
+#[tokio::test]
+async fn write_task_thin_agent_skills_have_no_investigator() {
+    let fixture = Fixture::new().await;
+    let _task = fixture.accept_write(false, "target.py").await;
+    super::wait_until("写任务 ThinAgent 请求", || {
+        !fixture.router.bodies(true).is_empty()
+    })
+    .await;
+    let thin_bodies = fixture.router.bodies(true);
+    let first = &thin_bodies[0];
+    assert!(
+        !first.contains("investigator"),
+        "写任务没有只读 investigator skill：{first}"
+    );
+    assert!(first.contains("task_report"), "写任务仍有 task_report");
+}
