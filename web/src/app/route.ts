@@ -51,9 +51,9 @@ const SCENE_OF: Record<string, string> = {
   memory: 'memory',
   health: 'health',
   notify: 'notify',
-  usage: 'usage',
+  usage: 'monitor',
   settings: 'settings',
-  monitor: 'settings',
+  monitor: 'monitor',
   projset: 'project',
   newproj: 'newproj',
   welcome: 'welcome',
@@ -81,8 +81,9 @@ export function navOf(route: ParsedRoute): string | null {
       return 'ability';
     case 'read':
       return 'lib';
-    case 'settings':
     case 'monitor':
+      return 'monitor';
+    case 'settings':
       return 'settings';
     case 'health':
       return 'now';

@@ -25,6 +25,9 @@ import type { MemoryActionResponse } from './generated/MemoryActionResponse';
 import type { MemoryReadResponse } from './generated/MemoryReadResponse';
 import type { KeyringView } from './generated/KeyringView';
 import type { ModelSettingsResponse } from './generated/ModelSettingsResponse';
+import type { MonitorRange } from './generated/MonitorRange';
+import type { MonitorSnapshotResponse } from './generated/MonitorSnapshotResponse';
+import type { MonitorTaskResponse } from './generated/MonitorTaskResponse';
 import type { Response } from './generated/Response';
 import type { RootState } from './generated/RootState';
 import type { ServiceAnswer } from './generated/ServiceAnswer';
@@ -71,6 +74,15 @@ export type { MemoryItemView } from './generated/MemoryItemView';
 export type { MemoryReadResponse };
 export type { MemoryRevisionView } from './generated/MemoryRevisionView';
 export type { ModelSettingsResponse };
+export type { MonitorRange } from './generated/MonitorRange';
+export type { MonitorSnapshotResponse } from './generated/MonitorSnapshotResponse';
+export type { MonitorTaskResponse } from './generated/MonitorTaskResponse';
+export type { MonitorTaskSummary } from './generated/MonitorTaskSummary';
+export type { MonitorUsageRow } from './generated/MonitorUsageRow';
+export type { MonitorContextParts } from './generated/MonitorContextParts';
+export type { MonitorAttempt } from './generated/MonitorAttempt';
+export type { MonitorTaskInfo } from './generated/MonitorTaskInfo';
+export type { MonitorTodo } from './generated/MonitorTodo';
 export type { ServiceAnswer };
 export type { StatusResponse };
 export type { ToolKeyView };
@@ -462,6 +474,15 @@ export function connectSession(
   return openSocket(`/ws?lastSeq=${lastSeq}`, onFrame, onClose);
 }
 
+/** 连监控：ready 后各在跑任务的 TaskEvent/task-changed；lastSeq 用于重连补齐。 */
+export function connectMonitorSession(
+  lastSeq: number,
+  onFrame: (frame: Frame) => void,
+  onClose: () => void,
+): WebSocket {
+  return openSocket(`/ws?monitor=1&lastSeq=${lastSeq}`, onFrame, onClose);
+}
+
 /** 连任务对话：服务端把它接到这个任务当前 Attempt 的会话；没在跑时只补齐。 */
 export function connectTaskSession(
   taskId: string,
@@ -498,6 +519,22 @@ export async function fetchStatus(): Promise<StatusResponse> {
 }
 
 /// T055：工作页 /「现在」共用的一份工作快照（全部任务事实 + 五种「等你」项）。
+/** 监控消耗快照：range 按用户时区口径，服务端现算。 */
+export async function monitorSnapshot(
+  range: MonitorRange,
+  timezone: string,
+): Promise<MonitorSnapshotResponse> {
+  return post({ method: 'monitor-snapshot', range, timezone });
+}
+
+/** 监控诊断：一件任务的 Attempt/五块/todo/事件；Kind 没有任务可诊断。 */
+export async function monitorTask(
+  taskId: string,
+  attemptId?: number,
+): Promise<MonitorTaskResponse> {
+  return post({ method: 'monitor-task', taskId, attemptId });
+}
+
 export async function getWork(): Promise<WorkResponse> {
   return post({ method: 'work' });
 }
