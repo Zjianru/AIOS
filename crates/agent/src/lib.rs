@@ -758,6 +758,11 @@ impl Agent {
         self.inner.is_running()
     }
 
+    /// 当前在飞模型请求的 requestAt（Unix 毫秒）；空闲时 None。
+    pub fn in_flight_request_at(&self) -> Option<u64> {
+        self.inner.in_flight_request_at()
+    }
+
     /// 等到 agent 空闲（没有正在跑的轮次，也没有会唤醒它的排队输入）。
     pub async fn idle(&self) {
         self.inner.idle().await;

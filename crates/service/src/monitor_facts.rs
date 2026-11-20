@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use chrono::{Datelike, Duration, TimeZone, Utc};
 use chrono_tz::Tz;
@@ -30,12 +30,14 @@ struct Agg {
 }
 
 /// 监控消耗：按用户时区口径现算全部任务；Kind 对话不在任务库里，本票先不混入。
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn snapshot(
     store: &Store,
     data_dir: &Path,
     range: MonitorRange,
     timezone: &str,
     running: &[String],
+    running_request_at: &HashMap<String, u64>,
     seats: u64,
     kind_events: &[session::Event],
 ) -> Result<MonitorSnapshotResponse, ServiceError> {
@@ -72,6 +74,7 @@ pub(crate) fn snapshot(
             running
                 .contains(&task.id.as_str().to_owned())
                 .then_some(true),
+            running_request_at.get(task.id.as_str()).copied(),
             &mut rings,
         )?
         else {
@@ -187,6 +190,7 @@ impl Agg {
         start: i64,
         tz: Tz,
         running: Option<bool>,
+        in_flight_request_at: Option<u64>,
         rings: &mut MonitorRings,
     ) -> Result<Option<MonitorTaskSummary>, ServiceError> {
         let selection = session::ModelSelection {
@@ -264,9 +268,13 @@ impl Agg {
             rings.unpriced |= stats.unpriced;
             self.add_events(&filtered, Some(task.id.as_str()), &selection, tz, rings);
         }
-        if let Some(anomaly) =
-            longest_request_anomaly(&task_events, task.id.as_str(), running.unwrap_or(false))
-        {
+        if let Some(anomaly) = longest_request_anomaly(
+            &task_events,
+            task.id.as_str(),
+            running.unwrap_or(false),
+            in_flight_request_at,
+            Utc::now().timestamp_millis().max(0) as u64,
+        ) {
             self.anomalies.push(anomaly);
         }
         summary.tool_calls = latest_events
@@ -566,18 +574,43 @@ fn longest_request_anomaly(
     events: &[session::Event],
     task_id: &str,
     running: bool,
+    in_flight_request_at: Option<u64>,
+    now_ms: u64,
 ) -> Option<MonitorAnomaly> {
-    // 在飞请求还没有 requestAt：不能用 step/start 冒充请求起点，直接写没采到、不给数字。
-    let detail = if running && open_step_start(events).is_some() {
-        "本次请求没采到：日志里还没有 requestAt，没法比此前最长".to_owned()
+    let mut timings: Vec<(u64, u64)> = events
+        .iter()
+        .filter_map(|event| {
+            stats::request_duration_ms(event).map(|duration| (event.time, duration))
+        })
+        .collect();
+    timings.sort_by_key(|(time, _)| *time);
+    let detail = if running {
+        match in_flight_request_at {
+            // 在飞：agent 内存里的 requestAt→现在，不动日志、不近似 step/start。
+            Some(request_at) => {
+                let current = now_ms.saturating_sub(request_at);
+                let prior = timings.iter().map(|(_, duration)| *duration).max();
+                match prior {
+                    Some(prior) => format!("本次 {current}ms（在飞），此前最长 {prior}ms"),
+                    None => format!("本次 {current}ms（在飞），此前没有可比的"),
+                }
+            }
+            None if open_step_start(events).is_some() => {
+                "本次请求没采到：日志里还没有 requestAt，没法比此前最长".to_owned()
+            }
+            None => {
+                let (_, current) = *timings.last()?;
+                let prior = timings[..timings.len().saturating_sub(1)]
+                    .iter()
+                    .map(|(_, duration)| *duration)
+                    .max();
+                match prior {
+                    Some(prior) => format!("本次 {current}ms，此前最长 {prior}ms"),
+                    None => format!("本次 {current}ms，此前没有可比的"),
+                }
+            }
+        }
     } else {
-        let mut timings: Vec<(u64, u64)> = events
-            .iter()
-            .filter_map(|event| {
-                stats::request_duration_ms(event).map(|duration| (event.time, duration))
-            })
-            .collect();
-        timings.sort_by_key(|(time, _)| *time);
         let (_, current) = *timings.last()?;
         let prior = timings[..timings.len().saturating_sub(1)]
             .iter()
@@ -719,8 +752,17 @@ mod tests {
     #[test]
     fn empty_snapshot_has_all_sections() {
         let (data, _cwd, store) = temp_store();
-        let snapshot =
-            snapshot(&store, data.path(), MonitorRange::Today, "UTC", &[], 3, &[]).unwrap();
+        let snapshot = snapshot(
+            &store,
+            data.path(),
+            MonitorRange::Today,
+            "UTC",
+            &[],
+            &HashMap::new(),
+            3,
+            &[],
+        )
+        .unwrap();
         assert!(snapshot.tasks.is_empty());
         assert!(snapshot.models.is_empty());
         assert_eq!(snapshot.running.seats, 3);
@@ -812,8 +854,17 @@ mod tests {
                 .unwrap();
         }
         let started = std::time::Instant::now();
-        let snapshot =
-            snapshot(&store, data.path(), MonitorRange::Month, "UTC", &[], 3, &[]).unwrap();
+        let snapshot = snapshot(
+            &store,
+            data.path(),
+            MonitorRange::Month,
+            "UTC",
+            &[],
+            &HashMap::new(),
+            3,
+            &[],
+        )
+        .unwrap();
         eprintln!("200 tasks cold snapshot: {:?}", started.elapsed());
         assert_eq!(snapshot.tasks.len(), 200);
         assert!(snapshot.rings.tokens >= 200 * 20 * 1_100);
@@ -1175,8 +1226,17 @@ mod t075_usage_tests {
         let (data, cwd, store) = super::tests::temp_store();
         // D78 固定日志：总 input 8540，最后一条 assistant 是 486；重复加会变 9026。
         let task = task_with_usage(data.path(), cwd.path(), &store, &[8_054, 486]);
-        let snapshot =
-            snapshot(&store, data.path(), MonitorRange::Today, "UTC", &[], 3, &[]).unwrap();
+        let snapshot = snapshot(
+            &store,
+            data.path(),
+            MonitorRange::Today,
+            "UTC",
+            &[],
+            &HashMap::new(),
+            3,
+            &[],
+        )
+        .unwrap();
         let entry = snapshot
             .tasks
             .iter()
@@ -1277,8 +1337,17 @@ mod t075_usage_tests {
                 second.kind,
             ],
         );
-        let snapshot =
-            snapshot(&store, data.path(), MonitorRange::Today, "UTC", &[], 3, &[]).unwrap();
+        let snapshot = snapshot(
+            &store,
+            data.path(),
+            MonitorRange::Today,
+            "UTC",
+            &[],
+            &HashMap::new(),
+            3,
+            &[],
+        )
+        .unwrap();
         let anomaly = snapshot
             .anomalies
             .iter()
@@ -1295,10 +1364,10 @@ mod t075_usage_tests {
             timed(2, 200, 2_000, 2_900),
             timed(3, 300, 3_000, 3_700),
         ];
-        let anomaly = longest_request_anomaly(&events, "task-1", false).unwrap();
+        let anomaly = longest_request_anomaly(&events, "task-1", false, None, 0).unwrap();
         assert_eq!(anomaly.kind, "request-longest");
         assert_eq!(anomaly.detail, "本次 700ms，此前最长 900ms");
-        let single = longest_request_anomaly(&events[..1], "task-1", false).unwrap();
+        let single = longest_request_anomaly(&events[..1], "task-1", false, None, 0).unwrap();
         assert_eq!(single.detail, "本次 500ms，此前没有可比的");
         let missing = timed(4, 400, 3_000, 3_700);
         let session::EventKind::AssistantMessage { .. } = missing.kind else {
@@ -1312,7 +1381,17 @@ mod t075_usage_tests {
             *request_at = None;
             stream.clear();
         }
-        assert!(longest_request_anomaly(&[missing], "task-1", false).is_none());
+        assert!(longest_request_anomaly(&[missing], "task-1", false, None, 0).is_none());
+    }
+
+    #[test]
+    fn in_flight_uses_agent_memory_request_at() {
+        let completed = timed(1, 1_000, 1_000, 1_500);
+        let anomaly =
+            longest_request_anomaly(&[completed], "task-1", true, Some(1_800), 3_000).unwrap();
+        assert_eq!(anomaly.detail, "本次 1200ms（在飞），此前最长 500ms");
+        let no_prior = longest_request_anomaly(&[], "task-1", true, Some(2_000), 2_500).unwrap();
+        assert_eq!(no_prior.detail, "本次 500ms（在飞），此前没有可比的");
     }
 
     #[test]
@@ -1320,7 +1399,8 @@ mod t075_usage_tests {
         let completed = timed(1, 1_000, 1_000, 1_500);
         let open =
             session::Event::new(2, 1_800, session::EventKind::StepStart { turn: 2, step: 1 });
-        let anomaly = longest_request_anomaly(&[completed, open], "task-1", true).unwrap();
+        let anomaly =
+            longest_request_anomaly(&[completed, open], "task-1", true, None, 3_000).unwrap();
         assert_eq!(
             anomaly.detail,
             "本次请求没采到：日志里还没有 requestAt，没法比此前最长"
@@ -1334,6 +1414,8 @@ mod t075_usage_tests {
             )],
             "task-1",
             true,
+            None,
+            2_000,
         )
         .unwrap();
         assert_eq!(
@@ -1437,8 +1519,17 @@ mod t075_usage_tests {
                 tasks::ConversationId::new(session.id().to_string()),
             )
             .unwrap();
-        let snapshot =
-            snapshot(&store, data.path(), MonitorRange::Today, "UTC", &[], 3, &[]).unwrap();
+        let snapshot = snapshot(
+            &store,
+            data.path(),
+            MonitorRange::Today,
+            "UTC",
+            &[],
+            &HashMap::new(),
+            3,
+            &[],
+        )
+        .unwrap();
         let entry = snapshot
             .tasks
             .iter()

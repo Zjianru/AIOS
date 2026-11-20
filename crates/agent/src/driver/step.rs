@@ -17,6 +17,15 @@ use super::helpers::*;
 use super::retry::*;
 use super::*;
 
+/// 请求结束（成功/失败/重试/取消）时清掉内存里的在飞 requestAt。
+struct InFlightRequest(Arc<Inner>);
+
+impl Drop for InFlightRequest {
+    fn drop(&mut self) {
+        self.0.clear_in_flight_request_at();
+    }
+}
+
 /// 一次 step 的请求上下文：派生消息、工具请求、本步开出的工具名、取消令牌。
 pub(super) struct StepContext {
     messages: Vec<Message>,
@@ -277,6 +286,8 @@ pub(super) async fn run_step(
             turn: Some(turn),
         });
         facts.request_at = now_ms();
+        inner.set_in_flight_request_at(facts.request_at);
+        let _in_flight = InFlightRequest(Arc::clone(inner));
         let mut stream = match inner.model.stream(&messages, &tool_request, &cancel).await {
             Ok(stream) => stream,
             Err(error) => {
