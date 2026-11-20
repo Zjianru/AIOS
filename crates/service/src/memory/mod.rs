@@ -46,6 +46,15 @@ pub(crate) fn user_message_sent(message: &model::Message) -> bool {
 impl MemoryRuntime {
     pub fn open(data_dir: &Path) -> Result<Self, memory::MemoryError> {
         let store = MemoryStore::open(data_dir.join("memory.sqlite"))?;
+        if let Some(report) = store.migration_report() {
+            eprintln!(
+                "记忆库迁移 v{}→v{}：备份 {}；缺原文 {} 行",
+                report.from_version,
+                report.to_version,
+                report.backup.as_deref().unwrap_or("无"),
+                report.missing_original
+            );
+        }
         Ok(Self {
             store: Arc::new(store),
         })

@@ -339,3 +339,65 @@ pub struct MemoryView {
     pub quarantine: Vec<MemoryItem>,
     pub settings: Vec<(String, String)>,
 }
+
+/// 钥匙种类：按人/项目/命令/事件/关键词召回。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryKeyKind {
+    Keyword,
+    Path,
+    Command,
+    Event,
+    Entity,
+}
+
+impl MemoryKeyKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Keyword => "keyword",
+            Self::Path => "path",
+            Self::Command => "command",
+            Self::Event => "event",
+            Self::Entity => "entity",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "keyword" => Some(Self::Keyword),
+            "path" => Some(Self::Path),
+            "command" => Some(Self::Command),
+            "event" => Some(Self::Event),
+            "entity" => Some(Self::Entity),
+            _ => None,
+        }
+    }
+}
+
+/// 一条记忆的钥匙；同一 key_no 的几把是「全部满足」的条件。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryKey {
+    pub key_no: u32,
+    pub kind: MemoryKeyKind,
+    pub value: String,
+}
+
+/// 一条出处；旧库迁移不造 source 行，所以 quote 为空表示「只有引用、没留原话」。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemorySource {
+    pub source_kind: String,
+    pub source_ref: String,
+    pub quote: Option<String>,
+    pub added_at: i64,
+}
+
+/// 一次 schema 迁移的报告；只有真的从旧库迁上来时才有。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryMigrationReport {
+    pub from_version: u64,
+    pub to_version: u64,
+    /// 迁移前的备份路径；没有备份（新库/非 v2）为空。
+    pub backup: Option<String>,
+    /// 旧 memory 行里没有原文的行数（旧库没有 quote 表，迁移不伪造 quote）。
+    pub missing_original: u64,
+}

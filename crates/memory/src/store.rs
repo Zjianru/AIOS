@@ -13,11 +13,13 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::error::MemoryError;
 use crate::types::{
     Actor, Binding, DiaryEntry, DreamAction, DreamChange, DreamChangeInput, DreamRun,
-    DreamSettings, DreamSettingsPatch, Layer, MemoryItem, MemoryView, RevisionItem, Scope,
-    SearchHit, WriteContext, WriteOp, WriteOutcome,
+    DreamSettings, DreamSettingsPatch, Layer, MemoryItem, MemoryKey, MemoryKeyKind,
+    MemoryMigrationReport, MemorySource, MemoryView, RevisionItem, Scope, SearchHit, WriteContext,
+    WriteOp, WriteOutcome,
 };
 
-pub const SCHEMA_VERSION: u64 = 2;
+pub const SCHEMA_VERSION: u64 = 3;
+const V2_BACKUP_FILE: &str = "memory.db.v2.bak";
 const SCHEMA_KEY: &str = "schema_version";
 const VERSION_KEY: &str = "version";
 const QUARANTINE_MS: i64 = 7 * 24 * 60 * 60 * 1000;
@@ -42,7 +44,12 @@ const CREATE_TABLES: &str = "
         purge_after INTEGER,
         status TEXT NOT NULL,
         current_revision INTEGER NOT NULL,
-        pinned INTEGER NOT NULL DEFAULT 0
+        pinned INTEGER NOT NULL DEFAULT 0,
+        valid_from INTEGER NOT NULL DEFAULT 0,
+        valid_until INTEGER,
+        invalid_reason TEXT CHECK (invalid_reason IS NULL OR invalid_reason IN ('replaced','user_deadline','deleted')),
+        superseded_by TEXT,
+        possibly_stale INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS memory_layer ON memory(layer, status);
     CREATE TABLE IF NOT EXISTS memory_revision (
@@ -59,6 +66,11 @@ const CREATE_TABLES: &str = "
         undo_of INTEGER,
         actor TEXT NOT NULL DEFAULT 'system',
         created_at INTEGER NOT NULL,
+        valid_from INTEGER NOT NULL DEFAULT 0,
+        valid_until INTEGER,
+        invalid_reason TEXT CHECK (invalid_reason IS NULL OR invalid_reason IN ('replaced','user_deadline','deleted')),
+        superseded_by TEXT,
+        possibly_stale INTEGER NOT NULL DEFAULT 0,
         UNIQUE(memory_id, revision)
     );
     CREATE TABLE IF NOT EXISTS diary_entry (
@@ -98,8 +110,43 @@ const CREATE_TABLES: &str = "
         source_hash TEXT PRIMARY KEY,
         at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS memory_key (
+        memory_id TEXT NOT NULL,
+        key_no INTEGER NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('keyword','path','command','event','entity')),
+        value TEXT NOT NULL,
+        PRIMARY KEY (memory_id, key_no)
+    );
+    CREATE TABLE IF NOT EXISTS memory_source (
+        memory_id TEXT NOT NULL,
+        source_kind TEXT NOT NULL,
+        source_ref TEXT NOT NULL,
+        quote TEXT,
+        added_at INTEGER NOT NULL,
+        PRIMARY KEY (memory_id, source_kind, source_ref)
+    );
+    CREATE TABLE IF NOT EXISTS memory_relation (
+        memory_id TEXT NOT NULL,
+        related_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('supplement','replaces')),
+        PRIMARY KEY (memory_id, related_id, kind)
+    );
+    CREATE TABLE IF NOT EXISTS memory_card (
+        card_ref TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        status TEXT NOT NULL,
+        payload_json TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS memory_delivery (
+        memory_id TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        turn INTEGER NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('matched','sent','suppressed','used')),
+        at INTEGER NOT NULL,
+        PRIMARY KEY (memory_id, conversation_id, turn, kind)
+    );
     CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
-        kind, memory_id UNINDEXED, title, body, source_json UNINDEXED,
+        kind, memory_id UNINDEXED, title, body, source_json UNINDEXED, keys,
         tokenize='trigram'
     );
     CREATE VIRTUAL TABLE IF NOT EXISTS conversation_fts USING fts5(
@@ -114,6 +161,7 @@ type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
 pub struct MemoryStore {
     conn: Mutex<Connection>,
     clock: Clock,
+    migration_report: Option<MemoryMigrationReport>,
 }
 
 impl MemoryStore {
@@ -123,13 +171,24 @@ impl MemoryStore {
 
     /// 测试用的假时钟入口；生产走 open。
     pub fn open_with_clock(path: impl AsRef<Path>, clock: Clock) -> Result<Self, MemoryError> {
-        let path = path.as_ref();
+        Self::open_inner(path.as_ref(), clock, false)
+    }
+
+    /// 迁移失败注入：只给回滚测试用，生产不会走到这条路。
+    #[doc(hidden)]
+    pub fn open_with_failed_migration_for_test(
+        path: impl AsRef<Path>,
+    ) -> Result<Self, MemoryError> {
+        Self::open_inner(path.as_ref(), Arc::new(now_millis), true)
+    }
+
+    fn open_inner(path: &Path, clock: Clock, fail_migration: bool) -> Result<Self, MemoryError> {
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
         {
             fs::create_dir_all(parent)?;
         }
-        let conn = Connection::open(path)?;
+        let mut conn = Connection::open(path)?;
         let version = stored_schema_version(&conn)?;
         if let Some(version) = version
             && version > SCHEMA_VERSION
@@ -156,26 +215,31 @@ impl MemoryStore {
             )));
         }
         conn.execute_batch("PRAGMA synchronous=FULL;")?;
-        conn.execute_batch(CREATE_TABLES)?;
+        let mut migration_report = None;
         match version {
             None => {
+                conn.execute_batch(CREATE_TABLES)?;
                 conn.execute(
                     "INSERT INTO kv (key, value) VALUES (?1, ?2)",
                     params![SCHEMA_KEY, SCHEMA_VERSION.to_string()],
                 )?;
-            }
-            Some(1) => {
-                // v1 → v2：历次修订补「谁改的」。记忆库还没上线，这里只做一次迁移，不留读兼容分支。
-                conn.execute(
-                    "ALTER TABLE memory_revision ADD COLUMN actor TEXT NOT NULL DEFAULT 'system'",
-                    [],
-                )?;
-                conn.execute(
-                    "UPDATE kv SET value = ?1 WHERE key = ?2",
-                    params![SCHEMA_VERSION.to_string(), SCHEMA_KEY],
+                conn.pragma_update(
+                    None,
+                    "user_version",
+                    i64::try_from(SCHEMA_VERSION).unwrap_or(3),
                 )?;
             }
-            Some(_) => {}
+            Some(old) if old < SCHEMA_VERSION => {
+                migration_report = Some(migrate_to_v3(&mut conn, path, old, fail_migration)?);
+            }
+            Some(_) => {
+                conn.execute_batch(CREATE_TABLES)?;
+                conn.pragma_update(
+                    None,
+                    "user_version",
+                    i64::try_from(SCHEMA_VERSION).unwrap_or(3),
+                )?;
+            }
         }
         conn.execute(
             "INSERT OR IGNORE INTO kv (key, value) VALUES (?1, '0')",
@@ -184,7 +248,13 @@ impl MemoryStore {
         Ok(Self {
             conn: Mutex::new(conn),
             clock,
+            migration_report,
         })
+    }
+
+    /// 从旧库迁上来时的报告；没有迁移过就是 None。
+    pub fn migration_report(&self) -> Option<&MemoryMigrationReport> {
+        self.migration_report.as_ref()
     }
 
     fn lock(&self) -> MutexGuard<'_, Connection> {
@@ -253,6 +323,97 @@ impl MemoryStore {
     pub fn item(&self, id: &str) -> Result<Option<MemoryItem>, MemoryError> {
         let conn = self.lock();
         item_by_id(&conn, id)
+    }
+
+    /// 一条记忆的钥匙，按 key_no 排。
+    pub fn keys(&self, id: &str) -> Result<Vec<MemoryKey>, MemoryError> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT key_no, kind, value FROM memory_key WHERE memory_id = ?1 ORDER BY key_no",
+        )?;
+        let rows = stmt.query_map(params![id], |row| {
+            let kind: String = row.get(1)?;
+            Ok(MemoryKey {
+                key_no: row.get::<_, i64>(0)? as u32,
+                kind: MemoryKeyKind::parse(&kind).unwrap_or(MemoryKeyKind::Keyword),
+                value: row.get(2)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(MemoryError::Sqlite)
+    }
+
+    /// 一条记忆的出处。
+    pub fn sources(&self, id: &str) -> Result<Vec<MemorySource>, MemoryError> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT source_kind, source_ref, quote, added_at FROM memory_source WHERE memory_id = ?1 ORDER BY added_at, source_kind, source_ref",
+        )?;
+        let rows = stmt.query_map(params![id], |row| {
+            Ok(MemorySource {
+                source_kind: row.get(0)?,
+                source_ref: row.get(1)?,
+                quote: row.get(2)?,
+                added_at: row.get(3)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(MemoryError::Sqlite)
+    }
+
+    /// 换一组钥匙：删旧、写新、FTS 的 keys 在同一个事务里更新。
+    pub fn set_keys(&self, id: &str, keys: &[(MemoryKeyKind, String)]) -> Result<(), MemoryError> {
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if item_by_id(&tx, id)?.is_none() {
+            return Err(MemoryError::NotFound(id.to_owned()));
+        }
+        tx.execute("DELETE FROM memory_key WHERE memory_id = ?1", params![id])?;
+        let mut values = Vec::with_capacity(keys.len());
+        for (index, (kind, value)) in keys.iter().enumerate() {
+            let value = value.trim();
+            if value.is_empty() {
+                return Err(MemoryError::Refused("钥匙不能为空"));
+            }
+            tx.execute(
+                "INSERT INTO memory_key (memory_id, key_no, kind, value) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    id,
+                    i64::try_from(index).unwrap_or(i64::MAX),
+                    kind.as_str(),
+                    value
+                ],
+            )?;
+            values.push(value.to_owned());
+        }
+        update_fts_keys(&tx, id, &values.join(" "))?;
+        bump_version(&tx)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// 追加一条出处；旧库迁移不调用这里，所以不会伪造旧原文。
+    pub fn add_source(
+        &self,
+        id: &str,
+        source_kind: &str,
+        source_ref: &str,
+        quote: Option<&str>,
+    ) -> Result<(), MemoryError> {
+        let added_at = (self.clock)();
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if item_by_id(&tx, id)?.is_none() {
+            return Err(MemoryError::NotFound(id.to_owned()));
+        }
+        tx.execute(
+            "INSERT INTO memory_source (memory_id, source_kind, source_ref, quote, added_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(memory_id, source_kind, source_ref) DO UPDATE SET quote = excluded.quote",
+            params![id, source_kind, source_ref, quote, added_at],
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// 一条记忆的全部修订（从第 1 版起，只增不改）。
@@ -626,6 +787,154 @@ fn stored_schema_version(conn: &Connection) -> Result<Option<u64>, MemoryError> 
     Ok(value.and_then(|value| value.parse().ok()))
 }
 
+fn migrate_to_v3(
+    conn: &mut Connection,
+    path: &Path,
+    from: u64,
+    fail: bool,
+) -> Result<MemoryMigrationReport, MemoryError> {
+    let backup = if from == 2 {
+        Some(backup_v2(conn, path)?)
+    } else {
+        None
+    };
+    let missing_original: u64 = conn.query_row("SELECT COUNT(*) FROM memory", [], |row| {
+        row.get::<_, i64>(0)
+    })? as u64;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    if from == 1 && !table_has_column(&tx, "memory_revision", "actor")? {
+        tx.execute(
+            "ALTER TABLE memory_revision ADD COLUMN actor TEXT NOT NULL DEFAULT 'system'",
+            [],
+        )?;
+    }
+    add_column_if_missing(&tx, "memory", "valid_from", "INTEGER NOT NULL DEFAULT 0")?;
+    add_column_if_missing(&tx, "memory", "valid_until", "INTEGER")?;
+    add_column_if_missing(
+        &tx,
+        "memory",
+        "invalid_reason",
+        "TEXT CHECK (invalid_reason IS NULL OR invalid_reason IN ('replaced','user_deadline','deleted'))",
+    )?;
+    add_column_if_missing(&tx, "memory", "superseded_by", "TEXT")?;
+    add_column_if_missing(
+        &tx,
+        "memory",
+        "possibly_stale",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    add_column_if_missing(
+        &tx,
+        "memory_revision",
+        "valid_from",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    add_column_if_missing(&tx, "memory_revision", "valid_until", "INTEGER")?;
+    add_column_if_missing(
+        &tx,
+        "memory_revision",
+        "invalid_reason",
+        "TEXT CHECK (invalid_reason IS NULL OR invalid_reason IN ('replaced','user_deadline','deleted'))",
+    )?;
+    add_column_if_missing(&tx, "memory_revision", "superseded_by", "TEXT")?;
+    add_column_if_missing(
+        &tx,
+        "memory_revision",
+        "possibly_stale",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    tx.execute(
+        "UPDATE memory SET valid_from = created_at WHERE valid_from = 0",
+        [],
+    )?;
+    tx.execute(
+        "UPDATE memory_revision SET valid_from = created_at WHERE valid_from = 0",
+        [],
+    )?;
+    // FTS5 不能加列：旧表整张重建，词表里显式加 keys；旧数据没有钥匙，留空。
+    tx.execute("DROP TABLE IF EXISTS memory_fts", [])?;
+    tx.execute_batch(CREATE_TABLES)?;
+    rebuild_memory_fts(&tx)?;
+    if fail {
+        return Err(MemoryError::Migration("测试注入：迁移失败".to_owned()));
+    }
+    tx.execute(
+        "INSERT INTO kv (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![SCHEMA_KEY, SCHEMA_VERSION.to_string()],
+    )?;
+    tx.commit()?;
+    conn.pragma_update(
+        None,
+        "user_version",
+        i64::try_from(SCHEMA_VERSION).unwrap_or(3),
+    )?;
+    Ok(MemoryMigrationReport {
+        from_version: from,
+        to_version: SCHEMA_VERSION,
+        backup: backup.map(|path| path.display().to_string()),
+        missing_original,
+    })
+}
+
+fn backup_v2(conn: &Connection, path: &Path) -> Result<std::path::PathBuf, MemoryError> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let backup = parent.join(V2_BACKUP_FILE);
+    if backup.exists() {
+        return Ok(backup);
+    }
+    let temp = parent.join(format!("{V2_BACKUP_FILE}.tmp"));
+    drop(fs::remove_file(&temp));
+    // VACUUM INTO 读的是同一个一致性快照，WAL 里的尾部也会带上。
+    conn.execute(
+        "VACUUM INTO ?1",
+        params![temp.to_string_lossy().to_string()],
+    )?;
+    fs::rename(&temp, &backup)?;
+    Ok(backup)
+}
+
+fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, MemoryError> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let names = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for name in names {
+        if name? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn add_column_if_missing(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> Result<(), MemoryError> {
+    if table_has_column(conn, table, column)? {
+        return Ok(());
+    }
+    conn.execute(
+        &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
+        [],
+    )?;
+    Ok(())
+}
+
+fn rebuild_memory_fts(conn: &Connection) -> Result<(), MemoryError> {
+    conn.execute(
+        "INSERT INTO memory_fts (kind, memory_id, title, body, source_json, keys)
+         SELECT layer, id, title, body, '{}', '' FROM memory",
+        [],
+    )?;
+    conn.execute(
+        "INSERT INTO memory_fts (kind, memory_id, title, body, source_json, keys)
+         SELECT 'diary', id, '', text, '{}', '' FROM diary_entry",
+        [],
+    )?;
+    Ok(())
+}
+
 /// 修订里的「谁改的」：写入上下文的就是最终身份（Kind 的入口也按 User 记，挡住的是越权层）。
 fn actor_str(actor: Actor) -> &'static str {
     match actor {
@@ -855,11 +1164,11 @@ fn create_item(
 ) -> Result<MemoryItem, MemoryError> {
     let id = next_id("mem");
     tx.execute(
-        "INSERT INTO memory (id, layer, binding, scope, title, summary, body, source_kind, source_ref, created_at, updated_at, status, current_revision) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, 'active', 1)",
+        "INSERT INTO memory (id, layer, binding, scope, title, summary, body, source_kind, source_ref, created_at, updated_at, status, current_revision, valid_from) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, 'active', 1, ?10)",
         params![id, layer.as_str(), binding.as_str(), scope.as_str(), title, summary, body, source_kind, source_ref, now],
     )?;
     tx.execute(
-        "INSERT INTO memory_revision (memory_id, revision, title, summary, body, source_kind, source_ref, reason, dream_run_id, actor, created_at) VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, 'created', ?7, ?8, ?9)",
+        "INSERT INTO memory_revision (memory_id, revision, title, summary, body, source_kind, source_ref, reason, dream_run_id, actor, created_at, valid_from) VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, 'created', ?7, ?8, ?9, ?9)",
         params![id, title, summary, body, source_kind, source_ref, dream_run, actor, now],
     )?;
     fts_put(tx, &id, layer, title, body)?;
@@ -875,8 +1184,20 @@ fn fts_put(
 ) -> Result<(), MemoryError> {
     tx.execute("DELETE FROM memory_fts WHERE memory_id = ?1", params![id])?;
     tx.execute(
-        "INSERT INTO memory_fts (kind, memory_id, title, body, source_json) VALUES (?1, ?2, ?3, ?4, '{}')",
+        "INSERT INTO memory_fts (kind, memory_id, title, body, source_json, keys) VALUES (?1, ?2, ?3, ?4, '{}', '')",
         params![layer.as_str(), id, title, body],
+    )?;
+    Ok(())
+}
+
+fn update_fts_keys(
+    tx: &rusqlite::Transaction<'_>,
+    id: &str,
+    keys: &str,
+) -> Result<(), MemoryError> {
+    tx.execute(
+        "UPDATE memory_fts SET keys = ?1 WHERE memory_id = ?2",
+        params![keys, id],
     )?;
     Ok(())
 }
@@ -905,7 +1226,7 @@ fn create_diary(
     )?;
     tx.execute("DELETE FROM memory_fts WHERE memory_id = ?1", params![id])?;
     tx.execute(
-        "INSERT INTO memory_fts (kind, memory_id, title, body, source_json) VALUES ('diary', ?1, '', ?2, '{}')",
+        "INSERT INTO memory_fts (kind, memory_id, title, body, source_json, keys) VALUES ('diary', ?1, '', ?2, '{}', '')",
         params![id, text],
     )?;
     Ok(DiaryEntry {
@@ -939,7 +1260,7 @@ fn correct_item(
         params![title, summary, body, now, revision as i64, id],
     )?;
     tx.execute(
-        "INSERT INTO memory_revision (memory_id, revision, title, summary, body, source_kind, source_ref, reason, actor, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        "INSERT INTO memory_revision (memory_id, revision, title, summary, body, source_kind, source_ref, reason, actor, created_at, valid_from) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
         params![id, revision as i64, title, summary, body, current.source_kind, current.source_ref, reason, actor, now],
     )?;
     fts_put(tx, id, current.layer, title, body)?;
@@ -1105,7 +1426,7 @@ fn dream_apply(
             params![title, summary, body, now, after as i64, if retired { "retired" } else { "active" }, memory_id],
         )?;
         tx.execute(
-            "INSERT INTO memory_revision (memory_id, revision, title, summary, body, source_kind, source_ref, reason, dream_run_id, actor, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'dream', ?10)",
+            "INSERT INTO memory_revision (memory_id, revision, title, summary, body, source_kind, source_ref, reason, dream_run_id, actor, created_at, valid_from) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'dream', ?10, ?10)",
             params![memory_id, after as i64, title, summary, body, item.source_kind, item.source_ref, change.reason, run.id, now],
         )?;
         fts_put(tx, &memory_id, item.layer, title, body)?;
@@ -1177,7 +1498,7 @@ fn dream_undo(
             params![title, summary, body, now, next as i64, id],
         )?;
         tx.execute(
-            "INSERT INTO memory_revision (memory_id, revision, title, summary, body, source_kind, source_ref, reason, undo_of, actor, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'dream_undo', ?8, ?9, ?10)",
+            "INSERT INTO memory_revision (memory_id, revision, title, summary, body, source_kind, source_ref, reason, undo_of, actor, created_at, valid_from) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'dream_undo', ?8, ?9, ?10, ?10)",
             params![id, next as i64, title, summary, body, item.source_kind, item.source_ref, after, actor, now],
         )?;
         fts_put(tx, &id, item.layer, &title, &body)?;
