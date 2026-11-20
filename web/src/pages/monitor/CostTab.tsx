@@ -3,13 +3,12 @@
  * Kind 只进合计，不产任务卡、不做诊断；项目只有「全部」，任务按未归项目显示。
  */
 
-import { useMemo } from 'react';
 import { ArrowUpRight, Sparkles } from 'lucide-react';
 import { go } from '@/app/navigate';
 import { formatTokens } from '@/lib/numbers';
 import { cn } from '@/lib/utils';
 import { useMonitorStore } from './monitorStore';
-import type { MonitorRange, MonitorTaskSummary, MonitorUsageRow } from '@/data/service';
+import type { MonitorDay, MonitorTaskSummary, MonitorUsageRow } from '@/data/service';
 import { Card, Donut, Kpi, Missing, RankRow, Segmented, fmtClock } from './monitorParts';
 
 const MODEL_COLOR = 'var(--kf-c1)';
@@ -35,46 +34,16 @@ function stateLabel(state: string): string {
   return labels[state] ?? state;
 }
 
-function dayKey(ms: number): string {
-  const date = new Date(ms);
-  return date.getFullYear() + '-' + (date.getMonth() + 1) + '-' + date.getDate();
-}
-
-function DailyBars({ range, tasks }: { range: MonitorRange; tasks: MonitorTaskSummary[] }) {
-  const days = useMemo(() => {
-    const now = new Date();
-    return Array.from({ length: 14 }, (_, index) => {
-      const date = new Date(now.getFullYear(), now.getMonth(), now.getDate() - (13 - index));
-      return {
-        key: dayKey(date.getTime()),
-        date,
-        cost: 0,
-        tokensIn: 0,
-        tokensOut: 0,
-        requests: 0,
-        unpriced: 0,
-      };
-    });
-  }, []);
-  const byDay = new Map(days.map((day) => [day.key, day]));
-  for (const task of tasks) {
-    const at = task.endedAt ?? task.startedAt;
-    if (!at) continue;
-    const day = byDay.get(dayKey(at));
-    if (!day) continue;
-    day.cost += task.costUsd ?? 0;
-    day.tokensIn += task.inputTokens;
-    day.tokensOut += task.outputTokens;
-    day.requests += task.requests;
-    if (task.unpriced) day.unpriced += 1;
+function DailyBars({ days }: { days: MonitorDay[] }) {
+  if (!days.length) {
+    return (
+      <div data-kind="cost-daily" className="grid h-[168px] place-items-center text-2 text-ink-3">
+        <Missing what="这段时间没有落天事件" />
+      </div>
+    );
   }
-  const max = Math.max(...days.map((day) => day.cost), 0.01);
+  const max = Math.max(...days.map((day) => day.costUsd ?? 0), 0.01);
   const top = Math.ceil(max * 2) / 2;
-  const inRange = (index: number) => {
-    if (range === 'today') return index === days.length - 1;
-    if (range === 'last7-days') return index >= days.length - 7;
-    return true;
-  };
   return (
     <div data-kind="cost-daily">
       <div className="flex h-[168px] gap-2">
@@ -85,20 +54,16 @@ function DailyBars({ range, tasks }: { range: MonitorRange; tasks: MonitorTaskSu
         </div>
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="flex min-h-0 flex-1 items-end gap-[4px] border-b border-line-2">
-            {days.map((day, index) => {
-              const dim = !inRange(index);
+            {days.map((day) => {
+              const cost = day.costUsd ?? 0;
               return (
-                <div key={day.key} className="relative flex h-full min-w-0 flex-1 flex-col justify-end" title={new Date(day.date).toLocaleDateString('zh-CN')}>
+                <div key={day.day} className="relative flex h-full min-w-0 flex-1 flex-col justify-end" title={day.day + ' · 请求 ' + day.requests + ' · 工具 ' + day.toolCalls + ' · 命令 ' + day.commandCalls}>
                   <div
                     className="relative w-full rounded-t-[4px]"
-                    style={{
-                      height: Math.max(day.cost ? 2 : 0, (day.cost / top) * 100) + '%',
-                      background: dim ? 'var(--line-2)' : MODEL_COLOR,
-                    }}
+                    style={{ height: Math.max(cost ? 2 : 0, (cost / top) * 100) + '%', background: MODEL_COLOR }}
                   />
-                  {day.unpriced && !dim ? (
-                    <span className="brand-type absolute bottom-full left-1/2 mb-0.5 -translate-x-1/2 text-1 leading-none text-ink-3">
-                      +
+                  {day.unpriced ? (
+                    <span className="brand-type absolute bottom-full left-1/2 mb-0.5 -translate-x-1/2 text-1 leading-none text-ink-3">+
                     </span>
                   ) : null}
                 </div>
@@ -106,9 +71,9 @@ function DailyBars({ range, tasks }: { range: MonitorRange; tasks: MonitorTaskSu
             })}
           </div>
           <div className="brand-type flex h-5 items-end gap-[4px] text-1 text-ink-3">
-            {days.map((day, index) => (
-              <span key={day.key} className="min-w-0 flex-1 text-center">
-                {index % 4 === 0 || index === days.length - 1 ? new Date(day.date).getDate() : ''}
+            {days.map((day) => (
+              <span key={day.day} className="min-w-0 flex-1 text-center">
+                {day.day.slice(5)}
               </span>
             ))}
           </div>
@@ -117,10 +82,10 @@ function DailyBars({ range, tasks }: { range: MonitorRange; tasks: MonitorTaskSu
       <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 pl-14 text-1 text-ink-2">
         <span className="flex items-center gap-1.5">
           <i className="size-2 rounded-[2px]" style={{ background: MODEL_COLOR }} />
-          按任务开始日归属的花费
+          模型用量按事件时间落天
         </span>
-        <span className="text-ink-3">柱顶「+」：那天有任务没价格</span>
-        <span className="text-ink-3">服务端快照没有逐日请求，柱子是任务花费的日归属。</span>
+        <span className="text-ink-3">柱顶「+」：那天有轮没价格</span>
+        <span className="text-ink-3">工具 {days.reduce((sum, day) => sum + day.toolCalls, 0)} 次 · 命令 {days.reduce((sum, day) => sum + day.commandCalls, 0)} 次</span>
       </div>
     </div>
   );
@@ -227,7 +192,7 @@ export function CostTab() {
       </div>
 
       <Card title="每天的柱" note="花费按任务开始日归属·范围外素灰">
-        <DailyBars range={range} tasks={tasks} />
+        <DailyBars days={snapshot.days} />
       </Card>
 
       <div className="grid gap-3 md:grid-cols-2">

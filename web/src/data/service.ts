@@ -80,6 +80,7 @@ export type { MonitorTaskResponse } from './generated/MonitorTaskResponse';
 export type { MonitorTaskSummary } from './generated/MonitorTaskSummary';
 export type { MonitorUsageRow } from './generated/MonitorUsageRow';
 export type { MonitorContextParts } from './generated/MonitorContextParts';
+export type { MonitorDay } from './generated/MonitorDay';
 export type { MonitorAttempt } from './generated/MonitorAttempt';
 export type { MonitorTaskInfo } from './generated/MonitorTaskInfo';
 export type { MonitorTodo } from './generated/MonitorTodo';

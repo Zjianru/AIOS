@@ -1982,11 +1982,32 @@ pub struct MonitorRunning {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct MonitorDay {
+    /// 用户时区下的 YYYY-MM-DD。
+    pub day: String,
+    #[serde(rename = "costUsd", default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    pub unpriced: u64,
+    #[serde(rename = "inputTokens")]
+    pub input_tokens: u64,
+    #[serde(rename = "outputTokens")]
+    pub output_tokens: u64,
+    pub requests: u64,
+    #[serde(rename = "toolCalls")]
+    pub tool_calls: u64,
+    #[serde(rename = "commandCalls")]
+    pub command_calls: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct MonitorSnapshotResponse {
     pub range: MonitorRange,
     pub timezone: String,
     #[serde(rename = "generatedAt")]
     pub generated_at: i64,
+    /// 用户时区下按事件 time 落天的模型/工具/命令事实；范围外的天不出现。
+    #[serde(default)]
+    pub days: Vec<MonitorDay>,
     #[serde(default)]
     pub tasks: Vec<MonitorTaskSummary>,
     #[serde(default)]
