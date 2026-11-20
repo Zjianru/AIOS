@@ -9,6 +9,13 @@ export type MemoCardTarget =
   | { kind: 'memory' | 'diary'; id: string }
   | { kind: 'conversation'; turn: number; seq: number };
 
+export interface AboutEditMemo {
+  op: 'add' | 'replace' | 'delete';
+  aboutId?: string;
+  old?: string;
+  text?: string;
+}
+
 export interface MemoCard {
   kind: string;
   id?: string;
@@ -17,9 +24,30 @@ export interface MemoCard {
   ref?: string;
   /** 搜索卡的出处目标：点「看出处」能落到条目或那一轮。 */
   target?: MemoCardTarget;
+  /** 替换卡：旧/新条目和文案。 */
+  oldId?: string;
+  newId?: string;
+  oldTitle?: string;
+  oldText?: string;
+  newText?: string;
+  /** 「关于你」草稿卡。 */
+  quote?: string;
+  edits?: AboutEditMemo[];
 }
 
-function wordOf(kind: string, state: string | undefined): string {
+function wordOf(card: MemoCard, state: string | undefined): string {
+  const kind = card.kind;
+  if (kind === 'replace') {
+    if (state === 'replaced') return '替换了「' + (card.oldTitle ?? '') + '」· 旧的留在修订里';
+    if (state === 'kept') return '两条都留 · 「' + (card.oldTitle ?? '') + '」照旧';
+    return '这条会替换你定的「' + (card.oldTitle ?? '') + '」';
+  }
+  if (kind === 'about_draft') {
+    const count = card.edits?.length ?? 0;
+    if (state === 'saved') return '「关于你」改了 ' + count + ' 处 · 记忆页能看修订';
+    if (state === 'dropped') return '没用这份草稿 · 「关于你」没动';
+    return 'Kind 起草了「关于你」的 ' + count + ' 处改动 · 依据你说的';
+  }
   if (kind === 'permission') return state === 'accepted' ? '已允许' : '做梦许可';
   if (kind === 'dream_done') return state === 'revoked' ? '整理完了 · 已撤销' : '整理完了';
   if (kind === 'dream_failed') return '整理没跑成';
@@ -46,7 +74,7 @@ export function MemoChip({ card }: { card: MemoCard }) {
   const states = useMemoryCardStates([reference]);
   const state = states[reference]?.state;
   const reason = states[reference]?.error;
-  const word = wordOf(card.kind, state);
+  const word = wordOf(card, state);
 
   const act = (action: MemoryActionKind) => {
     void performMemoryAction(action)
@@ -110,6 +138,34 @@ export function MemoChip({ card }: { card: MemoCard }) {
         run: () => act({ kind: 'delete', id: card.id! }),
       });
     }
+  } else if (card.kind === 'replace' && reference) {
+    if (state !== 'replaced' && state !== 'kept') {
+      actions.push({
+        label: '替换',
+        action: 'memory-replace',
+        primary: true,
+        run: () => act({ kind: 'resolve-replace', card: reference, replace: true }),
+      });
+      actions.push({
+        label: '两条都留',
+        action: 'memory-keep',
+        run: () => act({ kind: 'resolve-replace', card: reference, replace: false }),
+      });
+    }
+  } else if (card.kind === 'about_draft' && reference) {
+    if (state !== 'saved' && state !== 'dropped') {
+      actions.push({
+        label: '保存',
+        action: 'memory-about-save',
+        primary: true,
+        run: () => act({ kind: 'resolve-about-draft', card: reference, save: true }),
+      });
+      actions.push({
+        label: '不用',
+        action: 'memory-about-drop',
+        run: () => act({ kind: 'resolve-about-draft', card: reference, save: false }),
+      });
+    }
   } else if (card.kind === 'search') {
     actions.push({
       label: '看出处',
@@ -143,7 +199,21 @@ export function MemoChip({ card }: { card: MemoCard }) {
     >
       <Bookmark className="size-3 shrink-0 text-wait" strokeWidth={1.7} />
       <span className="shrink-0">{word}</span>
-      {card.title ? <span className="min-w-0 truncate text-ink-2">{card.title}</span> : null}
+      {card.title && card.kind !== 'about_draft' ? (
+        <span className="min-w-0 truncate text-ink-2">{card.title}</span>
+      ) : null}
+      {card.kind === 'replace' && card.oldText !== undefined && card.newText !== undefined ? (
+        <span className="min-w-0 truncate" data-kind="memo-replace-diff">
+          <span className="line-through decoration-ink-3/60">{card.oldText}</span>
+          <span className="px-1">→</span>
+          <span className="text-ink-2">{card.newText}</span>
+        </span>
+      ) : null}
+      {card.kind === 'about_draft' && card.quote ? (
+        <span className="min-w-0 truncate text-ink-3" data-kind="memo-about-quote">
+          「{card.quote}」
+        </span>
+      ) : null}
       {card.kind === 'dream_failed' && reason ? (
         <span
           data-kind="memo-error"
@@ -151,6 +221,28 @@ export function MemoChip({ card }: { card: MemoCard }) {
           title={reason}
         >
           {reason}
+        </span>
+      ) : null}
+      {card.kind === 'about_draft' && card.edits && card.edits.length > 0 ? (
+        <span className="flex min-w-0 flex-col gap-0.5" data-kind="memo-about-edits">
+          {card.edits.map((edit, index) => (
+            <span key={index} className="min-w-0 truncate">
+              <span className="pr-1 text-ink-3">
+                {edit.op === 'add' ? '加' : edit.op === 'replace' ? '改' : '删'}
+              </span>
+              {edit.op === 'add' ? <span className="text-ink-2">{edit.text}</span> : null}
+              {edit.op === 'replace' ? (
+                <>
+                  <span className="line-through decoration-ink-3/60">{edit.old}</span>
+                  <span className="px-1">→</span>
+                  <span className="text-ink-2">{edit.text}</span>
+                </>
+              ) : null}
+              {edit.op === 'delete' ? (
+                <span className="line-through decoration-ink-3/60">{edit.old}</span>
+              ) : null}
+            </span>
+          ))}
         </span>
       ) : null}
       {actions.map((item) => (
@@ -181,6 +273,13 @@ export function memoryCardOf(meta: Record<string, unknown> | null | undefined): 
     title?: unknown;
     ref?: unknown;
     target?: unknown;
+    oldId?: unknown;
+    newId?: unknown;
+    oldTitle?: unknown;
+    oldText?: unknown;
+    newText?: unknown;
+    quote?: unknown;
+    edits?: unknown;
   };
   if (typeof card.kind !== 'string') return null;
   const id = typeof card.id === 'string' ? card.id : undefined;
@@ -190,7 +289,32 @@ export function memoryCardOf(meta: Record<string, unknown> | null | undefined): 
     title: typeof card.title === 'string' ? card.title : undefined,
     ref: typeof card.ref === 'string' ? card.ref : id,
     target: parseTarget(card.target),
+    oldId: typeof card.oldId === 'string' ? card.oldId : undefined,
+    newId: typeof card.newId === 'string' ? card.newId : undefined,
+    oldTitle: typeof card.oldTitle === 'string' ? card.oldTitle : undefined,
+    oldText: typeof card.oldText === 'string' ? card.oldText : undefined,
+    newText: typeof card.newText === 'string' ? card.newText : undefined,
+    quote: typeof card.quote === 'string' ? card.quote : undefined,
+    edits: parseEdits(card.edits),
   };
+}
+
+function parseEdits(value: unknown): AboutEditMemo[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const edits: AboutEditMemo[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue;
+    const edit = item as { op?: unknown; about_id?: unknown; old?: unknown; text?: unknown };
+    const op = edit.op;
+    if (op !== 'add' && op !== 'replace' && op !== 'delete') continue;
+    edits.push({
+      op,
+      aboutId: typeof edit.about_id === 'string' ? edit.about_id : undefined,
+      old: typeof edit.old === 'string' ? edit.old : undefined,
+      text: typeof edit.text === 'string' ? edit.text : undefined,
+    });
+  }
+  return edits;
 }
 
 function parseTarget(value: unknown): MemoCardTarget | undefined {

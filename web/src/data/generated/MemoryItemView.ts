@@ -3,4 +3,4 @@
 /**
  * 记忆条目（页面/卡片用；字段和库里的视图一一对应）。
  */
-export type MemoryItemView = { id: string, layer: string, binding: string, scope: string, title: string, summary: string, body: string, sourceKind: string, sourceRef: string, status: string, revision: number, updatedAt: number, pinned: boolean, };
+export type MemoryItemView = { id: string, layer: string, binding: string, scope: string, title: string, summary: string, body: string, sourceKind: string, sourceRef: string, status: string, revision: number, updatedAt: number, pinned: boolean, validFrom: number, validUntil?: number | null, invalidReason?: string | null, supersededBy?: string | null, possiblyStale: boolean, };

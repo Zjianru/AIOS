@@ -162,7 +162,7 @@ impl RootSession {
 ///
 /// 写、改、跑命令和三件后台任务不在里面；这些活派给 ThinAgent。任务工具看
 /// `task_runtime` 有没有装配，由 `kind_tool_policy` 追加。
-const KIND_TOOLS: [&str; 19] = [
+const KIND_TOOLS: [&str; 20] = [
     "read",
     "glob",
     "grep",
@@ -176,6 +176,7 @@ const KIND_TOOLS: [&str; 19] = [
     "web_fetch",
     "memory_remember",
     "memory_note",
+    "memory_about_draft",
     "memory_search",
     "memory_read",
     "memory_diary",

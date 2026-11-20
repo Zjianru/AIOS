@@ -157,6 +157,15 @@ impl MemoryRuntime {
 
     /// 程序卡的状态按 ref 从库里读：观察许可、做梦 run、或记忆的当前状态。
     pub fn card_state(&self, reference: &str) -> Option<String> {
+        if let Ok(Some(card)) = self.store.card(reference) {
+            return Some(
+                match card.status.as_str() {
+                    "pending" => "active",
+                    other => other,
+                }
+                .to_owned(),
+            );
+        }
         if reference == DREAM_PERMIT_CARD_REF {
             let settings = self.store.dream_settings().ok()?;
             return Some(

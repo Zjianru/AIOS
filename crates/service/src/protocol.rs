@@ -1371,6 +1371,28 @@ pub struct MemoryItemView {
     #[serde(rename = "updatedAt")]
     pub updated_at: i64,
     pub pinned: bool,
+    #[serde(rename = "validFrom")]
+    pub valid_from: i64,
+    #[serde(
+        rename = "validUntil",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub valid_until: Option<i64>,
+    #[serde(
+        rename = "invalidReason",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub invalid_reason: Option<String>,
+    #[serde(
+        rename = "supersededBy",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub superseded_by: Option<String>,
+    #[serde(rename = "possiblyStale")]
+    pub possibly_stale: bool,
 }
 
 /// 一条日记（只读）。
@@ -1548,6 +1570,16 @@ pub enum MemoryActionKind {
     },
     /// 用户说「马上整理一次」。
     DreamNow,
+    /// 替换卡：替换 / 两条都留；在库里的卡状态上原子生效一次。
+    ResolveReplace {
+        card: String,
+        replace: bool,
+    },
+    /// 关于你草稿卡：保存 / 不用；在库里的卡状态上原子生效一次。
+    ResolveAboutDraft {
+        card: String,
+        save: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -1584,13 +1616,15 @@ pub struct MemoryActionResponse {
 ///   旧页忽略新增字段，旧服务的 status 没有它时页面照绝对路径显示。
 /// - 10：删 connection-verify；连接的 check 改由保存时拉一次厂商列表写
 ///   （新连接/换 key 才拉；旧页发这个方法按未知方法拒绝）。
+/// - 22：记忆替换卡/关于你草稿卡的两种 resolve 动作（ResolveReplace/ResolveAboutDraft）；
+///   记忆条目视图加成立/失效/被替换字段。只增，旧页忽略。
 /// - 16：记忆页——memory-read（读关于你/条目/日记/隔离区/做梦/搜索/卡状态）、
 ///   memory-action（更正/删/恢复/彻底删/定下来/撤销做梦/开关/间隔/许可/马上整理）；
 ///   推送 memory/changed { version }（seq=0 的合成事件，页面收到重读）。只增，旧页忽略。
 ///
 /// 连接上的旧价格乘数后来整条删掉，不升版本：两个请求里的这个字段本来就可省略，旧页再发
 /// 由 serde 当未知字段忽略；响应里少了它，旧页读到 undefined 也不会拿去定价。
-pub const PROTOCOL_VERSION: u64 = 21;
+pub const PROTOCOL_VERSION: u64 = 22;
 
 /// 日历读取：不带 appointmentId 读全部；带 week 时额外给那周的计划点。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]

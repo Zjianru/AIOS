@@ -6,5 +6,5 @@ mod error;
 mod store;
 pub mod types;
 
-pub use error::MemoryError;
+pub use error::{MemoryError, WriteError};
 pub use store::{MemoryStore, SCHEMA_VERSION};

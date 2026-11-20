@@ -10,6 +10,7 @@ import {
   restartRouteFile,
   taskResultRouteFile,
   t013RouteFile,
+  t073RouteFile,
   t030RouteFile,
   t052RouteFile,
   t053RouteFile,
@@ -40,6 +41,7 @@ export function startReplay(
         t057RouteFile(options) ??
         t056RouteFile(options) ??
         t055RouteFile(options) ??
+        t073RouteFile(options) ??
         t030RouteFile(options) ??
         t013RouteFile(options) ??
         t052RouteFile(options) ??

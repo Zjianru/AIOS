@@ -91,6 +91,13 @@ pub struct MemoryItem {
     pub current_revision: u64,
     pub updated_at: i64,
     pub pinned: bool,
+    /// 成立时间；迁移旧行 = created_at。
+    pub valid_from: i64,
+    pub valid_until: Option<i64>,
+    /// replaced / user_deadline / deleted；None = 仍有效。
+    pub invalid_reason: Option<String>,
+    pub superseded_by: Option<String>,
+    pub possibly_stale: bool,
 }
 
 /// 一条只追加的修订。
@@ -326,6 +333,15 @@ pub struct WriteOutcome {
     pub dream_applied: usize,
     pub dream_skipped: Vec<String>,
     pub purged: usize,
+    /// duplicate 时命中的旧条目 id；新条目为 None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duplicate_of: Option<String>,
+    /// 新建条目的关系目标（supplement/replaces 边指向的那条）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub related: Option<String>,
+    /// 这次写入产生的待决卡（替换卡 / 关于你草稿卡）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub card: Option<MemoryCardRecord>,
 }
 
 /// 打开后的一次全量视图；version 随每次写递增，服务据此推送。
@@ -400,4 +416,82 @@ pub struct MemoryMigrationReport {
     pub backup: Option<String>,
     /// 旧 memory 行里没有原文的行数（旧库没有 quote 表，迁移不伪造 quote）。
     pub missing_original: u64,
+}
+
+/// 一次带钥匙/关系的写入（深接口；服务层只经这里写记忆）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryWrite {
+    pub op: WriteOp,
+    pub keys: Vec<MemoryKey>,
+    pub relation: Option<RelationDecision>,
+    /// 成立时间；None = 用现在。迁移/回填之外都写现在。
+    pub valid_from: Option<i64>,
+    /// 用户原话/按来源核过的原话；来源引用另由 op 带。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_quote: Option<String>,
+}
+
+impl MemoryWrite {
+    pub fn new(op: WriteOp) -> Self {
+        Self {
+            op,
+            keys: Vec::new(),
+            relation: None,
+            valid_from: None,
+            source_quote: None,
+        }
+    }
+}
+
+/// 写入前对旧条目的关系判断。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RelationDecision {
+    Duplicate { target: String },
+    Contradict { target: String, reason: String },
+    Supplement { target: String },
+    Independent,
+}
+
+/// 关系候选：程序按范围 + 钥匙捞出来的旧条目，交给模型判关系。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelationCandidate {
+    pub id: String,
+    pub title: String,
+    pub summary: String,
+}
+
+/// 一条关系边：supplement（补充）/ replaces（替换）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryRelation {
+    pub related_id: String,
+    pub kind: String,
+}
+
+/// 一条待决记忆卡（替换卡 / 关于你草稿卡）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryCardRecord {
+    pub card_ref: String,
+    pub kind: String,
+    pub status: String,
+    pub payload: serde_json::Value,
+}
+
+/// 关于你的一处草稿改动（程序核过原话后才进卡）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AboutEdit {
+    /// add / replace / delete
+    pub op: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub about_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
+/// 关于你卡里的 payload。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AboutDraftPayload {
+    pub quote: String,
+    pub edits: Vec<AboutEdit>,
 }
