@@ -17,6 +17,8 @@ pub struct MemoryTools {
     identity: Option<PathBuf>,
     /// 根会话才接做梦；做梦自己的会话不接（不能再触发做梦）。
     dream: Option<Arc<super::DreamRuntime>>,
+    /// 当前模型窗口；搜索输出预算 = min(窗口 15%, 25k tokens)。
+    context_window: u64,
 }
 
 impl MemoryTools {
@@ -31,7 +33,14 @@ impl MemoryTools {
             data_dir,
             identity,
             dream,
+            context_window: model::DEFAULT_CONTEXT_WINDOW,
         }
+    }
+
+    /// 带上这次会话的模型窗口，搜索输出按它算预算。
+    pub fn with_context_window(mut self, context_window: u64) -> Self {
+        self.context_window = context_window;
+        self
     }
 
     fn core(self: &Arc<Self>) -> Vec<Arc<dyn Tool>> {
@@ -197,9 +206,19 @@ impl MemoryTool {
                 },
                 "required": ["quote", "edits"]
             }),
-            Kind::Search => {
-                json!({"type":"object","properties":{"query":{"type":"string"}},"required":["query"]})
-            }
+            Kind::Search => json!({
+                "type":"object",
+                "properties": {
+                    "query":{"type":"string","description":"The user's own keywords, not a summary sentence."},
+                    "alternates":{
+                        "type":"array",
+                        "maxItems":6,
+                        "items":{"type":"string"},
+                        "description":"Up to 6 other ways the user might have said the same thing; each is searched separately and merged."
+                    }
+                },
+                "required":["query"]
+            }),
             Kind::Read => {
                 json!({"type":"object","properties":{"id":{"type":"string"}},"required":["id"]})
             }
@@ -223,6 +242,122 @@ impl MemoryTool {
 }
 
 impl MemoryTool {
+    fn search(&self, call: ToolCall, context: &ToolContext, args: &Value) -> ToolResult {
+        let query = args
+            .get("query")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_owned();
+        if query.is_empty() {
+            return ToolResult::error(call.id, ToolFailure::plain("query 不能为空"));
+        }
+        let mut alternates = Vec::new();
+        if let Some(items) = args.get("alternates").and_then(Value::as_array) {
+            if items.len() > 6 {
+                return ToolResult::error(call.id, ToolFailure::plain("alternates 最多 6 个"));
+            }
+            for item in items {
+                let value = item.as_str().unwrap_or("").trim();
+                if !value.is_empty() {
+                    alternates.push(value.to_owned());
+                }
+            }
+        }
+        let response =
+            match self
+                .tools
+                .runtime
+                .store()
+                .search_request(memory::types::SearchRequest {
+                    query: query.clone(),
+                    alternates,
+                    limit: 20,
+                    conversation_id: context.session_id().map(str::to_owned),
+                    conversation_last_seq: current_index_last_seq(&context.session_events()),
+                }) {
+                Ok(response) => response,
+                Err(error) => {
+                    return ToolResult::success_with_meta(
+                        call.id,
+                        format!("原始检索不可用（raw_search_unavailable）：{error}"),
+                        json!({"memoryCard": {"kind": "search", "query": query}}),
+                    );
+                }
+            };
+        let budget = search_output_budget(self.tools.context_window);
+        let mut used = 0usize;
+        let mut truncated = false;
+        let mut lines: Vec<String> = Vec::new();
+        let add = |line: String, lines: &mut Vec<String>, used: &mut usize| -> bool {
+            let cost = tools::estimate_text_tokens(&line) as usize + 4;
+            if *used + cost > budget {
+                true
+            } else {
+                *used += cost;
+                lines.push(line);
+                false
+            }
+        };
+        if !response.originals.is_empty() {
+            truncated |= add("原文/用户记下的：".to_owned(), &mut lines, &mut used);
+            for hit in &response.originals {
+                if add(search_hit_line(hit), &mut lines, &mut used) {
+                    truncated = true;
+                    break;
+                }
+            }
+        }
+        if !response.derived.is_empty() {
+            truncated |= add("Kind 笔记/日记：".to_owned(), &mut lines, &mut used);
+            for hit in &response.derived {
+                if add(search_hit_line(hit), &mut lines, &mut used) {
+                    truncated = true;
+                    break;
+                }
+            }
+        }
+        let mut gaps: Vec<&str> = response.gaps.iter().map(|gap| gap.as_str()).collect();
+        if truncated && !gaps.contains(&"results_truncated") {
+            gaps.push("results_truncated");
+        }
+        if lines.is_empty() {
+            let text = if !response.gaps.is_empty() {
+                format!(
+                    "没找到可用证据（{}）。不要据此说用户没记过；换关键词再搜。",
+                    gaps.join(", ")
+                )
+            } else {
+                "没找到可用证据。不要据此说用户没记过；换关键词再搜。".to_owned()
+            };
+            return ToolResult::success_with_meta(
+                call.id,
+                text,
+                json!({"memoryCard": {"kind": "search", "query": query, "gaps": gaps}}),
+            );
+        }
+        if !gaps.is_empty() {
+            lines.push(format!("缺口：{}", gaps.join(", ")));
+        }
+        let target = response
+            .originals
+            .first()
+            .or_else(|| response.derived.first())
+            .map(search_hit_target);
+        let mut meta = json!({"memoryCard": {"kind": "search", "query": query}});
+        if let Some(target) = target {
+            meta["memoryCard"]["target"] = target;
+        }
+        ToolResult::success_with_meta(
+            call.id,
+            lines.join(
+                "
+",
+            ),
+            meta,
+        )
+    }
+
     fn write_related(
         &self,
         call: &ToolCall,
@@ -466,7 +601,7 @@ impl Tool for MemoryTool {
                 "Draft additions, corrections or deletions to \"about you\" from the user's own words. Only the user's save makes them real; quote must be copied from the current user message."
             }
             Kind::Search => {
-                "Search memory, diary and Kind conversation. Results carry their source id/seq."
+                "Search memory, diary and Kind conversation by the user's keywords (optionally up to 6 alternates). Results come back as originals and derived, each with an id/seq for memory_read. Do not say you never recorded something before searching for the user's keywords; for facts that can change, check the latest source before calling it current; never claim to have checked a source you did not."
             }
             Kind::Read => "Read one memory or diary entry by id.",
             Kind::Diary => "Append a short diary line. Diary is append-only.",
@@ -536,62 +671,23 @@ impl Tool for MemoryTool {
                     self.write_related(&call, context, &args, remember, title, body)
                 }
                 Kind::AboutDraft => self.draft_about(&call, context, &args),
-                Kind::Search => {
-                    let query = text("query");
-                    match self.tools.runtime.store().search(&query, 20) {
-                        Ok(hits) if hits.is_empty() => ToolResult::success(call.id, "没搜到。"),
-                        Ok(hits) => {
-                            let mut lines = Vec::new();
-                            let first = hits.first();
-                            for hit in &hits {
-                                match hit {
-                                    memory::types::SearchHit::Memory(item) => lines.push(format!(
-                                        "[记忆 {}] {}：{}",
-                                        item.id, item.title, item.body
-                                    )),
-                                    memory::types::SearchHit::Diary(entry) => {
-                                        lines.push(format!("[日记 {}] {}", entry.id, entry.text))
-                                    }
-                                    memory::types::SearchHit::Conversation {
-                                        conversation_id,
-                                        seq,
-                                        text,
-                                        ..
-                                    } => {
-                                        lines.push(format!("[对话 {conversation_id}:{seq}] {text}"))
-                                    }
-                                }
-                            }
-                            // 卡片带出处目标：记忆/日记跳条目，对话回那一轮；没有结果就不带目标。
-                            let target = first.map(|hit| match hit {
-                                memory::types::SearchHit::Memory(item) => {
-                                    json!({"kind": "memory", "id": item.id})
-                                }
-                                memory::types::SearchHit::Diary(entry) => {
-                                    json!({"kind": "diary", "id": entry.id})
-                                }
-                                memory::types::SearchHit::Conversation { seq, turn, .. } => {
-                                    json!({"kind": "conversation", "seq": seq, "turn": turn})
-                                }
-                            });
-                            ToolResult::success_with_meta(
-                                call.id,
-                                lines.join(
-                                    "
-",
-                                ),
-                                json!({"memoryCard": {"kind": "search", "query": query, "target": target}}),
-                            )
-                        }
-                        Err(error) => {
-                            ToolResult::error(call.id, ToolFailure::plain(error.to_string()))
-                        }
-                    }
-                }
+                Kind::Search => self.search(call, context, &args),
                 Kind::Read => {
                     let id = text("id");
+                    let flashback_ids = current_flashback_ids(context);
                     match self.tools.runtime.store().item(&id) {
                         Ok(Some(item)) => {
+                            if flashback_ids.iter().any(|known| known == &item.id)
+                                && let Some(conversation_id) = context.session_id()
+                                && let Err(error) = self.tools.runtime.store().record_delivery(
+                                    std::slice::from_ref(&item.id),
+                                    conversation_id,
+                                    context.turn(),
+                                    "used",
+                                )
+                            {
+                                eprintln!("联想回忆 used 没记上：{error}");
+                            }
                             ToolResult::success(call.id, format!("{}：{}", item.title, item.body))
                         }
                         Ok(None) => match self.tools.runtime.store().diary(&id) {
@@ -704,6 +800,110 @@ pub fn memory_tools(
     .core()
 }
 
+/// 根会话用：搜索输出预算按实际模型窗口算。
+pub fn memory_tools_with_window(
+    runtime: Arc<MemoryRuntime>,
+    data_dir: &Path,
+    identity: Option<PathBuf>,
+    dream: Option<Arc<super::DreamRuntime>>,
+    context_window: u64,
+) -> Vec<Arc<dyn Tool>> {
+    Arc::new(
+        MemoryTools::new(runtime, data_dir.to_path_buf(), identity, dream)
+            .with_context_window(context_window),
+    )
+    .core()
+}
+
+fn current_flashback_ids(context: &ToolContext) -> Vec<String> {
+    let turn = crate::propose::current_turn(&context.session_events());
+    let mut ids = Vec::new();
+    for event in context.session_events() {
+        let session::EventKind::UserMessage {
+            turn: message_turn,
+            message,
+            ..
+        } = &event.kind
+        else {
+            continue;
+        };
+        if *message_turn != turn {
+            continue;
+        }
+        let model::MessageSource::MemoryContext { identity } = &message.source else {
+            continue;
+        };
+        let Some(raw) = identity.strip_prefix("flashback:") else {
+            continue;
+        };
+        if !message.content.iter().any(|block| {
+            matches!(block, model::ContentBlock::Text { text, .. } if text.contains("<memory_flashback>"))
+        }) {
+            continue;
+        }
+        for id in raw.split(',') {
+            let id = id.trim();
+            if !id.is_empty() && !ids.iter().any(|seen| seen == id) {
+                ids.push(id.to_owned());
+            }
+        }
+    }
+    ids
+}
+
+fn search_output_budget(context_window: u64) -> usize {
+    let by_ratio = (context_window as f64 * 0.15) as usize;
+    by_ratio.min(25_000)
+}
+
+fn current_index_last_seq(events: &[session::Event]) -> Option<u64> {
+    events.iter().rev().find_map(|event| match &event.kind {
+        session::EventKind::UserMessage { message, .. } if super::user_message_sent(message) => {
+            Some(event.seq)
+        }
+        session::EventKind::AssistantMessage { .. } => Some(event.seq),
+        _ => None,
+    })
+}
+
+fn search_hit_line(hit: &memory::types::SearchHit) -> String {
+    match hit {
+        memory::types::SearchHit::Memory(item) => {
+            let snippet = if item.summary.trim().is_empty() {
+                item.body.chars().take(160).collect::<String>()
+            } else {
+                item.summary.clone()
+            };
+            format!("[{}] {}：{}", item.id, item.title, snippet)
+        }
+        memory::types::SearchHit::Diary(entry) => {
+            format!("[diary:{}] {}", entry.id, entry.text)
+        }
+        memory::types::SearchHit::Conversation {
+            conversation_id,
+            seq,
+            turn,
+            text,
+        } => format!(
+            "[对话 {}:{} 第{}轮] {}",
+            conversation_id,
+            seq,
+            turn,
+            text.chars().take(160).collect::<String>()
+        ),
+    }
+}
+
+fn search_hit_target(hit: &memory::types::SearchHit) -> Value {
+    match hit {
+        memory::types::SearchHit::Memory(item) => json!({"kind": "memory", "id": item.id}),
+        memory::types::SearchHit::Diary(entry) => json!({"kind": "diary", "id": entry.id}),
+        memory::types::SearchHit::Conversation { seq, turn, .. } => {
+            json!({"kind": "conversation", "seq": seq, "turn": turn})
+        }
+    }
+}
+
 fn parse_keys(args: &Value) -> Vec<MemoryKey> {
     let mut keys = Vec::new();
     if let Some(items) = args.get("keys").and_then(Value::as_array) {
@@ -778,6 +978,12 @@ mod tests {
             Arc::new(ToolSessionState::new(dir, "memory-tool-test")),
         )
         .observing_session(Arc::new(move || events.clone()))
+    }
+
+    #[test]
+    fn search_budget_is_window_ratio_capped_at_25k() {
+        assert_eq!(search_output_budget(100_000), 15_000);
+        assert_eq!(search_output_budget(1_000_000), 25_000);
     }
 
     #[test]
@@ -1041,6 +1247,241 @@ mod tests {
                 .notes
                 .iter()
                 .any(|note| note.id == id)
+        );
+    }
+
+    #[tokio::test]
+    async fn search_tool_merges_alternates_and_prints_two_tables_and_gaps() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(MemoryRuntime::open(dir.path()).unwrap());
+        let list = memory_tool_list(&runtime, dir.path());
+        let remember = find_tool(&list, "memory_remember");
+        let note = find_tool(&list, "memory_note");
+        let search = find_tool(&list, "memory_search");
+        let ctx = context(
+            dir.path(),
+            vec![
+                turn_start(1, 2),
+                user_message_in_turn(2, 2, "记住：周报按三段写"),
+            ],
+        );
+        remember
+            .execute(
+                ToolCall {
+                    id: "r".to_owned(),
+                    name: "memory_remember".to_owned(),
+                    arguments: json!({"title":"周报三段","text":"周报按三段写"}).to_string(),
+                },
+                &ctx,
+            )
+            .await;
+        note.execute(
+            ToolCall {
+                id: "n".to_owned(),
+                name: "memory_note".to_owned(),
+                arguments: json!({"title":"周报两段","text":"后来周报只写两段"}).to_string(),
+            },
+            &ctx,
+        )
+        .await;
+        let result = search
+            .execute(
+                ToolCall {
+                    id: "s".to_owned(),
+                    name: "memory_search".to_owned(),
+                    arguments: json!({"query":"三段","alternates":["两段"]}).to_string(),
+                },
+                &ctx,
+            )
+            .await;
+        assert!(!result.is_error, "{}", result.content);
+        assert!(
+            result.content.contains("原文/用户记下的"),
+            "{}",
+            result.content
+        );
+        assert!(
+            result.content.contains("Kind 笔记/日记"),
+            "{}",
+            result.content
+        );
+        assert!(
+            result.content.contains("周报按三段写") || result.content.contains("周报按三段"),
+            "{}",
+            result.content
+        );
+        assert!(
+            result.content.contains("后来周报只写两段"),
+            "{}",
+            result.content
+        );
+        assert!(
+            result.content.contains("[mem-") || result.content.contains("[记忆"),
+            "带记忆 id：{}",
+            result.content
+        );
+
+        let none = search
+            .execute(
+                ToolCall {
+                    id: "s2".to_owned(),
+                    name: "memory_search".to_owned(),
+                    arguments: json!({"query":"完全没出现过"}).to_string(),
+                },
+                &ctx,
+            )
+            .await;
+        assert!(!none.is_error);
+        assert!(
+            none.content.contains("no_relevant_evidence"),
+            "没命中要给 gap：{}",
+            none.content
+        );
+    }
+
+    #[tokio::test]
+    async fn search_tool_respects_the_output_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(MemoryRuntime::open(dir.path()).unwrap());
+        let tools = Arc::new(
+            MemoryTools::new(Arc::clone(&runtime), dir.path().to_path_buf(), None, None)
+                .with_context_window(100),
+        );
+        let search = tools
+            .core()
+            .into_iter()
+            .find(|tool| tool.name() == "memory_search")
+            .unwrap();
+        for index in 0..8 {
+            runtime
+                .store()
+                .write(
+                    WriteOp::Note {
+                        title: format!("预算-{index}"),
+                        summary: String::new(),
+                        body: "预算测试".repeat(200),
+                        source_kind: "kind".to_owned(),
+                        source_ref: format!("file:budget-{index}"),
+                    },
+                    &WriteContext::kind(),
+                )
+                .unwrap();
+        }
+        let result = search
+            .execute(
+                ToolCall {
+                    id: "s".to_owned(),
+                    name: "memory_search".to_owned(),
+                    arguments: json!({"query":"预算测试"}).to_string(),
+                },
+                &context(dir.path(), Vec::new()),
+            )
+            .await;
+        assert!(!result.is_error, "{}", result.content);
+        assert!(
+            result.content.contains("results_truncated"),
+            "超预算要说清：{}",
+            result.content
+        );
+        assert!(
+            result.content.len() < 1500,
+            "输出应被预算截住：{}",
+            result.content.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn memory_read_records_used_only_for_this_turns_flashback_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(MemoryRuntime::open(dir.path()).unwrap());
+        let old = runtime
+            .store()
+            .write(
+                WriteOp::Remember {
+                    title: "旧事".to_owned(),
+                    summary: String::new(),
+                    body: "旧正文".to_owned(),
+                    source_kind: "user".to_owned(),
+                    source_ref: "u-old".to_owned(),
+                },
+                &WriteContext::user(),
+            )
+            .unwrap()
+            .item
+            .unwrap();
+        let flashback = session::Event::new(
+            2,
+            1,
+            session::EventKind::UserMessage {
+                turn: 2,
+                step: 1,
+                message: model::Message::memory_context(
+                    format!("<memory_flashback>[{}] 旧事", old.id),
+                    format!("flashback:{}", old.id),
+                ),
+            },
+        );
+        let ctx = context(
+            dir.path(),
+            vec![
+                turn_start(1, 2),
+                user_message_in_turn(3, 2, "你还记得吗"),
+                flashback,
+            ],
+        );
+        let read = find_tool(&memory_tool_list(&runtime, dir.path()), "memory_read");
+        let result = read
+            .execute(
+                ToolCall {
+                    id: "read".to_owned(),
+                    name: "memory_read".to_owned(),
+                    arguments: json!({"id": old.id}).to_string(),
+                },
+                &ctx,
+            )
+            .await;
+        assert!(!result.is_error, "{}", result.content);
+        let deliveries = runtime.store().deliveries(&old.id).unwrap();
+        assert!(
+            deliveries.iter().any(|(_, _, kind, _)| kind == "used"),
+            "读本次 flashback 里的 id 才记 used：{deliveries:?}"
+        );
+
+        // 不在本次 flashback 送达集合里的 id，读了也不记 used。
+        let other = runtime
+            .store()
+            .write(
+                WriteOp::Remember {
+                    title: "另一条".to_owned(),
+                    summary: String::new(),
+                    body: "不在回忆里".to_owned(),
+                    source_kind: "user".to_owned(),
+                    source_ref: "u-other".to_owned(),
+                },
+                &WriteContext::user(),
+            )
+            .unwrap()
+            .item
+            .unwrap();
+        let result = read
+            .execute(
+                ToolCall {
+                    id: "read-other".to_owned(),
+                    name: "memory_read".to_owned(),
+                    arguments: json!({"id": other.id}).to_string(),
+                },
+                &ctx,
+            )
+            .await;
+        assert!(!result.is_error, "{}", result.content);
+        assert!(
+            runtime
+                .store()
+                .deliveries(&other.id)
+                .unwrap()
+                .iter()
+                .all(|(_, _, kind, _)| kind != "used"),
+            "没送过的 id 不记 used"
         );
     }
 

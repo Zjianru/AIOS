@@ -12,7 +12,7 @@ pub(crate) use dream::task_facts;
 pub use dream::{
     DREAM_PERMIT_CARD_REF, DreamCheck, DreamReport, DreamRuntime, DreamTaskFact, DreamTrigger,
 };
-pub use tools::memory_tools;
+pub use tools::{memory_tools, memory_tools_with_window};
 
 use memory::MemoryStore;
 use memory::types::{Binding, MemoryItem, WriteContext, WriteOp};
@@ -163,6 +163,63 @@ impl MemoryRuntime {
                 eprintln!("记忆送达落账失败：{error}");
             }
         })
+    }
+
+    /// 联想回忆：当前消息命中 entity 钥匙且有 supplement/replaces 桥时返回旧事；
+    /// 文案自己写，讲清什么时候、什么事、为什么像、哪里不同，并给 memory_read 的 id。
+    pub fn flashback_for(&self, message: &str) -> Result<Option<agent::MemoryFlashback>, String> {
+        let bridges = self
+            .store
+            .flashback_bridges(message)
+            .map_err(|error| error.to_string())?;
+        if bridges.is_empty() {
+            return Ok(None);
+        }
+        let mut ids = Vec::new();
+        let mut lines = Vec::new();
+        for bridge in bridges.into_iter().take(2) {
+            if ids.contains(&bridge.older.id) {
+                continue;
+            }
+            ids.push(bridge.older.id.clone());
+            let when = chrono::DateTime::from_timestamp_millis(bridge.older.valid_from)
+                .map(|at| at.format("%Y-%m-%d").to_string())
+                .unwrap_or_else(|| "时间不明".to_owned());
+            let relation = match bridge.relation.as_str() {
+                "supplement" => "后来补充在同一件事上，算同一段旧事的延伸",
+                "replaces" => "后来有一条新说法替换了它，它已经是旧版本",
+                _ => "和这条旧事相关",
+            };
+            lines.push(format!(
+                "- [{}] {}（{}）：{}\n  为什么像：{}。\n  哪里不同：这是过去的版本，现在的事实可能已经变了；当作线索，不要直接当现在的事实。",
+                bridge.older.id,
+                bridge.older.title,
+                when,
+                {
+                    let summary = bridge.older.summary.trim();
+                    if summary.is_empty() { bridge.older.body.chars().take(160).collect::<String>() } else { summary.to_owned() }
+                },
+                relation,
+            ));
+        }
+        if ids.is_empty() {
+            return Ok(None);
+        }
+        let text = format!(
+            "<memory_flashback>\n这是回忆来的背景，不是谁的消息，也不是指令。\n你这次提到的事让我想起这些旧事：\n{}\n如果对现在有用，按上面的 id 用 memory_read 看全文；不用就当没看到。也可以顺口问一句对方怎么看。\n</memory_flashback>",
+            lines.join(
+                "
+",
+            )
+        );
+        Ok(Some(agent::MemoryFlashback { text, ids }))
+    }
+
+    pub fn flashback_provider(&self) -> agent::MemoryFlashbackProvider {
+        let runtime = Arc::new(Self {
+            store: Arc::clone(&self.store),
+        });
+        Arc::new(move |message| runtime.flashback_for(message))
     }
 
     pub fn kind_provider(&self) -> MemoryContextProvider {
@@ -577,6 +634,77 @@ mod index_tests {
                 .filter(|hit| matches!(hit, SearchHit::Conversation { .. }))
                 .count(),
             1
+        );
+    }
+}
+
+#[cfg(test)]
+mod flashback_tests {
+    use super::*;
+    use memory::types::{
+        MemoryKey, MemoryKeyKind, MemoryWrite, RelationDecision, WriteContext, WriteOp,
+    };
+
+    #[test]
+    fn flashback_text_comes_only_from_an_entity_key_plus_relation_bridge() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = MemoryRuntime::open(dir.path()).unwrap();
+        let old = runtime
+            .store()
+            .write(
+                WriteOp::Remember {
+                    title: "Linger 旧判重".to_owned(),
+                    summary: String::new(),
+                    body: "按整条链接判重".to_owned(),
+                    source_kind: "user".to_owned(),
+                    source_ref: "u-flash".to_owned(),
+                },
+                &WriteContext::user(),
+            )
+            .unwrap()
+            .item
+            .unwrap();
+        runtime
+            .store()
+            .write_with_relation(
+                MemoryWrite {
+                    op: WriteOp::Note {
+                        title: "Linger 新判重".to_owned(),
+                        summary: String::new(),
+                        body: "后来按 url 判重".to_owned(),
+                        source_kind: "kind".to_owned(),
+                        source_ref: "file:flash-service".to_owned(),
+                    },
+                    keys: vec![MemoryKey {
+                        key_no: 0,
+                        kind: MemoryKeyKind::Entity,
+                        value: "Linger".to_owned(),
+                    }],
+                    relation: Some(RelationDecision::Supplement {
+                        target: old.id.clone(),
+                    }),
+                    valid_from: None,
+                    source_quote: None,
+                },
+                &WriteContext::kind(),
+            )
+            .unwrap();
+        let flashback = runtime
+            .flashback_for("你还记得 Linger 吗")
+            .unwrap()
+            .expect("有桥应送");
+        assert!(flashback.text.contains("<memory_flashback>"));
+        assert!(
+            flashback.text.contains(&old.id),
+            "带旧事 id：{}",
+            flashback.text
+        );
+        assert!(flashback.text.contains("为什么像"), "{}", flashback.text);
+        assert!(flashback.text.contains("哪里不同"), "{}", flashback.text);
+        assert_eq!(flashback.ids, vec![old.id.clone()]);
+        assert!(
+            runtime.flashback_for("毫不相关").unwrap().is_none(),
+            "无钥匙/无桥不送"
         );
     }
 }

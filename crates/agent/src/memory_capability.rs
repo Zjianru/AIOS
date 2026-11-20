@@ -10,6 +10,13 @@ use crate::capabilities::{
 };
 use crate::{MemoryDelivery, MemoryDeliveryHook};
 
+type MemoryCapabilityState = (
+    Arc<tokio::sync::Mutex<Option<String>>>,
+    Option<crate::MemoryContextProvider>,
+    Option<MemoryDeliveryHook>,
+    Option<crate::MemoryFlashbackProvider>,
+);
+
 struct PendingDelivery {
     turn: u64,
     seq: u64,
@@ -19,6 +26,7 @@ struct PendingDelivery {
 pub(crate) struct MemoryCapability {
     provider: Option<crate::MemoryContextProvider>,
     delivery: Option<MemoryDeliveryHook>,
+    flashback: Option<crate::MemoryFlashbackProvider>,
     identity: Arc<tokio::sync::Mutex<Option<String>>>,
     /// 最近一次追加还没落账的 ids；TurnEnd succeeded 才交给服务写 delivery。
     pending: Arc<Mutex<Option<PendingDelivery>>>,
@@ -42,7 +50,9 @@ impl MemoryCapability {
         for event in events {
             match &event.kind {
                 session::EventKind::UserMessage { message, .. } => {
-                    if let model::MessageSource::MemoryContext { identity } = &message.source {
+                    if let model::MessageSource::MemoryContext { identity } = &message.source
+                        && !identity.starts_with("flashback:")
+                    {
                         last_injection = Some(identity.clone());
                         injected = true;
                         completed = false;
@@ -66,17 +76,12 @@ impl MemoryCapability {
         )
     }
 
-    pub(crate) fn new(
-        state: (
-            Arc<tokio::sync::Mutex<Option<String>>>,
-            Option<crate::MemoryContextProvider>,
-            Option<MemoryDeliveryHook>,
-        ),
-    ) -> Self {
+    pub(crate) fn new(state: MemoryCapabilityState) -> Self {
         Self {
             identity: state.0,
             provider: state.1,
             delivery: state.2,
+            flashback: state.3,
             pending: Arc::new(Mutex::new(None)),
         }
     }
@@ -144,6 +149,73 @@ impl Capability for MemoryCapability {
                     {
                         return Ok(HookOutcome::Continue);
                     }
+                    if *step == 1
+                        && let Some(flashback) = &self.flashback
+                    {
+                        let text = messages
+                            .iter()
+                            .filter(|message| {
+                                matches!(message.source, model::MessageSource::User { .. })
+                            })
+                            .flat_map(|message| message.content.iter())
+                            .filter_map(|block| match block {
+                                model::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        if !text.trim().is_empty()
+                            && let Some(recall) =
+                                flashback(&text).map_err(crate::AgentError::MemoryProvider)?
+                        {
+                            let already = {
+                                let store = host.session().lock().expect("agent 会话锁被毒化");
+                                store.events().iter().any(|event| {
+                                    matches!(
+                                        &event.kind,
+                                        session::EventKind::UserMessage { message, .. }
+                                            if message.content.iter().any(|block| matches!(
+                                                block,
+                                                model::ContentBlock::Text { text, .. }
+                                                    if text.contains("<memory_flashback>")
+                                            )) && recall.ids.iter().any(|id| {
+                                                matches!(
+                                                    &message.source,
+                                                    model::MessageSource::MemoryContext { identity }
+                                                        if identity == &format!("flashback:{id}")
+                                                )
+                                            })
+                                    )
+                                })
+                            };
+                            if !already && !recall.ids.is_empty() {
+                                let message = model::Message::memory_context(
+                                    recall.text,
+                                    format!("flashback:{}", recall.ids.join(",")),
+                                );
+                                let seqs = host
+                                    .append_with_seqs(&[session::EventKind::UserMessage {
+                                        turn: *turn,
+                                        step: *step,
+                                        message,
+                                    }])
+                                    .await?;
+                                let mut pending = self.pending.lock().expect("记忆送达锁被毒化");
+                                match pending.as_mut() {
+                                    Some(pending) => {
+                                        pending.ids.extend(recall.ids);
+                                    }
+                                    None => {
+                                        *pending = Some(PendingDelivery {
+                                            turn: *turn,
+                                            seq: seqs.first().copied().unwrap_or(0),
+                                            ids: recall.ids,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
                     let Some(provider) = &self.provider else {
                         return Ok(HookOutcome::Continue);
                     };
@@ -160,7 +232,8 @@ impl Capability for MemoryCapability {
                         let visible = derived.iter().any(|(_, message)| {
                             matches!(
                                 &message.source,
-                                model::MessageSource::MemoryContext { identity } if identity == &context.identity
+                                model::MessageSource::MemoryContext { identity }
+                                    if identity == &context.identity && !identity.starts_with("flashback:")
                             )
                         });
                         let last_injected = store
@@ -170,7 +243,11 @@ impl Capability for MemoryCapability {
                                 matches!(
                                     &event.kind,
                                     session::EventKind::UserMessage { message, .. }
-                                        if matches!(message.source, model::MessageSource::MemoryContext { .. })
+                                        if matches!(
+                                            &message.source,
+                                            model::MessageSource::MemoryContext { identity }
+                                                if !identity.starts_with("flashback:")
+                                        )
                                 )
                             })
                             .map(|event| event.seq);
@@ -221,11 +298,20 @@ impl Capability for MemoryCapability {
                             message,
                         }])
                         .await?;
-                    *self.pending.lock().expect("记忆送达锁被毒化") = Some(PendingDelivery {
-                        turn: *turn,
-                        seq: seqs.first().copied().unwrap_or(0),
-                        ids: context.ids,
-                    });
+                    let mut pending = self.pending.lock().expect("记忆送达锁被毒化");
+                    match pending.as_mut() {
+                        Some(pending) => {
+                            pending.ids.extend(context.ids);
+                        }
+                        None => {
+                            *pending = Some(PendingDelivery {
+                                turn: *turn,
+                                seq: seqs.first().copied().unwrap_or(0),
+                                ids: context.ids,
+                            });
+                        }
+                    }
+                    drop(pending);
                     Ok(HookOutcome::Continue)
                 }
                 HookEvent::Compaction { .. } => {

@@ -127,6 +127,49 @@ pub struct DiaryEntry {
     pub created_at: i64,
 }
 
+/// 一次搜索请求：query + 最多 6 个别的说法；conversation_* 用于判断对话索引覆盖。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchRequest {
+    pub query: String,
+    #[serde(default)]
+    pub alternates: Vec<String>,
+    pub limit: usize,
+    /// 当前会话 id / 最后一条可入索引事件的 seq；用于判「对话还没进索引」。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_last_seq: Option<u64>,
+}
+
+/// 搜索缺口的四类；覆盖不全只在两种能判的情况出。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SearchGap {
+    NoRelevantEvidence,
+    SourceCoverageIncomplete,
+    ResultsTruncated,
+    RawSearchUnavailable,
+}
+
+impl SearchGap {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NoRelevantEvidence => "no_relevant_evidence",
+            Self::SourceCoverageIncomplete => "source_coverage_incomplete",
+            Self::ResultsTruncated => "results_truncated",
+            Self::RawSearchUnavailable => "raw_search_unavailable",
+        }
+    }
+}
+
+/// 搜索结果显示成两张表：originals（用户记下/有约束力/任务记录/对话原文）、
+/// derived（Kind 笔记和日记）。正文按 id 用 memory_read 读。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct SearchResponse {
+    pub originals: Vec<SearchHit>,
+    pub derived: Vec<SearchHit>,
+    pub gaps: Vec<SearchGap>,
+}
+
 /// 搜索命中：记忆或对话。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SearchHit {
@@ -394,6 +437,14 @@ impl MemoryKeyKind {
             _ => None,
         }
     }
+}
+
+/// 联想回忆的桥：本次消息命中的记忆，通过 supplement/replaces 连到一条更早的旧事。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlashbackBridge {
+    pub hit: MemoryItem,
+    pub older: MemoryItem,
+    pub relation: String,
 }
 
 /// 一条记忆的钥匙；同一 key_no 的几把是「全部满足」的条件。

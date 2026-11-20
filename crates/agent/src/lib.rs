@@ -69,6 +69,17 @@ pub struct MemoryContext {
 pub type MemoryContextProvider =
     std::sync::Arc<dyn Fn() -> Result<Option<MemoryContext>, String> + Send + Sync>;
 
+/// 一次联想回忆的注入内容；ids 是这次送给模型、可用于记 used 的旧记忆 id。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryFlashback {
+    pub text: String,
+    pub ids: Vec<String>,
+}
+
+/// 当前用户消息命中钥匙且有桥时才返回回忆；None = 这次不送。
+pub type MemoryFlashbackProvider =
+    std::sync::Arc<dyn Fn(&str) -> Result<Option<MemoryFlashback>, String> + Send + Sync>;
+
 /// 压缩时要在摘要前重铺的固定块（指令/skill/记忆/任务书账本）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompactionFixedBlock {
@@ -169,6 +180,8 @@ pub struct AgentConfig {
     pub memory_context: Option<MemoryContextProvider>,
     /// 记忆送达落账回调；None = 不记（CLI/测试）。
     pub memory_delivery: Option<MemoryDeliveryHook>,
+    /// 联想回忆提供者；None = 这个会话不送回忆（ThinAgent/CLI）。
+    pub memory_flashback: Option<MemoryFlashbackProvider>,
     /// 压缩模板：Kind 七样 / ThinAgent 编码模板。
     pub compaction_profile: CompactionProfile,
     /// 压缩时要额外重铺的固定块（ThinAgent 的任务书+账本）。
@@ -229,6 +242,7 @@ impl Default for AgentConfig {
             write_scope: None,
             memory_context: None,
             memory_delivery: None,
+            memory_flashback: None,
             compaction_profile: CompactionProfile::Thin,
             compaction_fixed_block: None,
             pre_compaction: None,
