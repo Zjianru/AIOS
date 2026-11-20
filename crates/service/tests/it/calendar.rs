@@ -106,7 +106,7 @@ async fn nearest_appointment_wakes_and_far_one_waits() {
     .expect("会话日志");
     let prefix = format!("appointment-wake:{}:", near.id);
     let near_runs = store.runs(&near.id).unwrap();
-    let sent_turn = snapshot
+    let (sent_turn, wake_text) = snapshot
         .events()
         .iter()
         .find_map(|event| {
@@ -119,9 +119,22 @@ async fn nearest_appointment_wakes_and_far_one_waits() {
             rpc_id
                 .as_deref()
                 .filter(|rpc| rpc.starts_with(&prefix))
-                .map(|_| i64::try_from(*turn).unwrap_or(i64::MAX))
+                .map(|_| {
+                    (
+                        i64::try_from(*turn).unwrap_or(i64::MAX),
+                        message
+                            .content
+                            .iter()
+                            .filter_map(model::ContentBlock::as_text)
+                            .collect::<String>(),
+                    )
+                })
         })
         .expect("根会话日志里要有 appointment-wake 那条用户消息");
+    assert!(
+        wake_text.contains("appointment_wake") && wake_text.contains("read its facts first"),
+        "appointment-wake 正文带第 20 条规则：{wake_text}"
+    );
     assert_eq!(
         near_runs[0].sent_turn,
         Some(sent_turn),

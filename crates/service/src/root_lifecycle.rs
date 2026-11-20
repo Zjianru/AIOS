@@ -715,14 +715,7 @@ fn event_is_task_relay(event: &ServiceEvent) -> bool {
     else {
         return false;
     };
-    [
-        "task-report:",
-        "task-stop:",
-        "gate-verdict:",
-        "upstream-changed:",
-    ]
-    .iter()
-    .any(|prefix| rpc_id.starts_with(prefix))
+    crate::program_messages::is_task_relay_rpc(rpc_id)
 }
 
 /// 本次启动的 id：restart 效果的键和 Kind 汇报的 request id 用它。

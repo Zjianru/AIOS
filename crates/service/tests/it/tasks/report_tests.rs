@@ -165,6 +165,13 @@ async fn a_missing_credential_opens_no_task_session_and_relays_what_is_missing()
     assert_eq!(relays[0].1["task"]["stage"], "needs_conditions");
     // 程序按任务包缺项写的 blocked：origin=package；缺项文本在程序写好的摘要里。
     assert_eq!(relays[0].1["origin"], "package");
+    assert!(
+        relays[0].1["rule"]
+            .as_str()
+            .is_some_and(|rule| rule.contains("blocked or hands back")),
+        "task-report 正文带第 8 条规则：{:?}",
+        relays[0].1
+    );
     let summary = relays[0].1["summary"].as_str().unwrap();
     assert!(summary.contains("任务包缺"), "{summary}");
     assert!(summary.contains("deepseek-flash"), "{summary}");

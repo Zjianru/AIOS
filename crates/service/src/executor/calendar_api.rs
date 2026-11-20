@@ -556,6 +556,9 @@ impl TaskRuntime {
                 "attachment_id": state.attachment_id,
             });
         }
+        body["rule"] = json!(
+            "When an appointment_wake message arrives, read its facts first (appointment, run, trigger, change) then decide: remind the user, dispatch a task, or call task_continue for a cycle appointment; do not treat the wake as a fresh user request."
+        );
         let request_id = format!("appointment-wake:{}:{}", appointment.id, run.id);
         let message = UserMessage::text(body.to_string());
         // 送之前先订阅 agent 事件；等带这个 request_id 的 InboxClaimed 拿 turn，不短轮询日志。

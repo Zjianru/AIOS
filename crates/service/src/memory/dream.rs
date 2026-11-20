@@ -692,16 +692,11 @@ fn service_send(request_id: &str, content: String) -> crate::protocol::SendReque
 }
 
 fn is_task_relay(message: &model::Message) -> bool {
-    let model::MessageSource::User {
-        rpc_id: Some(rpc_id),
-    } = &message.source
-    else {
-        return false;
-    };
-    rpc_id.starts_with("task-report:")
-        || rpc_id.starts_with("task-stop:")
-        || rpc_id.starts_with("gate-verdict:")
-        || rpc_id.starts_with("upstream-changed:")
+    matches!(
+        &message.source,
+        model::MessageSource::User { rpc_id: Some(rpc_id) }
+            if crate::program_messages::is_task_relay_rpc(rpc_id)
+    )
 }
 
 fn message_text(message: &model::Message) -> String {
@@ -830,9 +825,7 @@ impl Tool for ConversationReadTool {
 }
 
 fn is_program_prefix(rpc_id: &str) -> bool {
-    ["task-", "restart:", "gate-verdict:", "upstream-changed:"]
-        .iter()
-        .any(|prefix| rpc_id.starts_with(prefix))
+    crate::program_messages::is_program_rpc(rpc_id)
 }
 
 /// 这次做梦的读窗口：上次成功时间和上次读到的 seq 之前的东西不读。

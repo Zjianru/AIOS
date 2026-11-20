@@ -68,6 +68,13 @@ pub(crate) fn relay_summary(text: &str) -> (String, Option<usize>) {
     }
 }
 
+/// task-report 程序消息带的事件规则（原 KIND_POLICY 第 8 条）。
+const TASK_REPORT_RULE: &str = "When ThinAgent is blocked or hands back, relay briefly what it is missing or asking; the user decides, so do not make the decision for them.";
+/// gate-verdict 程序消息带的事件规则（原 KIND_POLICY 第 13、17 条；milestone 和程序门共用）。
+const GATE_VERDICT_RULE: &str = "When a milestone card comes back needing fixes, call task_continue once for the step it checks and pass the user's words as note; do not dispatch that step again. If the user's words go beyond the original requirement, do not call task_continue: ask the user to change the requirement first. A program gate's card shows no judge buttons: the program judges; if its last check is undetermined or was interrupted, tell the user why and ask whether to re-run or change commands, and call gate_check_again once only if they say re-run; never call task_continue for a program gate and never judge it yourself.";
+/// upstream-changed 程序消息带的事件规则（原 KIND_POLICY 第 14 条）。
+const UPSTREAM_CHANGED_RULE: &str = "When a notice says an upstream task has a new result, call task_continue once for the downstream task it names; do not ask the user and do not dispatch it again: it only checks its existing result against the new upstream result.";
+
 impl TaskRuntime {
     /// 把一条 relay Steer 进发起的 Kind 会话；那个会话不是当前根会话时 Later。
     pub(crate) async fn deliver_relay(self: &Arc<Self>, claim: EffectClaim) {
@@ -181,6 +188,7 @@ impl TaskRuntime {
                 if !released.is_empty() {
                     body["auto_started"] = json!(released);
                 }
+                body["rule"] = json!(TASK_REPORT_RULE);
                 // 写任务的结果卡：写入范围、改动清单和固定一行。只有当前版本的 ready 报告
                 // 才给「待你核」的卡状态（阶段仍由 task.stage 报待检查）。
                 if let Some(scope) = crate::result_cards::write_scope_display(&task) {
@@ -270,7 +278,7 @@ impl TaskRuntime {
                     .map_err(|error| error.to_string())?
                     .ok_or_else(|| format!("被把关任务 {} 不在了", need.from))?;
                 let gate_report_fact = gate.reports.iter().find(|report| report.id == *gate_report);
-                let body = json!({
+                let mut body = json!({
                     "kind": "gate_verdict",
                     "gate": {"id": gate.id.as_str(), "title": gate.title},
                     "conclusion": match verdict.conclusion {
@@ -292,6 +300,7 @@ impl TaskRuntime {
                     "checks": gate_report_fact.map(|report| report.checks.clone()).unwrap_or_default(),
                     "summary": gate_report_fact.map(|report| report.summary.clone()).unwrap_or_default(),
                 });
+                body["rule"] = json!(GATE_VERDICT_RULE);
                 let request_id = format!("gate-verdict:{}:{}", gate.id, gate_report);
                 Ok(Some((gate, body, request_id)))
             }
@@ -315,7 +324,7 @@ impl TaskRuntime {
                     .iter()
                     .find(|report| report.id == *upstream_report)
                     .ok_or_else(|| format!("上游任务没有报告 {upstream_report}"))?;
-                let body = json!({
+                let mut body = json!({
                     "kind": "upstream_changed",
                     "upstream": {
                         "id": upstream.id.as_str(),
@@ -326,6 +335,7 @@ impl TaskRuntime {
                     },
                     "downstream": {"id": downstream.id.as_str(), "title": downstream.title},
                 });
+                body["rule"] = json!(UPSTREAM_CHANGED_RULE);
                 let request_id = format!(
                     "upstream-changed:{}:{}:{}",
                     upstream.id, downstream.id, upstream_report

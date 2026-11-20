@@ -56,10 +56,10 @@ fn conversation_turn(hits: &[SearchHit]) -> Option<u64> {
 const PROGRAM_MESSAGES: [(&str, &str); 6] = [
     ("中继卡里的查完了摘要", "task-report:task-1:report-1"),
     ("用户让停任务", "task-stop:task-1:attempt-1"),
-    ("任务对话里的抄送", "task-cc:input-1"),
     ("启动中断要接续", "restart:boot-1"),
     ("门判定通过了", "gate-verdict:gate-1:report-1"),
     ("上游变了要重核", "upstream-changed:up-1:down-1:report-1"),
+    ("约定到点唤醒", "appointment-wake:app-1:run-1"),
 ];
 
 #[test]

@@ -201,9 +201,45 @@ async fn the_kind_system_prompt_ends_with_the_task_policy() {
     let bodies = fixture.router.bodies(false);
     assert_eq!(bodies.len(), 1, "Kind 第一个请求");
     let system = request_system(&bodies[0]);
+    // 不再复制整份策略；只对固定块关键行和「搬走的不在」做请求体断言。
+    for fixed in [
+        "You are AIOS's coordinator",
+        "call task_accept to dispatch a task",
+        "requirement in the user's own words",
+        "If one message contains several unrelated things",
+        "Results arrive as task_report",
+        "call task_status once",
+        "Read only until you can answer",
+        "Dispatch tasks that are independent",
+        "把 README 安装步骤补上",
+    ] {
+        assert!(system.contains(fixed), "固定块缺 {fixed}：{system}");
+    }
+    // 分流后：事件/skill/结果卡/删掉的条目不再常驻。
+    for moved in [
+        "load the aios-tasks skill",
+        "task_graph_propose",
+        "milestone card",
+        "program gate",
+        "When ThinAgent is blocked",
+        "When a notice says an upstream",
+        "When an appointment_wake",
+        "Before saying you never recorded",
+        "Accepting a result is only done",
+        "at most 20 characters",
+    ] {
+        assert!(
+            !system.contains(moved),
+            "常驻策略里不该再出现 {moved}：{system}"
+        );
+    }
     assert!(
-        system.ends_with(EXPECTED_KIND_POLICY),
-        "Kind 的系统提示要以内核策略结尾：{system}"
+        system.contains("call task_status once"),
+        "固定块要有一条进度查询规则"
+    );
+    assert!(
+        system.contains("把 README 安装步骤补上"),
+        "派任务例子在规则处"
     );
 }
 
