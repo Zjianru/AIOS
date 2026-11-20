@@ -245,7 +245,7 @@ impl Agg {
                 0,
                 0,
             );
-            summary.requests += stats.turns.max(assistant_count(&filtered));
+            summary.requests += assistant_count(&filtered);
             summary.input_tokens += stats.input_tokens;
             summary.output_tokens += stats.output_tokens;
             match (summary.cost_usd, stats.cost_usd) {
@@ -269,11 +269,6 @@ impl Agg {
         summary.context_used = context_used(&latest_events);
         summary.context_window =
             crate::session_select::model_context_window(data_dir, None, &selection).unwrap_or(0);
-        if let Some(usage) = latest_usage(&latest_events) {
-            summary.input_tokens = summary
-                .input_tokens
-                .saturating_add(usage.input_tokens.unwrap_or(0));
-        }
         if summary.requests == 0 && summary.input_tokens == 0 {
             return Ok(None);
         }
@@ -559,13 +554,6 @@ fn context_used(events: &[session::Event]) -> u64 {
     0
 }
 
-fn latest_usage(events: &[session::Event]) -> Option<&Usage> {
-    events.iter().rev().find_map(|event| match &event.kind {
-        EventKind::AssistantMessage { usage, .. } => usage.as_ref(),
-        _ => None,
-    })
-}
-
 fn sum_usage(events: &[session::Event], pick: impl Fn(&Usage) -> Option<u64>) -> u64 {
     events
         .iter()
@@ -636,7 +624,7 @@ fn range_start(range: MonitorRange, timezone: &str, now_ms: i64) -> i64 {
 mod tests {
     use super::*;
 
-    fn temp_store() -> (tempfile::TempDir, tempfile::TempDir, Store) {
+    pub(crate) fn temp_store() -> (tempfile::TempDir, tempfile::TempDir, Store) {
         let data = tempfile::tempdir().unwrap();
         let cwd = tempfile::tempdir().unwrap();
         let store = Store::open(data.path().join("tasks.sqlite")).unwrap();
@@ -1040,5 +1028,154 @@ mod daily_tests {
         );
         assert_eq!(agg.days["2026-11-19"].tool_calls, 1);
         assert_eq!(agg.days["2026-11-20"].tool_calls, 1);
+    }
+}
+
+#[cfg(test)]
+mod t075_usage_tests {
+    use super::*;
+    use model::Message;
+
+    fn usage(input: u64, output: u64) -> model::Usage {
+        model::Usage {
+            input_tokens: Some(input),
+            output_tokens: Some(output),
+            cache_read_input_tokens: Some(0),
+            cache_creation_input_tokens: Some(0),
+        }
+    }
+
+    fn assistant(turn: u64, input: u64, output: u64) -> session::EventKind {
+        session::EventKind::AssistantMessage {
+            turn,
+            step: 1,
+            message: Message::assistant(
+                vec![model::ContentBlock::text("ok")],
+                "deepseek",
+                "deepseek-flash",
+            ),
+            stream: Vec::new(),
+            usage: Some(usage(input, output)),
+            interrupted: None,
+            effort: Some("high".to_owned()),
+            effort_wanted: Some("high".to_owned()),
+            request_at: None,
+            context_parts: None,
+        }
+    }
+
+    fn task_with_usage(
+        data: &std::path::Path,
+        cwd: &std::path::Path,
+        store: &Store,
+        inputs: &[u64],
+    ) -> tasks::Task {
+        let now = 1_700_000_000_000_i64;
+        let task = store
+            .create_task(
+                tasks::NewTask {
+                    title: "D78 标记文件".to_owned(),
+                    requirement: "写标记文件".to_owned(),
+                    dod: "标记文件存在".to_owned(),
+                    cwd: cwd.to_path_buf(),
+                    conversation: tasks::ConversationId::new("kind"),
+                    model: tasks::ModelChoice {
+                        connection: "deepseek".to_owned(),
+                        model: "deepseek-flash".to_owned(),
+                        effort_wanted: "high".to_owned(),
+                    },
+                    tools: Vec::new(),
+                },
+                now,
+            )
+            .unwrap();
+        let attempt = store.begin_attempt(&task.id, now).unwrap();
+        let mut session = session::SessionStore::create(data, cwd).unwrap();
+        // 同一轮里两条 assistant usage：requests 要数 assistant 消息（2），
+        // 不能数 Turn（1），也不能把最后一条再加一遍。
+        let turn = 1;
+        let mut events = vec![
+            session::EventKind::TurnStart { turn },
+            session::EventKind::StepStart { turn, step: 1 },
+        ];
+        for input in inputs {
+            events.push(assistant(turn, *input, 100));
+        }
+        events.push(session::EventKind::TurnEnd {
+            turn,
+            reason: session::TurnEndReason::Completed,
+        });
+        session.append(&events).unwrap();
+        store
+            .attach_session(
+                &task.id,
+                attempt,
+                tasks::ConversationId::new(session.id().to_string()),
+            )
+            .unwrap();
+        task
+    }
+
+    #[test]
+    fn task_input_tokens_match_task_read_stats_not_last_usage_twice() {
+        let (data, cwd, store) = super::tests::temp_store();
+        // D78 固定日志：总 input 8540，最后一条 assistant 是 486；重复加会变 9026。
+        let task = task_with_usage(data.path(), cwd.path(), &store, &[8_054, 486]);
+        let snapshot =
+            snapshot(&store, data.path(), MonitorRange::Today, "UTC", &[], 3, &[]).unwrap();
+        let entry = snapshot
+            .tasks
+            .iter()
+            .find(|entry| entry.task_id == task.id.as_str())
+            .expect("任务在快照里");
+        assert_eq!(entry.input_tokens, 8_540, "不能把最后一条 usage 再加一遍");
+        assert_eq!(entry.requests, 2, "两次 assistant 请求");
+        assert_eq!(entry.output_tokens, 200);
+    }
+
+    #[test]
+    fn multiple_attempts_are_summed_once() {
+        let (data, cwd, store) = super::tests::temp_store();
+        let task = task_with_usage(data.path(), cwd.path(), &store, &[8_054, 486]);
+        // 第二个 Attempt：再 1000 input，monitor 应等于两个会话 stats 之和，不重复。
+        let loaded = store.task(&task.id).unwrap().expect("任务存在");
+        let first = loaded.latest_attempt().expect("第一个 Attempt").id;
+        store
+            .end_attempt(
+                &task.id,
+                first,
+                1_700_000_000_000,
+                tasks::AttemptEnd::Reported,
+            )
+            .unwrap();
+        let attempt = store.begin_attempt(&task.id, 1_700_000_000_001).unwrap();
+        let mut session = session::SessionStore::create(data.path(), cwd.path()).unwrap();
+        session
+            .append(&[
+                session::EventKind::TurnStart { turn: 1 },
+                session::EventKind::StepStart { turn: 1, step: 1 },
+                assistant(1, 1_000, 10),
+                session::EventKind::TurnEnd {
+                    turn: 1,
+                    reason: session::TurnEndReason::Completed,
+                },
+            ])
+            .unwrap();
+        store
+            .attach_session(
+                &task.id,
+                attempt,
+                tasks::ConversationId::new(session.id().to_string()),
+            )
+            .unwrap();
+        let snapshot =
+            snapshot(&store, data.path(), MonitorRange::Today, "UTC", &[], 3, &[]).unwrap();
+        let entry = snapshot
+            .tasks
+            .iter()
+            .find(|entry| entry.task_id == task.id.as_str())
+            .expect("任务在快照里");
+        assert_eq!(entry.input_tokens, 9_540, "多 Attempt 每个会话只加一遍");
+        assert_eq!(entry.requests, 3);
     }
 }
