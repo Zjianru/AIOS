@@ -273,6 +273,20 @@ pub struct TaskLive {
     pub agent_events: broadcast::Receiver<AgentEvent>,
 }
 
+/// 监控 WS 的一个在跑任务：补齐快照 + live 事件接收端。
+pub struct MonitorLiveTask {
+    pub task_id: String,
+    pub attempt_id: u64,
+    pub follow: FollowResponse,
+    pub events: broadcast::Receiver<ServiceEvent>,
+}
+
+/// 监控 WS 打开面：各在跑任务的事件 + 任务事实变化广播。
+pub struct MonitorLive {
+    pub tasks: Vec<MonitorLiveTask>,
+    pub changed: broadcast::Receiver<String>,
+}
+
 /// 任务执行者：效果泵、ThinAgent 会话和任务工具的共享状态。
 /// 停止入口对 agent 状态的动作。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1078,6 +1092,69 @@ impl TaskRuntime {
             }
         }
         0
+    }
+
+    /// 监控 WS 打开面：给每个在跑任务一份补齐 + live 订阅；任务事实变化另走 changed。
+    /// 掉帧由连接层按任务发 task-changed 让页面重读。
+    pub async fn monitor_live(&self, last_seq: u64) -> Result<MonitorLive, ServiceError> {
+        let running: Vec<(String, u64, Arc<ServiceHost>)> = self
+            .running
+            .lock()
+            .expect("thinagent 表锁被毒化")
+            .values()
+            .filter(|entry| !entry.retained && entry.host.agent().is_running())
+            .map(|entry| {
+                (
+                    entry.task_id.as_str().to_owned(),
+                    entry.attempt_id.0,
+                    Arc::clone(&entry.host),
+                )
+            })
+            .collect();
+        let mut tasks = Vec::with_capacity(running.len());
+        for (task_id, attempt_id, host) in running {
+            let events = host.subscribe_events();
+            let follow = host.follow(FollowRequest { last_seq }).await?;
+            tasks.push(MonitorLiveTask {
+                task_id,
+                attempt_id,
+                follow,
+                events,
+            });
+        }
+        Ok(MonitorLive {
+            tasks,
+            changed: self.changed.subscribe(),
+        })
+    }
+
+    /// 监控消耗快照：按用户时区口径现算全部任务（不缓存，先不建账本）。
+    pub(crate) fn monitor_snapshot(
+        &self,
+        request: crate::protocol::MonitorSnapshotRequest,
+        kind_events: &[session::Event],
+    ) -> Result<crate::protocol::MonitorSnapshotResponse, ServiceError> {
+        crate::monitor_facts::snapshot(
+            &self.store,
+            &self.data_dir,
+            request.range,
+            &request.timezone,
+            &self.running_tasks(),
+            self.exec_seats.load(Ordering::SeqCst) as u64,
+            kind_events,
+        )
+    }
+
+    /// 监控诊断：一个任务的 Attempt/五块/todo/事件。
+    pub(crate) fn monitor_task(
+        &self,
+        request: crate::protocol::MonitorTaskRequest,
+    ) -> Result<crate::protocol::MonitorTaskResponse, ServiceError> {
+        let running = {
+            let task_id = request.task_id.clone();
+            self.running_tasks().iter().any(|id| id == &task_id)
+        };
+        crate::monitor_facts::task(&self.store, &self.data_dir, request, running)
     }
 
     /// `/ws?task=` 的打开面：补齐 `lastSeq` 之后的日志；任务还在跑时带上 live 订阅。

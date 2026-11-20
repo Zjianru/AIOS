@@ -159,6 +159,29 @@ impl RootHost {
             }
             // T055：工作页/「现在」共用的一份工作快照（任务库 + Kind 根会话事实）。
             Call::Work(_) => self.work_snapshot().await.map(Response::Work),
+            Call::MonitorSnapshot(request) => {
+                let kind_events = {
+                    let guard = self.inner.lock().await;
+                    guard
+                        .as_ref()
+                        .map(|host| host.agent().session_events_from(0))
+                        .unwrap_or_default()
+                };
+                match self.task_runtime() {
+                    Some(runtime) => runtime
+                        .monitor_snapshot(request, &kind_events)
+                        .map(Response::MonitorSnapshot),
+                    None => Err(ServiceError::TaskUnavailable(
+                        "任务库没开，监控读不了".to_owned(),
+                    )),
+                }
+            }
+            Call::MonitorTask(request) => match self.task_runtime() {
+                Some(runtime) => runtime.monitor_task(request).map(Response::MonitorTask),
+                None => Err(ServiceError::TaskUnavailable(
+                    "任务库没开，监控读不了".to_owned(),
+                )),
+            },
             // T055.2：组接受由根宿主转给任务库一个事务。
             Call::TaskAcceptMany(request) => self
                 .accept_many(&request)
