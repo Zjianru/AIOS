@@ -2,8 +2,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use memory::types::{
-    Binding, DreamAction, DreamChangeInput, DreamRunInput, Layer, MemoryKey, MemoryWrite, Scope,
-    SearchHit, WriteContext, WriteOp,
+    Binding, DreamAction, DreamChangeInput, DreamRunInput, Layer, MemoryKey, MemoryKeyKind,
+    MemoryWrite, RelationDecision, Scope, SearchGap, SearchHit, SearchRequest, WriteContext,
+    WriteOp,
 };
 use memory::{MemoryError, MemoryStore};
 use rusqlite::OptionalExtension;
@@ -1681,4 +1682,244 @@ fn dream_validation_codes_cover_the_ten_rejections() {
         ),
         "user_removed"
     );
+}
+
+#[test]
+fn search_request_merges_alternates_by_rrf_and_splits_two_tables() {
+    let (store, _dir, _) = open();
+    remember(&store, "周报按三段写");
+    store
+        .write(
+            WriteOp::Note {
+                title: "周报格式".to_owned(),
+                summary: "适合周报".to_owned(),
+                body: "周报只写两段".to_owned(),
+                source_kind: "kind".to_owned(),
+                source_ref: "file:rrf-note".to_owned(),
+            },
+            &WriteContext::kind(),
+        )
+        .unwrap();
+    store
+        .write(
+            WriteOp::Diary {
+                text: "周报三段要短".to_owned(),
+                source_ref: "diary:rrf".to_owned(),
+            },
+            &WriteContext::kind(),
+        )
+        .unwrap();
+    let response = store
+        .search_request(SearchRequest {
+            query: "三段".to_owned(),
+            alternates: vec!["两段".to_owned()],
+            limit: 10,
+            conversation_id: None,
+            conversation_last_seq: None,
+        })
+        .unwrap();
+    assert!(
+        response
+            .originals
+            .iter()
+            .any(|hit| matches!(hit, SearchHit::Memory(item) if item.title.contains("周报"))),
+        "原话/条目在 originals：{:?}",
+        response.originals
+    );
+    assert!(
+        response
+            .derived
+            .iter()
+            .any(|hit| matches!(hit, SearchHit::Memory(item) if item.title == "周报格式")),
+        "Kind 笔记在 derived：{:?}",
+        response.derived
+    );
+    assert!(
+        response
+            .derived
+            .iter()
+            .any(|hit| matches!(hit, SearchHit::Diary(_))),
+        "日记在 derived：{:?}",
+        response.derived
+    );
+    // RRF 的同一路只出现一次，合并后不会重复。
+    let mut keys = Vec::new();
+    for hit in response.originals.iter().chain(response.derived.iter()) {
+        keys.push(match hit {
+            SearchHit::Memory(item) => item.id.clone(),
+            SearchHit::Diary(entry) => entry.id.clone(),
+            SearchHit::Conversation { seq, .. } => format!("conv-{seq}"),
+        });
+    }
+    keys.sort();
+    let unique = keys.clone();
+    keys.dedup();
+    assert_eq!(unique.len(), keys.len(), "命中不能重复");
+}
+
+#[test]
+fn search_request_reports_the_four_gaps() {
+    let (store, _dir, _) = open();
+    // 没有证据：query 命中 0 条。
+    let empty = store
+        .search_request(SearchRequest {
+            query: "完全不存在的词".to_owned(),
+            alternates: Vec::new(),
+            limit: 10,
+            conversation_id: None,
+            conversation_last_seq: None,
+        })
+        .unwrap();
+    assert!(empty.gaps.contains(&SearchGap::NoRelevantEvidence));
+
+    // 短查询走 LIKE 且截到 limit：覆盖不全 + 结果截断。
+    for index in 0..3 {
+        store
+            .write(
+                WriteOp::Note {
+                    title: format!("ab-{index}"),
+                    summary: String::new(),
+                    body: "ab".to_owned(),
+                    source_kind: "kind".to_owned(),
+                    source_ref: format!("file:short-{index}"),
+                },
+                &WriteContext::kind(),
+            )
+            .unwrap();
+    }
+    let short = store
+        .search_request(SearchRequest {
+            query: "ab".to_owned(),
+            alternates: Vec::new(),
+            limit: 2,
+            conversation_id: None,
+            conversation_last_seq: None,
+        })
+        .unwrap();
+    assert!(short.gaps.contains(&SearchGap::SourceCoverageIncomplete));
+    assert!(short.gaps.contains(&SearchGap::ResultsTruncated));
+
+    // 对话没进索引：last_seq 大于已索引 seq。
+    store
+        .write(
+            WriteOp::IndexConversation {
+                conversation_id: "conv-gap".to_owned(),
+                seq: 1,
+                turn: 1,
+                text: "索引里的一句".to_owned(),
+            },
+            &WriteContext::user(),
+        )
+        .unwrap();
+    let coverage = store
+        .search_request(SearchRequest {
+            query: "索引里的一句".to_owned(),
+            alternates: Vec::new(),
+            limit: 10,
+            conversation_id: Some("conv-gap".to_owned()),
+            conversation_last_seq: Some(2),
+        })
+        .unwrap();
+    assert!(coverage.gaps.contains(&SearchGap::SourceCoverageIncomplete));
+    let covered = store
+        .search_request(SearchRequest {
+            query: "索引里的一句".to_owned(),
+            alternates: Vec::new(),
+            limit: 10,
+            conversation_id: Some("conv-gap".to_owned()),
+            conversation_last_seq: Some(1),
+        })
+        .unwrap();
+    assert!(!covered.gaps.contains(&SearchGap::SourceCoverageIncomplete));
+
+    // 原始检索不可用：FTS 对含 NUL 的查询报错，不能假装「没搜到」。
+    let unavailable = store
+        .search_request(SearchRequest {
+            query: "a\0b".to_owned(),
+            alternates: Vec::new(),
+            limit: 10,
+            conversation_id: None,
+            conversation_last_seq: None,
+        })
+        .unwrap();
+    assert!(unavailable.gaps.contains(&SearchGap::RawSearchUnavailable));
+}
+
+#[test]
+fn flashback_requires_an_entity_key_and_a_relation_bridge() {
+    let (store, _dir, _) = open();
+    let old = remember(&store, "旧项目 Linger 的判重规则");
+    let related = store
+        .write_with_relation(
+            MemoryWrite {
+                op: WriteOp::Note {
+                    title: "Linger 后来改了".to_owned(),
+                    summary: String::new(),
+                    body: "后来按 url 判重".to_owned(),
+                    source_kind: "kind".to_owned(),
+                    source_ref: "file:flash-new".to_owned(),
+                },
+                keys: vec![MemoryKey {
+                    key_no: 0,
+                    kind: MemoryKeyKind::Entity,
+                    value: "Linger".to_owned(),
+                }],
+                relation: Some(RelationDecision::Supplement {
+                    target: old.id.clone(),
+                }),
+                valid_from: None,
+                source_quote: None,
+            },
+            &WriteContext::kind(),
+        )
+        .unwrap()
+        .item
+        .unwrap();
+    let bridges = store
+        .flashback_bridges("你还记得 Linger 那个项目吗")
+        .unwrap();
+    assert_eq!(bridges.len(), 1, "有 key 有桥才送：{bridges:?}");
+    assert_eq!(bridges[0].hit.id, related.id);
+    assert_eq!(bridges[0].older.id, old.id);
+    assert_eq!(bridges[0].relation, "supplement");
+
+    // 同话题直接命中、没有 relation 不送。
+    let direct = store
+        .write_with_relation(
+            MemoryWrite {
+                op: WriteOp::Note {
+                    title: "Linger 直接命中".to_owned(),
+                    summary: String::new(),
+                    body: "没有旧事".to_owned(),
+                    source_kind: "kind".to_owned(),
+                    source_ref: "file:flash-direct".to_owned(),
+                },
+                keys: vec![MemoryKey {
+                    key_no: 0,
+                    kind: MemoryKeyKind::Entity,
+                    value: "Other".to_owned(),
+                }],
+                relation: None,
+                valid_from: None,
+                source_quote: None,
+            },
+            &WriteContext::kind(),
+        )
+        .unwrap()
+        .item
+        .unwrap();
+    assert!(
+        store
+            .flashback_bridges("Other 这件事怎么样")
+            .unwrap()
+            .is_empty(),
+        "无桥不送"
+    );
+    assert!(
+        store
+            .flashback_bridges("毫无关系的一句话")
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(direct.layer, Layer::Note);
 }

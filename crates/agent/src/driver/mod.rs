@@ -482,6 +482,7 @@ impl Inner {
                 memory_identity,
                 memory_context,
                 memory_delivery,
+                memory_flashback: config.memory_flashback.clone(),
             }),
             #[cfg(test)]
             settle_hook: Mutex::new(None),

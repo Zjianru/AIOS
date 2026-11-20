@@ -1012,3 +1012,70 @@ async fn memory_delivery_is_recorded_after_a_successful_turn() {
     );
     root.shutdown().await;
 }
+
+#[tokio::test]
+async fn memory_flashback_used_is_recorded_when_memory_reads_the_sent_id() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let store = page_store(data.path());
+    let old = store
+        .write(
+            memory::types::WriteOp::Remember {
+                title: "旧事".to_owned(),
+                summary: String::new(),
+                body: "旧正文".to_owned(),
+                source_kind: "user".to_owned(),
+                source_ref: "u-flash".to_owned(),
+            },
+            &memory::types::WriteContext::user(),
+        )
+        .unwrap()
+        .item
+        .unwrap();
+    store
+        .write_with_relation(
+            memory::types::MemoryWrite {
+                op: memory::types::WriteOp::Note {
+                    title: "新事".to_owned(),
+                    summary: String::new(),
+                    body: "新正文".to_owned(),
+                    source_kind: "kind".to_owned(),
+                    source_ref: "file:flash".to_owned(),
+                },
+                keys: vec![memory::types::MemoryKey {
+                    key_no: 0,
+                    kind: memory::types::MemoryKeyKind::Entity,
+                    value: "Linger".to_owned(),
+                }],
+                relation: Some(memory::types::RelationDecision::Supplement {
+                    target: old.id.clone(),
+                }),
+                valid_from: None,
+                source_quote: None,
+            },
+            &memory::types::WriteContext::kind(),
+        )
+        .unwrap();
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(crate::common::SequenceResponder::new(vec![
+            sse(&crate::common::tool_use_sse(
+                0,
+                "call-flash-read",
+                "memory_read",
+                &serde_json::json!({"id": old.id}).to_string(),
+            )),
+            sse(&crate::common::text_sse("好")),
+        ]))
+        .mount(&server)
+        .await;
+    let root = open_page_root(data.path(), cwd.path(), &server).await;
+    send_page_turn(&root, "flash-used", "你还记得 Linger 吗").await;
+    let deliveries = page_store(data.path()).deliveries(&old.id).unwrap();
+    assert!(
+        deliveries.iter().any(|(_, _, kind, _)| kind == "used"),
+        "模型读了本次 flashback 的 id 才记 used：{deliveries:?}"
+    );
+    root.shutdown().await;
+}

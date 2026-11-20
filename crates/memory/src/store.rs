@@ -16,8 +16,8 @@ use crate::types::{
     AboutDraftPayload, AboutEdit, Actor, Binding, DiaryEntry, DreamAction, DreamChange,
     DreamChangeInput, DreamRun, DreamSettings, DreamSettingsPatch, Layer, MemoryCardRecord,
     MemoryItem, MemoryKey, MemoryKeyKind, MemoryMigrationReport, MemoryRelation, MemorySource,
-    MemoryView, MemoryWrite, RelationCandidate, RelationDecision, RevisionItem, Scope, SearchHit,
-    WriteContext, WriteOp, WriteOutcome,
+    MemoryView, MemoryWrite, RelationCandidate, RelationDecision, RevisionItem, Scope, SearchGap,
+    SearchHit, SearchRequest, SearchResponse, WriteContext, WriteOp, WriteOutcome,
 };
 
 pub const SCHEMA_VERSION: u64 = 3;
@@ -307,18 +307,150 @@ impl MemoryStore {
     }
 
     /// 搜索记忆、日记和 Kind 对话。不到 3 个字走 LIKE（trigram 不索引短词）。
+    /// 旧单 query 入口保留薄包装；新调用方用 search_request。
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>, MemoryError> {
-        let query = query.trim();
-        if query.is_empty() || limit == 0 {
-            return Ok(Vec::new());
-        }
+        let response = self.search_request(SearchRequest {
+            query: query.to_owned(),
+            alternates: Vec::new(),
+            limit,
+            conversation_id: None,
+            conversation_last_seq: None,
+        })?;
+        let mut hits: Vec<SearchHit> = response.originals;
+        hits.extend(response.derived);
+        Ok(hits)
+    }
+
+    /// 一个 alternate 一路 FTS5/LIKE，按 RRF(k=60) 合并后分成 originals/derived 两张表。
+    pub fn search_request(&self, request: SearchRequest) -> Result<SearchResponse, MemoryError> {
         let conn = self.lock();
-        let limit = i64::try_from(limit).unwrap_or(50);
-        let short = query.chars().count() < 3;
-        if short {
-            return search_like(&conn, query, limit);
+        let limit = request.limit;
+        let mut queries = Vec::new();
+        for query in std::iter::once(&request.query)
+            .chain(request.alternates.iter())
+            .map(|query| query.trim())
+            .filter(|query| !query.is_empty())
+        {
+            if !queries.iter().any(|seen: &String| seen == query) {
+                queries.push(query.to_owned());
+            }
         }
-        search_fts(&conn, query, limit)
+        if queries.is_empty() || limit == 0 {
+            return Ok(SearchResponse {
+                gaps: vec![SearchGap::NoRelevantEvidence],
+                ..SearchResponse::default()
+            });
+        }
+        // 工具参数上限就是 6 个别的说法；store 再多拿也只取前 6。
+        queries.truncate(7);
+        let sql_limit = i64::try_from(limit).unwrap_or(50);
+        let mut scores: std::collections::BTreeMap<String, (SearchHit, f64)> =
+            std::collections::BTreeMap::new();
+        let mut any_ok = false;
+        let mut any_truncated = false;
+        let mut short_like_truncated = false;
+        for query in &queries {
+            let short = query.chars().count() < 3;
+            let hits = if short {
+                search_like(&conn, query, sql_limit)
+            } else {
+                search_fts(&conn, query, sql_limit)
+            };
+            let hits = match hits {
+                Ok(hits) => hits,
+                Err(_) => continue,
+            };
+            any_ok = true;
+            if hits.len() >= limit {
+                any_truncated = true;
+            }
+            if short && hits.len() >= limit {
+                short_like_truncated = true;
+            }
+            let mut seen = std::collections::BTreeSet::new();
+            for (index, hit) in hits.into_iter().enumerate() {
+                let key = search_hit_key(&hit);
+                if !seen.insert(key.clone()) {
+                    continue;
+                }
+                let score = 1.0 / (60.0 + (index + 1) as f64);
+                scores
+                    .entry(key)
+                    .and_modify(|(_, total)| *total += score)
+                    .or_insert((hit, score));
+            }
+        }
+        if !any_ok {
+            return Ok(SearchResponse {
+                gaps: vec![SearchGap::RawSearchUnavailable],
+                ..SearchResponse::default()
+            });
+        }
+        let mut ranked: Vec<(SearchHit, f64)> = scores.into_values().collect();
+        ranked.sort_by(|(left_hit, left), (right_hit, right)| {
+            right
+                .partial_cmp(left)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| search_hit_key(left_hit).cmp(&search_hit_key(right_hit)))
+        });
+        let mut response = SearchResponse::default();
+        for (hit, _) in ranked {
+            if is_derived_hit(&hit) {
+                if response.derived.len() < limit {
+                    response.derived.push(hit);
+                } else {
+                    any_truncated = true;
+                }
+            } else if response.originals.len() < limit {
+                response.originals.push(hit);
+            } else {
+                any_truncated = true;
+            }
+        }
+        if response.originals.is_empty() && response.derived.is_empty() {
+            response.gaps.push(SearchGap::NoRelevantEvidence);
+        }
+        let conversation_incomplete = match (
+            request.conversation_id.as_deref(),
+            request.conversation_last_seq,
+        ) {
+            (Some(conversation_id), Some(last_seq)) => {
+                let indexed: Option<i64> = conn
+                    .query_row(
+                        "SELECT max(seq) FROM conversation_fts WHERE conversation_id = ?1",
+                        params![conversation_id],
+                        |row| row.get(0),
+                    )
+                    .optional()?
+                    .flatten();
+                indexed.is_none_or(|indexed| u64::try_from(indexed).unwrap_or(0) < last_seq)
+            }
+            _ => false,
+        };
+        if conversation_incomplete || short_like_truncated {
+            response.gaps.push(SearchGap::SourceCoverageIncomplete);
+        }
+        if any_truncated {
+            response.gaps.push(SearchGap::ResultsTruncated);
+        }
+        Ok(response)
+    }
+
+    /// 某个会话已经进索引的最大 seq；测试和覆盖判断用。
+    pub fn last_indexed_conversation_seq(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Option<u64>, MemoryError> {
+        let conn = self.lock();
+        let seq: Option<i64> = conn
+            .query_row(
+                "SELECT max(seq) FROM conversation_fts WHERE conversation_id = ?1",
+                params![conversation_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        Ok(seq.and_then(|seq| u64::try_from(seq).ok()))
     }
 
     /// 读一条记忆（页面/工具按 id 读）。
@@ -377,6 +509,75 @@ impl MemoryStore {
         })?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(MemoryError::Sqlite)
+    }
+
+    /// 联想回忆：当前消息命中 entity 钥匙，且这条记忆通过 supplement/replaces
+    /// 连到一条更早的旧事，才返回旧事；同话题直接命中不送。
+    pub fn flashback_bridges(
+        &self,
+        message: &str,
+    ) -> Result<Vec<crate::types::FlashbackBridge>, MemoryError> {
+        let message = message.trim().to_lowercase();
+        if message.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT k.memory_id FROM memory_key k JOIN memory m ON m.id = k.memory_id
+             WHERE k.kind = 'entity' AND m.status = 'active' AND m.invalid_reason IS NULL",
+        )?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut hit_ids = Vec::new();
+        for id in rows {
+            let id = id?;
+            if hit_ids.contains(&id) {
+                continue;
+            }
+            let mut keys = conn
+                .prepare("SELECT value FROM memory_key WHERE memory_id = ?1 AND kind = 'entity'")?;
+            let values = keys.query_map(params![id], |row| row.get::<_, String>(0))?;
+            let mut matched = false;
+            for value in values {
+                let value = value?;
+                if !value.trim().is_empty() && message.contains(&value.trim().to_lowercase()) {
+                    matched = true;
+                    break;
+                }
+            }
+            if matched {
+                hit_ids.push(id);
+            }
+        }
+        let mut bridges = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        for id in hit_ids {
+            let Some(hit) = item_by_id(&conn, &id)? else {
+                continue;
+            };
+            let mut relations = conn.prepare(
+                "SELECT related_id, kind FROM memory_relation WHERE memory_id = ?1 ORDER BY kind, related_id",
+            )?;
+            let rows = relations.query_map(params![id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            for relation in rows {
+                let (related_id, kind) = relation?;
+                if kind != "supplement" && kind != "replaces" {
+                    continue;
+                }
+                if seen.insert((id.clone(), related_id.clone(), kind.clone()))
+                    && let Some(older) = item_by_id(&conn, &related_id)?
+                    && older.valid_from <= hit.valid_from
+                {
+                    bridges.push(crate::types::FlashbackBridge {
+                        hit: hit.clone(),
+                        older,
+                        relation: kind,
+                    });
+                }
+            }
+        }
+        Ok(bridges)
     }
 
     /// 换一组钥匙：删旧、写新、FTS 的 keys 在同一个事务里更新。
@@ -2658,6 +2859,26 @@ fn search_fts(conn: &Connection, query: &str, limit: i64) -> Result<Vec<SearchHi
         }
     }
     Ok(hits)
+}
+
+fn search_hit_key(hit: &SearchHit) -> String {
+    match hit {
+        SearchHit::Memory(item) => format!("memory:{}", item.id),
+        SearchHit::Diary(entry) => format!("diary:{}", entry.id),
+        SearchHit::Conversation {
+            conversation_id,
+            seq,
+            ..
+        } => format!("conversation:{conversation_id}:{seq}"),
+    }
+}
+
+fn is_derived_hit(hit: &SearchHit) -> bool {
+    match hit {
+        SearchHit::Memory(item) => matches!(item.layer, Layer::Note),
+        SearchHit::Diary(_) => true,
+        SearchHit::Conversation { .. } => false,
+    }
 }
 
 fn tombstone_exists(

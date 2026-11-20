@@ -676,3 +676,89 @@ async fn restart_derives_delivery_state_from_the_log_and_does_not_reinject() {
         "重启后从日志派生 identity，不重复注入：{after}"
     );
 }
+
+#[tokio::test]
+async fn flashback_is_injected_once_with_ids_and_not_repeated() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(SequenceResponder::new(vec![
+            sse(FINAL_TEXT_SSE.to_owned()),
+            sse(FINAL_TEXT_SSE.to_owned()),
+        ]))
+        .mount(&server)
+        .await;
+    let data_dir = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let store = session::SessionStore::create(data_dir.path(), project.path()).unwrap();
+    let delivered = Arc::new(std::sync::Mutex::new(Vec::<Vec<String>>::new()));
+    let delivery_log = Arc::clone(&delivered);
+    let config = agent::AgentConfig {
+        memory_context: Some(Arc::new(|| {
+            Ok(Some(MemoryContext {
+                identity: "v1".to_owned(),
+                text: "关于你：先给结论".to_owned(),
+                ids: vec!["mem-context".to_owned()],
+            }))
+        })),
+        memory_flashback: Some(Arc::new(|message: &str| {
+            if !message.contains("Linger") {
+                return Ok(None);
+            }
+            Ok(Some(agent::MemoryFlashback {
+                text: "<memory_flashback>这让我想起旧事 [mem-old]</memory_flashback>".to_owned(),
+                ids: vec!["mem-old".to_owned()],
+            }))
+        })),
+        memory_delivery: Some(Arc::new(move |delivery| {
+            delivery_log.lock().unwrap().push(delivery.ids);
+        })),
+        ..isolated_config(data_dir.path())
+    };
+    let agent = Agent::create(
+        config,
+        Deps {
+            model: model::DeepSeek::with_credentials(
+                model_config(&server.uri()),
+                test_credential(),
+            )
+            .unwrap(),
+            tools: tools::ToolSet::builtin(),
+            store,
+        },
+    )
+    .await
+    .unwrap();
+    agent
+        .send(UserMessage::text("还记得 Linger 吗"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    agent.idle().await;
+    agent
+        .send(UserMessage::text("Linger 后来呢"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    agent.idle().await;
+    let requests = server.received_requests().await.unwrap();
+    let first = String::from_utf8(requests[0].body.clone()).unwrap();
+    let second = String::from_utf8(requests[1].body.clone()).unwrap();
+    assert_eq!(
+        first.matches("<memory_flashback>").count(),
+        1,
+        "首问送一次回忆：{first}"
+    );
+    assert!(first.contains("mem-old"), "回忆段带 id：{first}");
+    assert_eq!(
+        second.matches("<memory_flashback>").count(),
+        1,
+        "同一段回忆不重复送：{second}"
+    );
+    assert!(
+        delivered
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|ids| ids.contains(&"mem-old".to_owned())),
+        "回忆 id 也进本轮送达账"
+    );
+}

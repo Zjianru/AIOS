@@ -170,6 +170,8 @@ const EXPECTED_KIND_POLICY: &str = concat!(
     "\nIf a message with a result card only asks a question about that result, answer it directly and do not show a card.",
     "\nAccepting a result is only done by the user on the card: never accept for them and never say it has been accepted.",
     "\nWhen an appointment_wake message arrives, read its facts first (appointment, run, trigger, change) then decide: remind the user, dispatch a task, or call task_continue for a cycle appointment; do not treat the wake as a fresh user request.",
+    "\nBefore saying you never recorded something, search memory with the user's own keywords (and other ways they may have said it); do not fall back to generic advice without searching.",
+    "\nFor facts that can change, check the latest source before stating them as current; never claim to have checked a source you did not, and never present an old version as the current one.",
 );
 
 /// spec v1 的恢复说明原文：确认接续后第一条输入就是它。

@@ -209,6 +209,8 @@ const KIND_POLICY: &str = concat!(
     "\nIf a message with a result card only asks a question about that result, answer it directly and do not show a card.",
     "\nAccepting a result is only done by the user on the card: never accept for them and never say it has been accepted.",
     "\nWhen an appointment_wake message arrives, read its facts first (appointment, run, trigger, change) then decide: remind the user, dispatch a task, or call task_continue for a cycle appointment; do not treat the wake as a fresh user request.",
+    "\nBefore saying you never recorded something, search memory with the user's own keywords (and other ways they may have said it); do not fall back to generic advice without searching.",
+    "\nFor facts that can change, check the latest source before stating them as current; never claim to have checked a source you did not, and never present an old version as the current one.",
 );
 
 /// Kind 的构造期工具策略：上面那份名单，有任务执行者时再加四个任务工具。
@@ -313,15 +315,17 @@ pub async fn open_root_session_with(
             .map(std::sync::Arc::new),
     };
     if let Some(memory) = &memory {
-        extra_tools.extend(crate::memory::memory_tools(
+        extra_tools.extend(crate::memory::memory_tools_with_window(
             std::sync::Arc::clone(memory),
             &options.data_dir,
             options.identity.clone(),
             dream,
+            options.model.context_window,
         ));
         config.memory_context = Some(memory.kind_provider());
         config.compaction_profile = agent::CompactionProfile::Kind;
         config.memory_delivery = Some(memory.delivery_hook());
+        config.memory_flashback = Some(memory.flashback_provider());
         config.pre_compaction = Some(memory.pre_compaction_hook());
         config.pre_compaction_instruction = Some(
             "把下面这段对话里值得留给以后的事实整理成一条简短日记，只写事实和教训，不要复述全部原文。"
