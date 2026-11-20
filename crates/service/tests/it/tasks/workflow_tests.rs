@@ -1211,6 +1211,27 @@ async fn graph_ready_releases_downstream_with_the_upstream_result() {
         .and_then(|attempt| attempt.conversation.clone())
         .expect("B 的会话");
     let session_id = session::SessionId::parse(conversation.as_str()).expect("B 会话 id");
+    // 固定块先落日志，等 assignment JSON 真正写进去再读。
+    wait_until("B 的 assignment 落日志", || {
+        let Ok(session) = session::SessionStore::open_read_only(data.path(), &session_id) else {
+            return false;
+        };
+        session.events().iter().any(|event| match &event.kind {
+            session::EventKind::UserMessage { message, .. } => message
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    model::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<String>()
+                .parse::<serde_json::Value>()
+                .map(|value| value["task_id"].is_string())
+                .unwrap_or(false),
+            _ => false,
+        })
+    })
+    .await;
     let session =
         session::SessionStore::open_read_only(data.path(), &session_id).expect("B 的会话日志");
     let assignment = session

@@ -1135,6 +1135,27 @@ async fn resume_attempt_rehands_the_latest_upstream_result() {
         .and_then(|attempt| attempt.conversation.clone())
         .expect("B2 会话");
     let session_id = session::SessionId::parse(conversation.as_str()).expect("会话 id");
+    // 固定块先于 assignment 落日志，读日志前等交接消息真的写进去。
+    for _ in 0..500 {
+        let session =
+            session::SessionStore::open_read_only(data.path(), &session_id).expect("B2 日志");
+        let found = session.events().iter().any(|event| match &event.kind {
+            session::EventKind::UserMessage { message, .. } => message
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    model::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<String>()
+                .contains("上游结果（最新）"),
+            _ => false,
+        });
+        if found {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
     let session = session::SessionStore::open_read_only(data.path(), &session_id).expect("B2 日志");
     let texts: Vec<String> = session
         .events()

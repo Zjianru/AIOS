@@ -25,8 +25,10 @@ impl InstructionsCapability {
     pub(crate) fn load(
         store: &session::SessionStore,
         roots: Vec<std::path::PathBuf>,
+        project_paths_only: bool,
     ) -> (Arc<Mutex<InstructionState>>, Vec<std::path::PathBuf>) {
         let mut state = InstructionState::default();
+        state.set_project_paths_only(project_paths_only);
         state.rehydrate(&store.derive_messages());
         (Arc::new(Mutex::new(state)), roots)
     }
@@ -52,7 +54,7 @@ impl Capability for InstructionsCapability {
             let HookEvent::PreStep { trigger, phase, .. } = event else {
                 return Ok(HookOutcome::Continue);
             };
-            if *phase != PreStepPhase::Inject || trigger.is_some() {
+            if *phase != PreStepPhase::FixedBlocks || trigger.is_some() {
                 return Ok(HookOutcome::Continue);
             }
             let host = event.host();

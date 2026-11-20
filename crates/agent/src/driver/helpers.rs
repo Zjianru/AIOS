@@ -142,11 +142,14 @@ pub(super) fn interrupted_content(
 /// 去掉讲目录的那半句：AIOS 的 @ 候选不列目录）。
 pub(crate) const FILE_REFERENCE_PROMPT: &str = "Tokens prefixed with @ are paths the user explicitly referenced. Relative paths resolve from the workspace root; absolute paths identify files or directories on the host. Anything else is a file: use the read tool when its contents are needed, and do not claim to have inspected it before reading. @\"...\" quotes a path containing spaces.";
 
-pub(super) fn system_prompt(cwd: &Path, tools: &ToolSet, policy_prompt: Option<&str>) -> String {
-    let mut prompt = format!(
-        "You are AIOS, a coding agent. Your working directory is {}.",
-        cwd.display()
-    );
+pub(super) fn system_prompt(
+    cwd: &Path,
+    tools: &ToolSet,
+    policy_prompt: Option<&str>,
+    identity_prompt: Option<&str>,
+) -> String {
+    let identity = identity_prompt.unwrap_or("You are AIOS, a coding agent.");
+    let mut prompt = format!("{identity} Your working directory is {}.", cwd.display());
     if tools.get("read").is_some() {
         prompt.push_str(
             "\n\nUse the read tool — not shell commands like cat — to inspect text files. Use offset and limit to continue reading large files.",
@@ -197,7 +200,7 @@ mod file_reference_prompt_tests {
     use super::*;
 
     fn prompt_with(tools: &ToolSet) -> String {
-        system_prompt(std::path::Path::new("/tmp/workspace"), tools, None)
+        system_prompt(std::path::Path::new("/tmp/workspace"), tools, None, None)
     }
 
     #[test]

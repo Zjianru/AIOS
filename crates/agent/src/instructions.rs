@@ -100,6 +100,8 @@ struct ChangeItem {
 pub struct InstructionState {
     visible_identity: Option<String>,
     scopes: BTreeMap<String, ScopeState>,
+    /// Kind：项目链只给路径，不整份注入。
+    project_paths_only: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -109,6 +111,10 @@ struct ScopeState {
 }
 
 impl InstructionState {
+    pub fn set_project_paths_only(&mut self, project_paths_only: bool) {
+        self.project_paths_only = project_paths_only;
+    }
+
     /// 从已有会话消息对账（续接）：按 DSH 的 visibleInstructionChanges 折叠带类型来源。
     pub fn rehydrate(&mut self, messages: &[Message]) {
         for message in messages {
@@ -152,7 +158,17 @@ impl InstructionState {
         extend_with_observed(&mut dirs, &cwd, observed.into_iter());
         let identity = baseline_identity(&cwd, &project_root, data_dir, instruction_roots);
         let discovered = discover(data_dir, instruction_roots, &project_root, &dirs).await;
-        let files: Vec<InstructionFile> = dedupe(discovered);
+        let mut files: Vec<InstructionFile> = dedupe(discovered);
+        if self.project_paths_only {
+            for file in &mut files {
+                if file.chain == Chain::Project {
+                    file.content = format!(
+                        "Project rules are at {}; read it when you need to change code here.",
+                        file.path.display()
+                    );
+                }
+            }
+        }
         // 照 DSH：没有可见基线且当前没有任何指令文件时不注入（不产生空基线消息）。
         if self.visible_identity.is_none() && files.is_empty() {
             return None;

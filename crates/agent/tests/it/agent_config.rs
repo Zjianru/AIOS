@@ -139,6 +139,8 @@ async fn accepts_valid_non_default_values() {
     let config = AgentConfig {
         memory_delivery: None,
         memory_flashback: None,
+        identity_prompt: None,
+        project_instructions_path_only: false,
         compaction_profile: agent::CompactionProfile::Thin,
         compaction_fixed_block: None,
         max_parallel_tool_calls: 2,

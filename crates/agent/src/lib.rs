@@ -182,6 +182,10 @@ pub struct AgentConfig {
     pub memory_delivery: Option<MemoryDeliveryHook>,
     /// 联想回忆提供者；None = 这个会话不送回忆（ThinAgent/CLI）。
     pub memory_flashback: Option<MemoryFlashbackProvider>,
+    /// 身份第一句；None = 默认 "You are AIOS, a coding agent."。
+    pub identity_prompt: Option<String>,
+    /// Kind 只需要项目规则路径（不整份注入 AGENTS.md）；ThinAgent 全文。
+    pub project_instructions_path_only: bool,
     /// 压缩模板：Kind 七样 / ThinAgent 编码模板。
     pub compaction_profile: CompactionProfile,
     /// 压缩时要额外重铺的固定块（ThinAgent 的任务书+账本）。
@@ -243,6 +247,8 @@ impl Default for AgentConfig {
             memory_context: None,
             memory_delivery: None,
             memory_flashback: None,
+            identity_prompt: None,
+            project_instructions_path_only: false,
             compaction_profile: CompactionProfile::Thin,
             compaction_fixed_block: None,
             pre_compaction: None,

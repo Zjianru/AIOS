@@ -43,7 +43,14 @@ async fn wait_user_blocks(host: &RootHost, data_dir: &Path) -> Vec<model::Conten
             continue;
         };
         if let Some(message) = store.events().iter().find_map(|event| match &event.kind {
-            session::EventKind::UserMessage { message, .. } => Some(message.clone()),
+            session::EventKind::UserMessage { message, .. }
+                if matches!(
+                    &message.source,
+                    model::MessageSource::User { rpc_id: Some(_) }
+                ) =>
+            {
+                Some(message.clone())
+            }
             _ => None,
         }) {
             return message.content;

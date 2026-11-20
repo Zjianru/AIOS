@@ -72,6 +72,7 @@ pub(crate) struct Inner {
     background_only: AtomicBool,
     compaction_profile: crate::CompactionProfile,
     compaction_fixed_block: Option<crate::CompactionFixedBlockSource>,
+    identity_prompt: Option<String>,
 
     pub(crate) model: DeepSeek,
     pub(crate) tools: ToolSet,
@@ -403,7 +404,11 @@ impl Inner {
         tool_session.set_tool_keys(tool_keys.clone());
         // 能力状态由能力模块装载/持有；driver 只做装配。
         let (instruction_state, instruction_roots) =
-            crate::instructions_capability::InstructionsCapability::load(&store, instruction_roots);
+            crate::instructions_capability::InstructionsCapability::load(
+                &store,
+                instruction_roots,
+                config.project_instructions_path_only,
+            );
         let (memory_identity, memory_context, memory_delivery) =
             crate::memory_capability::MemoryCapability::load(
                 &store,
@@ -442,6 +447,7 @@ impl Inner {
             background_only: std::sync::atomic::AtomicBool::new(false),
             compaction_profile: config.compaction_profile,
             compaction_fixed_block: config.compaction_fixed_block.clone(),
+            identity_prompt: config.identity_prompt.clone(),
             no_wait: config.no_wait,
             write_scope: config.write_scope.clone(),
             stop_after_report: AtomicBool::new(false),

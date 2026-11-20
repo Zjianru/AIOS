@@ -243,12 +243,12 @@ async fn a_root_session_without_a_task_runtime_has_no_task_policy() {
     assert_eq!(bodies.len(), 1, "根会话只发一次请求");
     let system = request_system(&bodies[0]);
     assert!(
-        !system.contains("You are AIOS's coordinator"),
-        "没有任务执行者时不能提派任务：{system}"
+        !system.contains("When the user wants a file changed"),
+        "没有任务执行者时不追加派任务说明：{system}"
     );
     assert!(
-        system.starts_with("You are AIOS, a coding agent. Your working directory is "),
-        "系统提示开头不动：{system}"
+        system.starts_with("You are AIOS's coordinator: you talk with the user, verify facts, and hand work to ThinAgent."),
+        "Kind 身份按协调者：{system}"
     );
 }
 
@@ -1118,4 +1118,30 @@ async fn task_writes_reach_the_root_ws_changed_channel() {
         .expect("建任务要发一次 changed")
         .expect("changed 频道没关");
     assert_eq!(received, task.id.as_str());
+}
+
+#[tokio::test]
+async fn kind_first_request_has_project_rules_path_not_the_full_file() {
+    let fixture = Fixture::new().await;
+    std::fs::create_dir(fixture.cwd.path().join(".git")).unwrap();
+    std::fs::write(fixture.cwd.path().join("AGENTS.md"), "KIND-PROJECT-SECRET").unwrap();
+    fixture.router.push_kind(crate::common::text_sse("好"));
+    fixture
+        .host
+        .dispatch(Call::Send(send(&fixture.host, "kind-agents", "你好")))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&fixture.host, fixture.data(), 1).await;
+    let bodies = fixture.router.bodies(false);
+    assert_eq!(bodies.len(), 1);
+    let body = &bodies[0];
+    assert!(
+        body.contains("Project rules are at"),
+        "Kind 固定块只有项目规则路径：{body}"
+    );
+    assert!(body.contains("AGENTS.md"), "路径里带文件名：{body}");
+    assert!(
+        !body.contains("KIND-PROJECT-SECRET"),
+        "Kind 不拿整份项目规则：{body}"
+    );
 }

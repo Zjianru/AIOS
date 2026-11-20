@@ -29,10 +29,13 @@ use crate::spill_capability::SpillCapability;
 use crate::todo_capability::TodoCapability;
 use crate::{AgentEvent, CompactionTrigger};
 
-/// PreStep 的两阶段：Inject = 注入指令/skill（在 prune 之前）；Compact = 压缩自动检查（在 prune 之后）。
+/// PreStep 的两阶段：FixedBlocks/Inject（都在 prune 之前）；Compact = 压缩自动检查（在 prune 之后）。
 /// 拆分是为了保持旧顺序：注入 → prune → 压缩，同时不新增挂点。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PreStepPhase {
+    /// 固定块：常驻记忆、instructions、skill 目录；在用户话之前。
+    FixedBlocks,
+    /// 看这句话才触发的材料：用户 /name skill、联想回忆、确认卡通知；在用户话之后。
     Inject,
     Compact,
 }

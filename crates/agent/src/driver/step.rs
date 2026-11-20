@@ -46,6 +46,7 @@ pub(super) async fn prepare_step(
             &inner.cwd,
             &inner.tools,
             inner.policy_prompt.as_deref(),
+            inner.identity_prompt.as_deref(),
         ));
         inner
             .append(&[EventKind::SystemMessage {
@@ -56,6 +57,20 @@ pub(super) async fn prepare_step(
             .await?;
     }
     let claimed_messages = claimed.clone();
+    // 第一轮顺序：system → 固定块 → 用户话 → 触发记忆 → 程序消息。
+    // 固定块在 claim 到的用户话之前注入；触发记忆/显式 skill/确认卡通知仍走 Inject，
+    // 那时用户话已经落进日志。prune 只挂在 Compaction 挂点，不参与这里。
+    inner
+        .capabilities
+        .dispatch(&HookEvent::PreStep {
+            turn,
+            step,
+            host: inner.as_ref(),
+            messages: &claimed_messages,
+            trigger: None,
+            phase: crate::capabilities::PreStepPhase::FixedBlocks,
+        })
+        .await?;
     for message in claimed {
         inner
             .append(&[EventKind::UserMessage {
@@ -66,9 +81,7 @@ pub(super) async fn prepare_step(
             .await?;
     }
 
-    // PreStep 两阶段——Inject（instructions/skill 注入）在旧位置，再派发 Compact
-    // （压缩自动检查）。prune 已挂到 Compaction 挂点，不再每请求剪、也不参与
-    // PreStep 顺序；真正的修剪只发生在压缩事务里。
+    // 用户话之后的触发材料，再派发 Compact（压缩自动检查）。
     inner
         .capabilities
         .dispatch(&HookEvent::PreStep {

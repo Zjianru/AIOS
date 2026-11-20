@@ -350,16 +350,18 @@ fn request_system(body: &str) -> String {
     value["system"].as_str().expect("system").to_owned()
 }
 
-/// 请求体系统提示里的工作目录。
+/// 请求体系统提示里的工作目录（身份第一句按角色，不再固定 coding agent）。
 fn request_working_directory(body: &str) -> String {
     let value: Value = serde_json::from_str(body).expect("请求体 JSON");
     let system = value["system"].as_str().expect("system");
-    let prefix = "You are AIOS, a coding agent. Your working directory is ";
-    let line = system
-        .lines()
-        .find_map(|line| line.strip_prefix(prefix))
+    let (_, tail) = system
+        .split_once("Your working directory is ")
         .expect("system 里的工作目录");
-    line.strip_suffix('.').expect("工作目录句号").to_owned()
+    tail.split_whitespace()
+        .next()
+        .expect("工作目录")
+        .trim_end_matches('.')
+        .to_owned()
 }
 
 /// 受理前就能按标题排队 ThinAgent 回复的写任务参数：cwd 用仓库里的 sub，

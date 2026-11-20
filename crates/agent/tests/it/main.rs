@@ -13,6 +13,7 @@ mod compaction;
 mod compaction_dsh;
 mod credential_context;
 mod effort_log;
+mod frame_order;
 mod guard;
 mod inbox_and_cancel;
 mod inbox_durable;
