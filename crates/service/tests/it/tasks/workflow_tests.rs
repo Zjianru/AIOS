@@ -1524,7 +1524,11 @@ async fn gate_needs_fix_continue_and_auto_recheck_end_to_end() {
                         _ => None,
                     })
                     .collect();
-                text.contains("gate_verdict") && text.contains(note) && text.contains("needs_fix")
+                text.contains("gate_verdict")
+                    && text.contains(note)
+                    && text.contains("needs_fix")
+                    && text.contains("milestone card comes back needing fixes")
+                    && text.contains("program judges")
             })
     })
     .await;

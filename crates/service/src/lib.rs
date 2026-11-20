@@ -32,6 +32,7 @@ mod worktree;
 pub mod fx;
 pub mod memory;
 pub mod models;
+pub(crate) mod program_messages;
 pub mod quota;
 mod root;
 pub mod settings;

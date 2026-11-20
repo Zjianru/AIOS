@@ -339,7 +339,9 @@ async fn upstream_new_result_marks_reevaluation_and_continue_checks_again() {
                         _ => None,
                     })
                     .collect();
-                text.contains("upstream_changed") && text.contains("5 行")
+                text.contains("upstream_changed")
+                    && text.contains("5 行")
+                    && text.contains("call task_continue once for the downstream task")
             })
     })
     .await;
@@ -514,6 +516,12 @@ async fn update_task_requirement_card_round_trip_opens_a_new_attempt() {
         .iter()
         .any(|body| body.contains(&expected) && body.contains("空标题也别丢，用域名加路径当键"));
     assert!(saw_line, "模型请求里要有结果卡那行文字");
+    assert!(
+        bodies.iter().any(|body| body.contains("结果卡不是程序消息")
+            && body.contains("update_task_requirement")
+            && body.contains("直接回答")),
+        "结果卡规则只在卡文字里"
+    );
 
     // 新 Attempt 的脚本备好，再点确认。
     fixture.router.push_thin_for(
