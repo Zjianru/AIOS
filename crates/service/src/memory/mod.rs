@@ -15,7 +15,7 @@ pub use dream::{
 pub use tools::{memory_tools, memory_tools_with_window};
 
 use memory::MemoryStore;
-use memory::types::{Binding, MemoryItem, WriteContext, WriteOp};
+use memory::types::{Binding, MemoryItem, Scope, WriteContext, WriteOp};
 
 pub struct MemoryRuntime {
     store: Arc<MemoryStore>,
@@ -72,9 +72,10 @@ impl MemoryRuntime {
             parts.push("条目索引：".to_owned());
             parts.extend(entries.iter().map(|item| {
                 format!(
-                    "- {} · {} · {} · {}",
+                    "- {} · {} · {} · {} · {}",
                     item.id,
                     item.title,
+                    one_line_description(item),
                     item.scope.as_str(),
                     item.binding.as_str()
                 )
@@ -109,7 +110,10 @@ impl MemoryRuntime {
         let view = self.store.view().ok()?;
         let mut parts = Vec::new();
         for item in view.about_you.iter().chain(view.entries.iter()) {
-            if item.binding == Binding::Binding && item.status == "active" {
+            if item.binding == Binding::Binding
+                && item.status == "active"
+                && item.scope == Scope::Personal
+            {
                 parts.push(format!("- {}", item_text(item)));
             }
         }
@@ -413,6 +417,20 @@ fn message_text(message: &model::Message) -> String {
         )
 }
 
+fn one_line_description(item: &MemoryItem) -> String {
+    let text = if item.summary.trim().is_empty() {
+        item.body.as_str()
+    } else {
+        item.summary.as_str()
+    };
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(80)
+        .collect()
+}
+
 fn item_text(item: &MemoryItem) -> String {
     let body = match (item.summary.is_empty(), item.body.is_empty()) {
         (true, true) => String::new(),
@@ -540,6 +558,11 @@ mod tests {
         assert!(kind.contains("回答先给结论"));
         assert!(kind.contains("条目索引"));
         assert!(kind.contains("GBK CSV"));
+        assert!(
+            kind.lines()
+                .any(|line| line.contains("GBK CSV") && line.contains("先看编码")),
+            "索引每条带一句话描述：{kind}"
+        );
         let thin = runtime.thin_context().unwrap();
         assert!(thin.contains("有约束力的记忆"));
         assert!(thin.contains("回答先给结论"));

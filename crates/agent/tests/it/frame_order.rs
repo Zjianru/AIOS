@@ -36,6 +36,7 @@ async fn fixed_blocks_are_before_the_user_message_and_flashback_after() {
             raw: "---\nname: demo-frame\ndescription: 固定块顺序\n---\n\n正文。",
             requires: None,
             tools: &[],
+            read_only: false,
             unavailable_hint: "",
         }],
         ..isolated_config(data_dir.path())

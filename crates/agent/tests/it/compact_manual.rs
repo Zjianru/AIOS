@@ -719,6 +719,7 @@ async fn manual_compaction_rebuilds_fixed_blocks_before_the_summary() {
             raw: "---\nname: demo-compact\ndescription: 固定块目录用\n---\n\n演示正文。",
             requires: None,
             tools: &[],
+            read_only: false,
             unavailable_hint: "",
         }],
         compaction_fixed_block: Some(std::sync::Arc::new(|| {
