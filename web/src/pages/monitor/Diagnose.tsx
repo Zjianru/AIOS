@@ -9,6 +9,7 @@ import { go } from '@/app/navigate';
 import { monitorTask } from '@/data/service';
 import type { MonitorAttempt, MonitorContextParts, MonitorTaskResponse, ServiceEvent } from '@/data/service';
 import { formatTokens } from '@/lib/numbers';
+import { elapsedSeconds } from './diagnoseTime';
 import { cn } from '@/lib/utils';
 import { useMonitorStore } from './monitorStore';
 import { Card, Kpi, Missing, StackBar, fmtClock, fmtTime, useTick } from './monitorParts';
@@ -135,7 +136,9 @@ export function Diagnose({ taskId }: { taskId: string }) {
   );
   const used = summary?.contextUsed ?? ctxRows(detail?.contextParts ?? undefined).reduce((sum, row) => sum + row.value, 0);
   const window = summary?.contextWindow ?? 0;
-  const runningFor = summary?.startedAt ? Math.max(0, (Date.now() - summary.startedAt) / 1000) + tick : null;
+  const running = Boolean(detail?.task.running || summary?.running);
+  const endedAt = summary?.endedAt ?? attempts.at(-1)?.endedAt ?? null;
+  const runningFor = elapsedSeconds(running, summary?.startedAt, endedAt, Date.now(), tick);
   const done = lastDone(events);
 
   if (error) {
@@ -193,7 +196,7 @@ export function Diagnose({ taskId }: { taskId: string }) {
             <Kpi label="Token" value={summary ? formatTokens(summary.inputTokens + summary.outputTokens) : <Missing />} />
             <Kpi label="请求" value={summary?.requests ?? <Missing />} />
             <Kpi label="工具" value={summary?.toolCalls ?? <Missing />} />
-            <Kpi label={detail?.task.running || summary?.running ? '跑了' : '用时'} value={runningFor == null ? <Missing /> : fmtClock(runningFor)} tone="run" />
+            <Kpi label="用时" value={runningFor == null ? <Missing /> : fmtClock(runningFor)} tone="run" />
             <Kpi label="压缩" value={events.length ? compactions + ' 次' : <Missing />} />
           </div>
 
