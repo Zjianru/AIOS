@@ -615,8 +615,10 @@ test('任务对话头部「诊断」进监控诊断页', async ({ page }) => {
     await expect(page.locator('[data-page="monitor-task"]')).toBeVisible({ timeout: 20_000 });
     const clock = page.locator('[data-kind="kpi"]').filter({ hasText: '用时' }).first();
     await expect(clock).toBeVisible();
+    await expect
+      .poll(() => clock.locator('div').nth(1).innerText(), { timeout: 20_000 })
+      .toMatch(/\d{1,2}:\d{2}/);
     const before = await clock.locator('div').nth(1).innerText();
-    expect(before).toMatch(/\d{1,2}:\d{2}/);
     await page.waitForTimeout(1_200);
     expect(await clock.locator('div').nth(1).innerText()).toBe(before);
 
