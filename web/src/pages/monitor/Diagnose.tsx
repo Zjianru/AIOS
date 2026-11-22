@@ -3,20 +3,17 @@
  * 只读；数据来自 Snapshot 摘要 + MonitorTask。Kind 没有诊断。
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ArrowLeft, X } from 'lucide-react';
 import { go } from '@/app/navigate';
 import { monitorTask } from '@/data/service';
 import type { MonitorAttempt, MonitorContextParts, MonitorTaskResponse, ServiceEvent } from '@/data/service';
 import { formatTokens } from '@/lib/numbers';
 import { elapsedSeconds } from './diagnoseTime';
+import { TraceTimeline } from './TraceTimeline';
 import { cn } from '@/lib/utils';
 import { useMonitorStore } from './monitorStore';
 import { Card, Kpi, Missing, StackBar, fmtClock, fmtTime, useTick } from './monitorParts';
-
-const MODEL_COLOR = 'var(--kf-c1)';
-const TOOL_COLOR = 'var(--kf-c4)';
-const OTHER_COLOR = 'var(--kf-c7)';
 
 function redact(value: unknown, key = ''): unknown {
   if (typeof value === 'string') {
@@ -107,6 +104,7 @@ export function Diagnose({ taskId }: { taskId: string }) {
   const [detail, setDetail] = useState<MonitorTaskResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<ServiceEvent | null>(null);
+  const [traceRange, setTraceRange] = useState<{ from: number; to: number } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -124,16 +122,11 @@ export function Diagnose({ taskId }: { taskId: string }) {
   }, [attemptId, taskId]);
 
   const events = detail?.events ?? [];
+  const traceEvents = traceRange
+    ? events.filter((event) => event.time >= traceRange.from && event.time <= traceRange.to)
+    : events;
   const compactions = events.filter((event) => event.type === 'compaction/summary').length;
   const attempts = detail?.attempts ?? [];
-  const lanes = useMemo(
-    () => ({
-      model: events.filter((event) => laneOf(event) === 'model'),
-      tool: events.filter((event) => laneOf(event) === 'tool'),
-      other: events.filter((event) => laneOf(event) === 'other'),
-    }),
-    [events],
-  );
   const used = summary?.contextUsed ?? ctxRows(detail?.contextParts ?? undefined).reduce((sum, row) => sum + row.value, 0);
   const window = summary?.contextWindow ?? 0;
   const running = Boolean(detail?.task.running || summary?.running);
@@ -199,6 +192,9 @@ export function Diagnose({ taskId }: { taskId: string }) {
             <Kpi label="用时" value={runningFor == null ? <Missing /> : fmtClock(runningFor)} tone="run" />
             <Kpi label="压缩" value={events.length ? compactions + ' 次' : <Missing />} />
           </div>
+          <p className="text-1 text-ink-3" data-kind="tick-note">
+            运行中「用时」每 1 秒一跳；结束后静态。后台标签页浏览器会节流到约 2 秒，不拿本地钟补时间。
+          </p>
 
           <div className="grid gap-3 lg:grid-cols-2">
             <Card title="现在" note="服务端链路里的最后一步">
@@ -266,36 +262,39 @@ export function Diagnose({ taskId }: { taskId: string }) {
             </div>
           </Card>
 
-          <Card title="链路" note="三泳道：模型 / 工具 / 其他" data-kind="trace">
-            <div className="grid gap-3 md:grid-cols-3">
-              {(
-                [
-                  ['model', '模型', MODEL_COLOR, lanes.model],
-                  ['tool', '工具', TOOL_COLOR, lanes.tool],
-                  ['other', '其他', OTHER_COLOR, lanes.other],
-                ] as const
-              ).map(([key, label, color, list]) => (
-                <div key={key} className="min-w-0 rounded-btn border border-line p-2" data-lane={key}>
-                  <div className="mb-1 flex items-center gap-1.5 text-1 text-ink-3">
-                    <i className="size-2 rounded-[2px]" style={{ background: color }} />
-                    {label} <span className="brand-type">{list.length}</span>
-                  </div>
-                  {list.length ? (
-                    list.slice(-40).map((event) => (
-                      <button key={event.seq} type="button" className={cn('block w-full truncate rounded-[3px] px-1 py-0.5 text-left text-1 transition-colors hover:bg-hover', selected?.seq === event.seq ? 'bg-active text-ink' : 'text-ink-2')} onClick={() => setSelected(event)}>
-                        <span className="brand-type mr-1 text-ink-3">{event.seq}</span>
-                        {eventLabel(event)}
-                      </button>
-                    ))
-                  ) : (
-                    <div className="text-1"><Missing what="这条泳道没有事件" /></div>
-                  )}
-                </div>
-              ))}
-            </div>
+          <Card title="链路" note="三泳道按事件时间横向排；模型块拆等首字/生成，虚线是每步开始" data-kind="trace">
+            <TraceTimeline
+              events={events}
+              selected={selected}
+              onSelect={setSelected}
+              onRangeChange={setTraceRange}
+            />
           </Card>
 
-          <Card title="事件表" note="点一行看详情；密钥遮、思考不显示">
+          {selected ? (
+            <div className="rounded-card border border-line-2 bg-raised p-3" data-kind="event-detail">
+              <div className="mb-1 flex items-center gap-2 text-1 text-ink-3">
+                <span className="brand-type">#{selected.seq}</span>
+                <span>{selected.type}</span>
+                <span className="flex-1" />
+                <button type="button" className="rounded-btn p-0.5 text-ink-3 hover:bg-hover" onClick={() => setSelected(null)} aria-label="关闭详情">
+                  <X className="size-3.5" />
+                </button>
+              </div>
+              <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all text-1 text-ink-2">{JSON.stringify(redact(selected.data), null, 2)}</pre>
+            </div>
+          ) : (
+            <p className="text-1 text-ink-3">点链路里的块或下面的事件行，详情就在这里出现。</p>
+          )}
+
+          <Card
+            title="事件表"
+            note={
+              traceRange
+                ? '只看 ' + fmtTime(traceRange.from) + '–' + fmtTime(traceRange.to) + ' · ' + traceEvents.length + ' 条；点行看下方详情'
+                : '点一行看下方详情；密钥遮、思考不显示'
+            }
+          >
             <div className="max-h-[420px] overflow-auto">
               <table className="w-full table-fixed border-collapse text-1" data-kind="event-table">
                 <thead>
@@ -307,7 +306,7 @@ export function Diagnose({ taskId }: { taskId: string }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {events.slice(-200).map((event) => (
+                  {traceEvents.slice(-200).map((event) => (
                     <tr key={event.seq} className={cn('cursor-pointer border-t border-line/60 hover:bg-hover', selected?.seq === event.seq && 'bg-active')} onClick={() => setSelected(event)}>
                       <td className="brand-type py-1 text-ink-3">{event.seq}</td>
                       <td className="brand-type py-1 text-ink-3">{fmtTime(event.time)}</td>
@@ -318,21 +317,6 @@ export function Diagnose({ taskId }: { taskId: string }) {
                 </tbody>
               </table>
             </div>
-            {selected ? (
-              <div className="mt-3 rounded-card border border-line-2 bg-raised p-3" data-kind="event-detail">
-                <div className="mb-1 flex items-center gap-2 text-1 text-ink-3">
-                  <span className="brand-type">#{selected.seq}</span>
-                  <span>{selected.type}</span>
-                  <span className="flex-1" />
-                  <button type="button" className="rounded-btn p-0.5 text-ink-3 hover:bg-hover" onClick={() => setSelected(null)} aria-label="关闭详情">
-                    <X className="size-3.5" />
-                  </button>
-                </div>
-                <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all text-1 text-ink-2">{JSON.stringify(redact(selected.data), null, 2)}</pre>
-              </div>
-            ) : (
-              <p className="mt-2 text-1 text-ink-3">点一行看详情。</p>
-            )}
           </Card>
         </div>
       </div>
