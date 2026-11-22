@@ -104,6 +104,7 @@ export function Diagnose({ taskId }: { taskId: string }) {
   const [detail, setDetail] = useState<MonitorTaskResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<ServiceEvent | null>(null);
+  const [traceRange, setTraceRange] = useState<{ from: number; to: number } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -121,6 +122,9 @@ export function Diagnose({ taskId }: { taskId: string }) {
   }, [attemptId, taskId]);
 
   const events = detail?.events ?? [];
+  const traceEvents = traceRange
+    ? events.filter((event) => event.time >= traceRange.from && event.time <= traceRange.to)
+    : events;
   const compactions = events.filter((event) => event.type === 'compaction/summary').length;
   const attempts = detail?.attempts ?? [];
   const used = summary?.contextUsed ?? ctxRows(detail?.contextParts ?? undefined).reduce((sum, row) => sum + row.value, 0);
@@ -259,7 +263,12 @@ export function Diagnose({ taskId }: { taskId: string }) {
           </Card>
 
           <Card title="链路" note="三泳道按事件时间横向排；模型块拆等首字/生成，虚线是每步开始" data-kind="trace">
-            <TraceTimeline events={events} selected={selected} onSelect={setSelected} />
+            <TraceTimeline
+              events={events}
+              selected={selected}
+              onSelect={setSelected}
+              onRangeChange={setTraceRange}
+            />
           </Card>
 
           {selected ? (
@@ -278,7 +287,14 @@ export function Diagnose({ taskId }: { taskId: string }) {
             <p className="text-1 text-ink-3">点链路里的块或下面的事件行，详情就在这里出现。</p>
           )}
 
-          <Card title="事件表" note="点一行看详情；密钥遮、思考不显示">
+          <Card
+            title="事件表"
+            note={
+              traceRange
+                ? '只看 ' + fmtTime(traceRange.from) + '–' + fmtTime(traceRange.to) + ' · ' + traceEvents.length + ' 条；点行看下方详情'
+                : '点一行看下方详情；密钥遮、思考不显示'
+            }
+          >
             <div className="max-h-[420px] overflow-auto">
               <table className="w-full table-fixed border-collapse text-1" data-kind="event-table">
                 <thead>
@@ -290,7 +306,7 @@ export function Diagnose({ taskId }: { taskId: string }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {events.slice(-200).map((event) => (
+                  {traceEvents.slice(-200).map((event) => (
                     <tr key={event.seq} className={cn('cursor-pointer border-t border-line/60 hover:bg-hover', selected?.seq === event.seq && 'bg-active')} onClick={() => setSelected(event)}>
                       <td className="brand-type py-1 text-ink-3">{event.seq}</td>
                       <td className="brand-type py-1 text-ink-3">{fmtTime(event.time)}</td>

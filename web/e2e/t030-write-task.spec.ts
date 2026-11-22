@@ -628,6 +628,9 @@ test('任务对话头部「诊断」进监控诊断页', async ({ page }) => {
     await block.click();
     await expect(page.locator('[data-kind="event-detail"]')).toBeVisible();
     await expect(page.locator('[data-kind="trace-block"][data-selected="true"]')).toHaveCount(1);
+    const rows = page.locator('[data-kind="event-table"] tbody tr');
+    const rowsBefore = await rows.count();
+    expect(rowsBefore).toBeGreaterThan(0);
     const track = page.locator('[data-kind="trace-track"]');
     const box = await track.boundingBox();
     expect(box).not.toBeNull();
@@ -636,8 +639,10 @@ test('任务对话头部「诊断」进监控诊断页', async ({ page }) => {
     await page.mouse.move(box!.x + box!.width * 0.45, box!.y + box!.height / 2, { steps: 5 });
     await page.mouse.up();
     await expect(page.locator('[data-kind="trace-range"]')).toBeVisible();
+    await expect.poll(() => rows.count()).toBeLessThan(rowsBefore);
     await page.getByRole('button', { name: '清空' }).click();
     await expect(page.locator('[data-kind="trace-range"]')).toHaveCount(0);
+    await expect(rows).toHaveCount(rowsBefore);
   } finally {
     await fixture.close();
   }

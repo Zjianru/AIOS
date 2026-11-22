@@ -2,7 +2,7 @@
  * 诊断链路：三泳道按事件时间横向排布；模型块拆「等首字 / 生成」，工具块有耗时，
  * step/start 画分界线；可拖选一段时间只看这段。点块/行只改 selected，详情由诊断页同处渲染。
  */
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ServiceEvent } from '@/data/service';
 import { cn } from '@/lib/utils';
 import { fmtTime } from './monitorParts';
@@ -164,10 +164,12 @@ export function TraceTimeline({
   events,
   selected,
   onSelect,
+  onRangeChange,
 }: {
   events: ServiceEvent[];
   selected: ServiceEvent | null;
   onSelect: (event: ServiceEvent) => void;
+  onRangeChange?: (range: { from: number; to: number } | null) => void;
 }) {
   const blocks = useMemo(() => buildBlocks(events), [events]);
   const marks = useMemo(() => stepMarks(events), [events]);
@@ -179,6 +181,9 @@ export function TraceTimeline({
   const [dragStart, setDragStart] = useState<number | null>(null);
 
   const percent = (time: number) => Math.max(0, Math.min(100, ((time - start) / span) * 100));
+  useEffect(() => {
+    onRangeChange?.(range ? { from: range.from, to: range.to } : null);
+  }, [range, onRangeChange]);
   const inRange = (block: TraceBlock) => !range || (block.end >= range.from && block.start <= range.to);
   const visibleBlocks = blocks.filter(inRange);
   const timeAt = (clientX: number) => {
