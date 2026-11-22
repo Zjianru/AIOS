@@ -630,6 +630,7 @@ test('任务对话头部「诊断」进监控诊断页', async ({ page }) => {
     await block.click();
     await expect(page.locator('[data-kind="event-detail"]')).toBeVisible();
     await expect(page.locator('[data-kind="trace-block"][data-selected="true"]')).toHaveCount(1);
+    await expect(page.locator('[data-kind="trace-range"]')).toHaveCount(0);
     const rows = page.locator('[data-kind="event-table"] tbody tr');
     const rowsBefore = await rows.count();
     expect(rowsBefore).toBeGreaterThan(0);
