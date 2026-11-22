@@ -300,9 +300,20 @@ impl Agg {
         rings: &mut MonitorRings,
     ) {
         let mut step_at = 0_u64;
+        // 按会话日志切换连接：session/model 到下一个 TurnStart 才生效，和 session_stats 同口径。
+        let mut round_connection = selection.connection.clone();
+        let mut pending_connection: Option<String> = None;
         for event in events {
             match &event.kind {
                 EventKind::StepStart { .. } => step_at = event.time,
+                EventKind::TurnStart { .. } => {
+                    if let Some(connection) = pending_connection.take() {
+                        round_connection = connection;
+                    }
+                }
+                EventKind::SessionModel { connection, .. } => {
+                    pending_connection = Some(connection.clone());
+                }
                 EventKind::AssistantMessage {
                     message,
                     usage: Some(usage),
@@ -312,7 +323,7 @@ impl Agg {
                         model::MessageSource::Model { model, .. } => model.clone(),
                         _ => selection.model.clone(),
                     };
-                    let cost = self.price(&model_name, usage);
+                    let cost = self.price(&round_connection, &model_name, usage);
                     self.add_usage(&model_name, usage, cost);
                     self.add_day_usage(tz, event.time, usage, cost);
                     rings.tokens = rings
@@ -349,17 +360,11 @@ impl Agg {
         rings.unpriced |= self.models.iter().any(|row| row.unpriced);
     }
 
-    fn price(&self, model: &str, usage: &Usage) -> Option<f64> {
+    fn price(&self, connection_id: &str, model: &str, usage: &Usage) -> Option<f64> {
         let connection = self
             .connections
             .iter()
-            .find(|connection| {
-                connection
-                    .models
-                    .as_ref()
-                    .is_some_and(|rows| rows.iter().any(|row| row.id == model))
-            })
-            .or_else(|| self.connections.first())?;
+            .find(|connection| connection.id == connection_id)?;
         let price = stats::effective_price(connection, &self.catalog, model)?;
         stats::usage_cost_usd(usage, &price)
     }
@@ -1562,5 +1567,141 @@ mod t075_usage_tests {
             .expect("任务在快照里");
         assert_eq!(entry.input_tokens, 9_540, "多 Attempt 每个会话只加一遍");
         assert_eq!(entry.requests, 3);
+    }
+}
+
+#[cfg(test)]
+mod t075_price_tests {
+    use super::*;
+
+    fn connection(id: &str, input_price: f64) -> credentials::ConnectionInfo {
+        credentials::ConnectionInfo {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            model: "priced-model".to_owned(),
+            endpoint: "https://api.example.com/anthropic".to_owned(),
+            saved_at: 0,
+            check: credentials::CheckState::Never,
+            key_saved: true,
+            preset: "deepseek".to_owned(),
+            models: Some(vec![credentials::ModelRow {
+                id: "priced-model".to_owned(),
+                name: None,
+                context_window: None,
+                max_tokens: None,
+                price_input: Some(input_price),
+                price_output: None,
+                price_cache_read: None,
+                price_cache_write: None,
+            }]),
+            auth_header: None,
+        }
+    }
+
+    fn event(seq: u64, time: u64) -> session::Event {
+        session::Event::new(
+            seq,
+            time,
+            EventKind::AssistantMessage {
+                turn: 1,
+                step: 1,
+                message: model::Message::assistant(
+                    vec![model::ContentBlock::text("ok")],
+                    "example",
+                    "priced-model",
+                ),
+                stream: Vec::new(),
+                usage: Some(model::Usage {
+                    input_tokens: Some(1_000_000),
+                    output_tokens: Some(0),
+                    cache_read_input_tokens: Some(0),
+                    cache_creation_input_tokens: Some(0),
+                }),
+                interrupted: None,
+                effort: None,
+                effort_wanted: None,
+                request_at: Some(time),
+                context_parts: None,
+            },
+        )
+    }
+
+    fn agg() -> Agg {
+        Agg {
+            connections: vec![connection("cheap", 1.0), connection("expensive", 100.0)],
+            catalog: model::catalog::snapshot(),
+            models: Vec::new(),
+            tools: Vec::new(),
+            commands: Vec::new(),
+            tasks: Vec::new(),
+            anomalies: Vec::new(),
+            days: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn price_uses_event_connection_not_first_matching_model() {
+        let time = 1_700_000_000_000;
+        let mut cheap = agg();
+        let mut rings = MonitorRings::default();
+        cheap.add_events(
+            &[
+                session::Event::new(1, time - 10, EventKind::TurnStart { turn: 1 }),
+                event(2, time),
+            ],
+            None,
+            &session::ModelSelection {
+                connection: "cheap".to_owned(),
+                model: "priced-model".to_owned(),
+                effort_wanted: "high".to_owned(),
+            },
+            "UTC".parse().unwrap(),
+            &mut rings,
+        );
+        assert_eq!(cheap.models[0].cost_usd, Some(1.0), "cheap 连接价");
+        assert_eq!(
+            cheap.days.values().next().and_then(|day| day.cost_usd),
+            Some(1.0),
+            "日柱同样按事件连接价"
+        );
+        assert!(!rings.unpriced, "有价连接不能标无价");
+
+        let mut expensive = agg();
+        let mut ring2 = MonitorRings::default();
+        expensive.add_events(
+            &[event(2, time)],
+            None,
+            &session::ModelSelection {
+                connection: "expensive".to_owned(),
+                model: "priced-model".to_owned(),
+                effort_wanted: "high".to_owned(),
+            },
+            "UTC".parse().unwrap(),
+            &mut ring2,
+        );
+        assert_eq!(
+            expensive.models[0].cost_usd,
+            Some(100.0),
+            "expensive 连接价"
+        );
+    }
+
+    #[test]
+    fn unknown_connection_is_unpriced_not_borrowed_from_first() {
+        let mut agg = agg();
+        let mut rings = MonitorRings::default();
+        agg.add_events(
+            &[event(2, 1_700_000_000_000)],
+            None,
+            &session::ModelSelection {
+                connection: "missing".to_owned(),
+                model: "priced-model".to_owned(),
+                effort_wanted: "high".to_owned(),
+            },
+            "UTC".parse().unwrap(),
+            &mut rings,
+        );
+        assert_eq!(agg.models[0].cost_usd, None);
+        assert!(rings.unpriced);
     }
 }
