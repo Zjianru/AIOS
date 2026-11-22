@@ -273,6 +273,7 @@ export function TraceTimeline({
                     data-kind="trace-block"
                     data-seq={block.event.seq}
                     data-selected={active ? 'true' : 'false'}
+                    onPointerDown={(event) => event.stopPropagation()}
                     title={
                       eventLabel(block.event) +
                       ' · ' +
