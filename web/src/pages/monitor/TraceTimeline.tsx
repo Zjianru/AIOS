@@ -179,6 +179,8 @@ export function TraceTimeline({
   const track = useRef<HTMLDivElement>(null);
   const [range, setRange] = useState<{ from: number; to: number; x1: number; x2: number } | null>(null);
   const [dragStart, setDragStart] = useState<number | null>(null);
+  const [hoveredBlock, setHoveredBlock] = useState<string | null>(null);
+  const [focusedBlock, setFocusedBlock] = useState<string | null>(null);
 
   const percent = (time: number) => Math.max(0, Math.min(100, ((time - start) / span) * 100));
   useEffect(() => {
@@ -186,6 +188,7 @@ export function TraceTimeline({
   }, [range, onRangeChange]);
   const inRange = (block: TraceBlock) => !range || (block.end >= range.from && block.start <= range.to);
   const visibleBlocks = blocks.filter(inRange);
+  const selectedBlock = blocks.find((block) => block.event.seq === selected?.seq);
   const timeAt = (clientX: number) => {
     const rect = track.current?.getBoundingClientRect();
     if (!rect || rect.width === 0) return start;
@@ -212,6 +215,11 @@ export function TraceTimeline({
         )}
         <span>{fmtTime(end)}</span>
       </div>
+      {selectedBlock ? (
+        <div className="mb-1 text-1 text-ink-2" data-kind="trace-selected-label">
+          选中：{eventLabel(selectedBlock.event)} · {duration(selectedBlock.end - selectedBlock.start)}
+        </div>
+      ) : null}
       <div
         ref={track}
         data-kind="trace-track"
@@ -266,18 +274,27 @@ export function TraceTimeline({
                   block.waitMs != null && block.waitMs + (block.generateMs ?? 0) > 0
                     ? block.waitMs / (block.waitMs + (block.generateMs ?? 0))
                     : 0;
+                // 窄块（工具/其他）不塞内文；悬停/聚焦时浮出「名字 · 时长」。模型块保持内嵌文字。
+                const narrow = lane !== 'model' && width < 3;
+                const label = eventLabel(block.event) + ' · ' + duration(block.end - block.start);
+                const showNarrowLabel = narrow && (hoveredBlock === block.id || focusedBlock === block.id);
                 return (
                   <button
                     key={block.id}
                     type="button"
                     data-kind="trace-block"
                     data-seq={block.event.seq}
+                    data-lane={lane}
+                    data-narrow={narrow ? 'true' : 'false'}
                     data-selected={active ? 'true' : 'false'}
+                    aria-label={label}
                     onPointerDown={(event) => event.stopPropagation()}
+                    onMouseEnter={() => setHoveredBlock(block.id)}
+                    onMouseLeave={() => setHoveredBlock(null)}
+                    onFocus={() => setFocusedBlock(block.id)}
+                    onBlur={() => setFocusedBlock(null)}
                     title={
-                      eventLabel(block.event) +
-                      ' · ' +
-                      duration(block.end - block.start) +
+                      label +
                       (block.waitMs != null ? '（等首字 ' + duration(block.waitMs) + ' / 生成 ' + duration(block.generateMs) + '）' : '')
                     }
                     onClick={(event) => {
@@ -285,7 +302,7 @@ export function TraceTimeline({
                       onSelect(block.event);
                     }}
                     className={cn(
-                      'absolute top-5 h-3 overflow-hidden rounded-[3px] border px-1 text-left text-[10px] leading-3 text-ink',
+                      'absolute top-5 h-3 rounded-[3px] border px-1 text-left text-[10px] leading-3 text-ink',
                       active ? 'border-ink bg-active shadow-[0_0_0_1px_var(--ink)]' : 'border-transparent',
                     )}
                     style={{
@@ -296,21 +313,29 @@ export function TraceTimeline({
                       opacity: block.missing ? 0.45 : 0.85,
                     }}
                   >
-                    {lane === 'model' && block.waitMs != null ? (
-                      <>
+                    {!narrow && (lane === 'model' && block.waitMs != null ? (
+                      <span className="relative block overflow-hidden">
                         <span
                           data-kind="trace-wait"
                           className="absolute inset-y-0 left-0 bg-ink/25"
                           style={{ width: waitShare * 100 + '%' }}
                           title={'等首字 ' + duration(block.waitMs)}
                         />
-                        <span data-kind="trace-generate" className="relative z-10 truncate">
+                        <span data-kind="trace-generate" className="relative z-10 block truncate">
                           {eventLabel(block.event)}
                         </span>
-                      </>
+                      </span>
                     ) : (
-                      <span className="relative z-10 truncate">{eventLabel(block.event)}</span>
-                    )}
+                      <span className="relative z-10 block truncate">{eventLabel(block.event)}</span>
+                    ))}
+                    {showNarrowLabel ? (
+                      <span
+                        data-kind="trace-label"
+                        className="pointer-events-none absolute bottom-full left-0 z-30 mb-1 whitespace-nowrap rounded-btn border border-line-2 bg-raised px-1.5 py-0.5 text-1 leading-4 text-ink shadow"
+                      >
+                        {label}
+                      </span>
+                    ) : null}
                   </button>
                 );
               })}
@@ -328,6 +353,7 @@ export function TraceTimeline({
         <span>模型：等首字/生成</span>
         <span>工具：调用到结果</span>
         <span className="text-ink-3">虚线是每一步开始</span>
+        <span className="text-ink-3">窄块悬停/点开看名字</span>
         <span>{visibleBlocks.length} 块</span>
       </div>
     </div>
