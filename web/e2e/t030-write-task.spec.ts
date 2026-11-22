@@ -625,12 +625,20 @@ test('任务对话头部「诊断」进监控诊断页', async ({ page }) => {
     // 链路时间轴：点块立刻出详情并高亮；拖选一段只看这段，清空恢复。
     const trace = page.locator('[data-kind="trace-timeline"]');
     await expect(trace).toBeVisible({ timeout: 20_000 });
-    const block = page.locator('[data-kind="trace-block"]').first();
-    await expect(block).toBeVisible({ timeout: 20_000 });
-    await block.click();
+    const narrow = page.locator('[data-kind="trace-block"][data-narrow="true"]').first();
+    await expect(narrow).toBeVisible({ timeout: 20_000 });
+    await narrow.hover();
+    const hoverLabel = page.locator('[data-kind="trace-label"]').first();
+    await expect(hoverLabel).toBeVisible();
+    await expect(hoverLabel).toContainText('·');
+    await narrow.click();
     await expect(page.locator('[data-kind="event-detail"]')).toBeVisible();
     await expect(page.locator('[data-kind="trace-block"][data-selected="true"]')).toHaveCount(1);
+    await expect(page.locator('[data-kind="trace-selected-label"]')).toContainText('·');
     await expect(page.locator('[data-kind="trace-range"]')).toHaveCount(0);
+    const wideModel = page.locator('[data-kind="trace-block"][data-lane="model"][data-narrow="false"]').first();
+    await expect(wideModel).toBeVisible();
+    await expect(wideModel).not.toHaveText('');
     const rows = page.locator('[data-kind="event-table"] tbody tr');
     const rowsBefore = await rows.count();
     expect(rowsBefore).toBeGreaterThan(0);
