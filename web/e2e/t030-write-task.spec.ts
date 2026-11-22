@@ -603,6 +603,8 @@ test('任务对话头部「诊断」进监控诊断页', async ({ page }) => {
     await page.goto(urlOf(fixture));
     await sendKind(page, '把 hello.txt 的判重改成按 url');
     await expect(reviewCard(page)).toBeVisible({ timeout: 60_000 });
+    await reviewCard(page).getByRole('button', { name: '接受', exact: true }).click();
+    await expect(reviewCard(page).locator('[data-kind="task-accepted"]')).toBeVisible({ timeout: 20_000 });
     const taskId = await taskIdOf(fixture);
     await page.goto(urlOf(fixture, '#taskchat:' + taskId));
     const diagnose = page.locator('[data-kind="task-diagnose"]');
@@ -617,6 +619,25 @@ test('任务对话头部「诊断」进监控诊断页', async ({ page }) => {
     expect(before).toMatch(/\d{1,2}:\d{2}/);
     await page.waitForTimeout(1_200);
     expect(await clock.locator('div').nth(1).innerText()).toBe(before);
+
+    // 链路时间轴：点块立刻出详情并高亮；拖选一段只看这段，清空恢复。
+    const trace = page.locator('[data-kind="trace-timeline"]');
+    await expect(trace).toBeVisible({ timeout: 20_000 });
+    const block = page.locator('[data-kind="trace-block"]').first();
+    await expect(block).toBeVisible({ timeout: 20_000 });
+    await block.click();
+    await expect(page.locator('[data-kind="event-detail"]')).toBeVisible();
+    await expect(page.locator('[data-kind="trace-block"][data-selected="true"]')).toHaveCount(1);
+    const track = page.locator('[data-kind="trace-track"]');
+    const box = await track.boundingBox();
+    expect(box).not.toBeNull();
+    await page.mouse.move(box!.x + box!.width * 0.15, box!.y + box!.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box!.x + box!.width * 0.45, box!.y + box!.height / 2, { steps: 5 });
+    await page.mouse.up();
+    await expect(page.locator('[data-kind="trace-range"]')).toBeVisible();
+    await page.getByRole('button', { name: '清空' }).click();
+    await expect(page.locator('[data-kind="trace-range"]')).toHaveCount(0);
   } finally {
     await fixture.close();
   }
