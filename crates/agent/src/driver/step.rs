@@ -167,10 +167,12 @@ pub(super) async fn prepare_step(
         let derived = store.derive_messages_with_seqs();
         let history = crate::tool_gate::tool_history(store.events(), &derived);
         (
-            derived
-                .into_iter()
-                .map(|(_, message)| message)
-                .collect::<Vec<_>>(),
+            crate::tool_pairing::sanitize(
+                derived
+                    .into_iter()
+                    .map(|(_, message)| message)
+                    .collect::<Vec<_>>(),
+            ),
             history,
         )
     };

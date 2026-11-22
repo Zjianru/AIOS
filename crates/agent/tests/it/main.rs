@@ -34,6 +34,7 @@ mod step_numbering;
 mod todo;
 mod tool_batch;
 mod tool_gate;
+mod tool_pairing;
 mod tool_policy;
 mod tool_result_meta;
 mod tool_round_trip;

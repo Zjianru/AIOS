@@ -22,6 +22,7 @@ mod skill_catalog;
 mod spill_capability;
 mod todo_capability;
 mod tool_gate;
+mod tool_pairing;
 mod tool_policy;
 mod warn;
 

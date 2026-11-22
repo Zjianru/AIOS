@@ -583,7 +583,7 @@ async fn pre_compaction_diary(
     prefix: &[Message],
     instruction: &str,
 ) -> Result<String, AgentError> {
-    let mut input = prefix.to_vec();
+    let mut input = crate::tool_pairing::sanitize(prefix.to_vec());
     input.push(Message::user_text(instruction));
     let (tools, history) = {
         let store = host.session().lock().expect("agent 会话锁被毒化");
@@ -625,7 +625,7 @@ async fn summarize(
     max_tokens: u32,
     instruction: &str,
 ) -> Result<SummaryOutcome, AgentError> {
-    let mut input = prefix.to_vec();
+    let mut input = crate::tool_pairing::sanitize(prefix.to_vec());
     input.push(Message::user_text(instruction));
     // 摘要请求与主请求用同一份工具表/投影：没开出的工具不能进摘要请求。
     let (tools, history) = {
