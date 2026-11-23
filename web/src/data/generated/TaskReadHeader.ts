@@ -21,6 +21,18 @@ cancelledAt?: number | null,
  */
 projectId?: string | null,
 /**
+ * 目录来源：user / project / conversation；旧行 None。
+ */
+cwdSource?: string | null,
+/**
+ * 这是一张任务图的总任务；改归属时整张图一起改。
+ */
+graphRoot: boolean,
+/**
+ * 这张任务属于一张任务图（总任务或子任务）；改归属时整张图一起改。
+ */
+graphMember: boolean,
+/**
  * 创建任务时冻结的模型（只给显示名，切换模型不影响它）。
  */
 model: string, tools: Array<string>, attempts: number,

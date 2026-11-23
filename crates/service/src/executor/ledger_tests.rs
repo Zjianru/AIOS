@@ -175,6 +175,7 @@ fn accept_and_propose_verify_constraints_against_the_originating_conversation() 
                 requirement: "把事做完".to_owned(),
                 dod: "有结果".to_owned(),
                 cwd: None,
+                project: None,
                 write_scope: None,
                 worktree: false,
                 constraints: vec!["别加新依赖".to_owned()],
@@ -193,6 +194,7 @@ fn accept_and_propose_verify_constraints_against_the_originating_conversation() 
                 requirement: "把事做完".to_owned(),
                 dod: "有结果".to_owned(),
                 cwd: None,
+                project: None,
                 write_scope: None,
                 worktree: false,
                 constraints: vec!["用户没说过".to_owned()],
@@ -210,6 +212,7 @@ fn accept_and_propose_verify_constraints_against_the_originating_conversation() 
         requirement: "两步".to_owned(),
         dod: "都有结果".to_owned(),
         cwd: None,
+        project: None,
         subtasks: vec![
             GraphSubtaskArgs {
                 title: "一".to_owned(),

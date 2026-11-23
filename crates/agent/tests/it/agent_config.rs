@@ -161,6 +161,7 @@ async fn accepts_valid_non_default_values() {
         no_wait: false,
         policy_prompt: None,
         fixed_block: None,
+        dynamic_block: None,
         write_scope: None,
         memory_context: None,
         pre_compaction: None,

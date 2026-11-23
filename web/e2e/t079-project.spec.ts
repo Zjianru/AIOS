@@ -69,7 +69,7 @@ test('项目：侧栏新建、项目页逐项改、工作页 ?p=、监控 ?p= �
     // 新建对话框重名拒绝（不建第二个同名项目）。
     await page.locator('[data-kind="new-project"]').click();
     await page.locator('[data-kind="new-project-name"]').fill('清河县农技站');
-    await page.locator('[data-kind="new-project-submit"]').click();
+    await page.locator('[data-kind="new-project-submit"]').dispatchEvent('click');
     await expect(page.locator('[data-kind="new-project-error"]')).toContainText('已经存在', {
       timeout: 20_000,
     });
@@ -130,6 +130,23 @@ test('项目：侧栏新建、项目页逐项改、工作页 ?p=、监控 ?p= �
     // 刷新后名字没被改坏。
     await page.reload();
     await expect(page.locator('[data-kind="project-name"]')).toContainText('清河县农技站');
+
+    // 任务卡上的项目选择器：走 task_set_project，只改归属。
+    await page.goto(urlOf(fixture, '#project:' + projectId));
+    await page.locator('[data-kind="project-task"]').filter({ hasText: '判重改成按' }).click();
+    await expect(page.locator('[data-kind="task-project-picker"]')).toContainText('清河县农技站', {
+      timeout: 20_000,
+    });
+    await page.locator('[data-kind="task-project-picker"]').click();
+    await page.getByRole('menuitemradio', { name: '个人' }).click();
+    await expect(page.locator('[data-kind="task-project-picker"]')).toContainText('个人');
+    // 后面还要验工作页/监控的项目筛选，用真协议把归属改回项目（选择器本身已验过一次）。
+    const restored = await apiPost(request, fixture, {
+      method: 'task_set_project',
+      taskId: task!.id,
+      projectId,
+    });
+    expect(restored.ok()).toBeTruthy();
 
     // 工作页按项目筛；个人筛看不到它。
     await page.goto(urlOf(fixture, '#work?p=' + encodeURIComponent(projectId)));

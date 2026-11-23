@@ -162,7 +162,7 @@ impl RootSession {
 ///
 /// 写、改、跑命令和三件后台任务不在里面；这些活派给 ThinAgent。任务工具看
 /// `task_runtime` 有没有装配，由 `kind_tool_policy` 追加。
-pub(crate) const KIND_TOOLS: [&str; 22] = [
+pub(crate) const KIND_TOOLS: [&str; 23] = [
     "read",
     "glob",
     "grep",
@@ -172,6 +172,7 @@ pub(crate) const KIND_TOOLS: [&str; 22] = [
     "canvas",
     "aios_query",
     "propose_action",
+    "project_create",
     "web_search",
     "web_fetch",
     "memory_remember",
@@ -198,6 +199,7 @@ const KIND_POLICY: &str = concat!(
     "\nResults arrive as task_report: do not wait or poll; finish the turn once the work is dispatched and the reply is sent. If the user later asks how a task is going, call task_status once before answering.",
     "\nRead only until you can answer the user or state the task clearly (for example, confirm that a file exists); do not investigate on ThinAgent's behalf.",
     "\nDispatch tasks that are independent of each other separately with task_accept; only ordered work belongs in a task graph.",
+    "\nProjects: the fixed block lists existing projects with their id, goal and default directory. A task or graph may belong to at most one project. Decide the project from what the user said; never assign one from the task directory. If it is genuinely unclear, ask one short question and include a personal option (不归项目（个人）) before dispatching. Pass project only when you are sure; omit it for a personal task. A project's default directory is used when the user did not name a directory; if you pass a directory, it must be the user's named directory. If the project's default directory does not exist, tell the user and ask what to do; do not silently fall back. If the user explicitly asks you to create a project, call project_create; if you merely infer that one is needed, propose create_project through propose_action and wait for confirmation. You have no tool to change a task's project: when the user asks, tell them to change it on the task card.",
 );
 
 /// T077.2：Kind 固定块里的页面清单；只列 web/src 真能打开的页，每页一句。
@@ -297,6 +299,9 @@ pub async fn open_root_session_with(
             options.data_dir.clone(),
             options.identity.clone(),
         )),
+        std::sync::Arc::new(crate::executor::ProjectCreateTool::new(
+            options.data_dir.clone(),
+        )) as std::sync::Arc<dyn tools::Tool>,
     ];
     extra_tools.extend(web_extra_tools(&options));
     if let Some(runtime) = &options.task_runtime {
@@ -344,6 +349,12 @@ pub async fn open_root_session_with(
         text: format!("{PAGE_LIST}{KIND_OUTPUT_RULES}"),
         now_message: true,
     });
+    {
+        let data_dir = options.data_dir.clone();
+        config.dynamic_block = Some(std::sync::Arc::new(move || {
+            crate::projects::project_block_text(&data_dir)
+        }));
+    }
     // Kind 根会话：记忆注入 + 压缩前日记 + 记忆工具；库打不开不挡根会话，但产品路径要接上。
     let memory = match memory {
         Some(memory) => Some(memory),

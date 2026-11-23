@@ -639,6 +639,15 @@ pub struct TaskReadHeader {
     /// 所属项目；None = 个人。
     #[serde(default, rename = "projectId", skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
+    /// 目录来源：user / project / conversation；旧行 None。
+    #[serde(default, rename = "cwdSource", skip_serializing_if = "Option::is_none")]
+    pub cwd_source: Option<String>,
+    /// 这是一张任务图的总任务；改归属时整张图一起改。
+    #[serde(default, rename = "graphRoot")]
+    pub graph_root: bool,
+    /// 这张任务属于一张任务图（总任务或子任务）；改归属时整张图一起改。
+    #[serde(default, rename = "graphMember")]
+    pub graph_member: bool,
     /// 创建任务时冻结的模型（只给显示名，切换模型不影响它）。
     pub model: String,
     pub tools: Vec<String>,
@@ -1774,7 +1783,7 @@ pub struct ActionActResponse {
 ///
 /// 连接上的旧价格乘数后来整条删掉，不升版本：两个请求里的这个字段本来就可省略，旧页再发
 /// 由 serde 当未知字段忽略；响应里少了它，旧页读到 undefined 也不会拿去定价。
-pub const PROTOCOL_VERSION: u64 = 26;
+pub const PROTOCOL_VERSION: u64 = 27;
 
 /// 日历读取：不带 appointmentId 读全部；带 week 时额外给那周的计划点。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]

@@ -1,6 +1,6 @@
 ---
 name: aios-tasks
-description: Stop a running task, hold and resume new tasks globally, offer to continue tasks a restart interrupted, choose or widen a writing task's write scope, and propose ordered task graphs. mode=now cancels the current Attempt immediately; mode=after_report lets it finish the current step, report once, then end.
+description: Stop a running task, hold and resume new tasks globally, create projects, assign a task or graph to a project, offer to continue tasks a restart interrupted, choose or widen a writing task's write scope, and propose ordered task graphs. mode=now cancels the current Attempt immediately; mode=after_report lets it finish the current step, report once, then end.
 ---
 
 # AIOS tasks
@@ -108,3 +108,15 @@ Offer it only when the user asks to pause or resume new tasks. To change it, cal
 - `set_paused`: `details` is `{ "paused": true }` to hold new tasks, or `{ "paused": false }` to let the queue run. The card fills in the before and after line; do not write that yourself.
 - Name the choice in the user's words. Say in one sentence that new tasks will wait while the running one finishes, or that the queue runs again. If the result says the pause is already in that state, say so; do not propose again.
 - This does not stop a running task. When the user wants one task to stop, use `task_stop`.
+
+## Projects
+
+The fixed block lists the projects by id, name, goal and default directory. A task or task graph may belong to at most one project; the task card and the task conversation show it.
+
+- Decide the project from what the user said, not from the directory. Never infer a project from cwd.
+- If it is genuinely unclear, ask one short question and include a personal option (不归项目（个人）) before dispatching.
+- Pass project (the project id) on task_accept or task_graph_propose only when you are sure; omit it for a personal task. A graph's subtasks inherit the root project.
+- When the user names a directory, pass it as cwd; otherwise omit cwd and the project's default directory is used, then the Kind conversation directory. A project default directory that does not exist is an error; report it and ask, do not fall back silently.
+- When the user explicitly asks to create a project, call project_create with name, goal, optional dir. It creates immediately and returns a receipt; a duplicate name returns an error and creates nothing.
+- When you infer a new project from repeated conversation, call propose_action once with one option, action: "create_project", and details: { "name": ..., "goal": ..., "dir": ... }. The user confirms on the card; if the name already exists when they confirm, the action says it was already created.
+- You have no tool that changes a task's project. When the user asks to re-assign one, tell them to use the project selector on the task card.

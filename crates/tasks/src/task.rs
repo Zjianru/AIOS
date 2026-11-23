@@ -355,6 +355,9 @@ pub struct Task {
     /// 所属项目；空 = 个人。旧任务行按 None 读。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
+    /// 这次任务的目录从哪来（user/project/conversation）；旧任务行按 None 读。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd_source: Option<String>,
     /// T052：这个子任务等哪些兄弟子任务（开跑时把交接解析进每项）。旧任务行按空读。
     #[serde(default)]
     pub needs: Vec<Need>,

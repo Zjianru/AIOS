@@ -370,6 +370,7 @@ pub(crate) struct CapabilityStates {
     /// 程序自带的 skill 来源（产品装配填；排在用户根后面）。
     pub bundled_skills: Vec<tools::BundledSkill>,
     pub fixed_block: Option<crate::fixed_block::FixedBlockState>,
+    pub dynamic_block: Option<crate::dynamic_block::DynamicBlockState>,
     pub spill_max_inline_tokens: usize,
     pub memory_identity: Arc<tokio::sync::Mutex<Option<String>>>,
     pub memory_context: Option<crate::MemoryContextProvider>,
@@ -415,6 +416,11 @@ impl CapabilityRegistry {
         if let Some(fixed_block) = states.fixed_block {
             capabilities.push(Box::new(crate::fixed_block::FixedBlockCapability::new(
                 fixed_block,
+            )));
+        }
+        if let Some(dynamic_block) = states.dynamic_block {
+            capabilities.push(Box::new(crate::dynamic_block::DynamicBlockCapability::new(
+                dynamic_block,
             )));
         }
         Self { capabilities }

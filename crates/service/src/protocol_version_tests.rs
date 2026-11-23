@@ -1,8 +1,8 @@
 use super::*;
 
 #[test]
-fn protocol_version_is_26() {
-    assert_eq!(PROTOCOL_VERSION, 26, "项目方法，协议升到 26");
+fn protocol_version_is_27() {
+    assert_eq!(PROTOCOL_VERSION, 27, "项目任务归属和目录来源，协议升到 27");
 }
 
 #[test]

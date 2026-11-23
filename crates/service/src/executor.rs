@@ -200,6 +200,7 @@ struct TaskAcceptArgs {
     requirement: String,
     dod: String,
     cwd: Option<String>,
+    project: Option<String>,
     write_scope: Option<String>,
     worktree: bool,
     constraints: Vec<String>,
@@ -228,6 +229,7 @@ struct TaskGraphArgs {
     requirement: String,
     dod: String,
     cwd: Option<String>,
+    project: Option<String>,
     subtasks: Vec<GraphSubtaskArgs>,
     constraints: Vec<String>,
 }
@@ -1040,6 +1042,9 @@ impl TaskRuntime {
                 bash: task.bash,
                 cancelled_at: task.cancelled.as_ref().map(|cancelled| cancelled.at),
                 project_id: task.project_id.clone(),
+                cwd_source: task.cwd_source.clone(),
+                graph_root: task.is_graph_root(),
+                graph_member: task.is_graph_root() || task.parent.is_some(),
                 model: task.model.model.clone(),
                 tools: task.tools.clone(),
                 attempts: task.runs.iter().map(|run| run.attempts.len() as u64).sum(),
@@ -3185,6 +3190,67 @@ impl TaskRuntime {
         });
     }
 
+    /// 任务归属与目录：项目 id、用户点名目录都先校验；项目默认目录不存在就报错，
+    /// 不偷偷退回对话目录。返回 (cwd, 项目 id, 目录来源)。
+    fn resolve_placement(
+        &self,
+        context: &ToolContext,
+        cwd: Option<String>,
+        project: Option<String>,
+    ) -> Result<(PathBuf, Option<String>, Option<String>), ToolFailure> {
+        let project = match project {
+            None => None,
+            Some(project_id) => {
+                let store = tasks::ProjectStore::open(self.data_dir.join(tasks::PROJECTS_DB_FILE))
+                    .map_err(|error| ToolFailure::plain(format!("项目库打不开：{error}")))?;
+                let project = store
+                    .get(&project_id)
+                    .map_err(|error| ToolFailure::plain(format!("项目读不出来：{error}")))?
+                    .ok_or_else(|| ToolFailure::plain(format!("项目不存在：{project_id}")))?;
+                Some(project)
+            }
+        };
+        if let Some(raw) = cwd {
+            let path = PathBuf::from(raw);
+            let path = if path.is_absolute() {
+                path
+            } else {
+                context.cwd.join(path)
+            };
+            if !path.is_dir() {
+                return Err(ToolFailure::plain(format!(
+                    "cwd 不是已存在的目录：{}",
+                    path.display()
+                )));
+            }
+            let path = std::fs::canonicalize(&path).unwrap_or(path);
+            return Ok((
+                path,
+                project.map(|project| project.id),
+                Some("user".to_owned()),
+            ));
+        }
+        if let Some(dir) = project.as_ref().and_then(|project| project.dir.as_ref()) {
+            if !dir.is_dir() {
+                return Err(ToolFailure::plain(format!(
+                    "项目默认目录 {} 不存在",
+                    dir.display()
+                )));
+            }
+            let path = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.clone());
+            return Ok((
+                path,
+                project.as_ref().map(|project| project.id.clone()),
+                Some("project".to_owned()),
+            ));
+        }
+        Ok((
+            context.cwd.clone(),
+            project.map(|project| project.id),
+            Some("conversation".to_owned()),
+        ))
+    }
+
     /// Kind 的 task_accept：冻结模型选择与执行策略、落任务和 launch、回任务 id。
     ///
     /// 写入范围为空 = 只读调查（9 件工具）；有范围 = 写任务（加 write、edit）。
@@ -3201,6 +3267,7 @@ impl TaskRuntime {
             requirement,
             dod,
             cwd,
+            project,
             write_scope,
             worktree,
             constraints,
@@ -3211,24 +3278,7 @@ impl TaskRuntime {
             .to_owned();
         crate::ledger::verify_user_words(&self.data_dir, &conversation, &constraints)
             .map_err(ToolFailure::plain)?;
-        let cwd = match cwd {
-            Some(raw) => {
-                let path = PathBuf::from(raw);
-                let path = if path.is_absolute() {
-                    path
-                } else {
-                    context.cwd.join(path)
-                };
-                if !path.is_dir() {
-                    return Err(ToolFailure::plain(format!(
-                        "cwd 不是已存在的目录：{}",
-                        path.display()
-                    )));
-                }
-                std::fs::canonicalize(&path).unwrap_or(path)
-            }
-            None => context.cwd.clone(),
-        };
+        let (cwd, project, cwd_source) = self.resolve_placement(context, cwd, project)?;
         let selection = self
             .selection
             .lock()
@@ -3274,6 +3324,11 @@ impl TaskRuntime {
             .store
             .create_task_once_with_constraints(draft, policy, constraints, &key, Self::now())
             .map_err(|error| ToolFailure::plain(error.to_string()))?;
+        if created {
+            self.store
+                .set_project_and_cwd_source(&task.id, project.as_deref(), cwd_source.as_deref())
+                .map_err(|error| ToolFailure::plain(error.to_string()))?;
+        }
         self.mark_dispatched(&conversation, &task);
         self.wake();
         Ok((task, created))
@@ -3291,6 +3346,7 @@ impl TaskRuntime {
             requirement,
             dod,
             cwd,
+            project,
             subtasks,
             constraints,
         } = args;
@@ -3300,24 +3356,7 @@ impl TaskRuntime {
             .to_owned();
         crate::ledger::verify_user_words(&self.data_dir, &conversation, &constraints)
             .map_err(ToolFailure::plain)?;
-        let cwd = match cwd {
-            Some(raw) => {
-                let path = PathBuf::from(raw);
-                let path = if path.is_absolute() {
-                    path
-                } else {
-                    context.cwd.join(path)
-                };
-                if !path.is_dir() {
-                    return Err(ToolFailure::plain(format!(
-                        "cwd 不是已存在的目录：{}",
-                        path.display()
-                    )));
-                }
-                std::fs::canonicalize(&path).unwrap_or(path)
-            }
-            None => context.cwd.clone(),
-        };
+        let (cwd, project, cwd_source) = self.resolve_placement(context, cwd, project)?;
         let selection = self
             .selection
             .lock()
@@ -3384,6 +3423,9 @@ impl TaskRuntime {
         let (root, _created) = self
             .store
             .create_graph_once_with_constraints(graph, constraints, call_id, Self::now())
+            .map_err(|error| ToolFailure::plain(error.to_string()))?;
+        self.store
+            .set_project_and_cwd_source(&root.id, project.as_deref(), cwd_source.as_deref())
             .map_err(|error| ToolFailure::plain(error.to_string()))?;
         self.mark_dispatched(&conversation, &root);
         self.wake();

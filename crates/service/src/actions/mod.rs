@@ -6,6 +6,7 @@
 
 mod appointments;
 mod cancel_tasks;
+mod create_project;
 mod mask;
 mod resume_task;
 mod select_model;
@@ -132,6 +133,9 @@ impl ActionRegistry {
         registry.register(Arc::new(
             update_gate_commands::UpdateGateCommandsAction::new(data_dir.clone()),
         ));
+        registry.register(Arc::new(create_project::CreateProjectAction::new(
+            data_dir.clone(),
+        )));
         registry.register(Arc::new(appointments::CreateAppointmentAction));
         registry.register(Arc::new(appointments::UpdateAppointmentAction));
         registry

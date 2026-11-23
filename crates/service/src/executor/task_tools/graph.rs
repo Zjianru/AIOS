@@ -22,7 +22,8 @@ impl TaskGraphProposeTool {
                     "title": {"type": "string", "description": TASK_ACCEPT_TITLE_DESCRIPTION},
                     "requirement": {"type": "string", "description": "What the whole graph must achieve, in the user's words."},
                     "dod": {"type": "string", "description": "How the whole graph will be judged complete."},
-                    "cwd": {"type": "string", "description": "Directory to work in; omit to use this conversation's directory. It must already exist."},
+                    "cwd": {"type": "string", "description": "Directory to work in; omit to use the project's default directory, then this conversation's directory. A path you pass must already exist."},
+                    "project": {"type": "string", "description": "Project id from the fixed block's project list for the whole graph. Omit for a personal graph or when unsure; ask the user if unsure. Never infer it from cwd."},
                     "constraints": {"type": "array", "items": {"type": "string"}, "description": "The user's hard requirements for the whole graph, each copied verbatim from a user message. Omit when none. Checked against the originating conversation; one non-verbatim string rejects the whole call."},
                     "subtasks": {
                         "type": "array",
@@ -56,7 +57,7 @@ impl Tool for TaskGraphProposeTool {
     }
 
     fn description(&self) -> &str {
-        "Propose one ordered task graph when the user's request has steps that must run in order. Creates the graph and returns its id; then call propose_action once with action start_task_graph and that id so the user confirms on the card. Independent work belongs in task_accept, not here."
+        "Propose one ordered task graph when the user's request has steps that must run in order. Creates the graph and returns its id; then call propose_action once with action start_task_graph and that id so the user confirms on the card. Pass project only when the whole graph clearly belongs to one project; ask the user if unsure and never infer it from cwd. Independent work belongs in task_accept, not here."
     }
 
     fn parameters(&self) -> &Value {
@@ -152,6 +153,11 @@ fn parse_graph_args(args: &serde_json::Map<String, Value>) -> Result<TaskGraphAr
         .and_then(Value::as_str)
         .filter(|cwd| !cwd.trim().is_empty())
         .map(str::to_owned);
+    let project = match args.get("project") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(value)) => Some(value.clone()).filter(|value| !value.trim().is_empty()),
+        Some(_) => return Err(ToolFailure::plain("project 必须是字符串")),
+    };
     let raw_subtasks = args
         .get("subtasks")
         .and_then(Value::as_array)
@@ -244,6 +250,7 @@ fn parse_graph_args(args: &serde_json::Map<String, Value>) -> Result<TaskGraphAr
         requirement,
         dod,
         cwd,
+        project,
         subtasks,
         constraints: parse_constraints(args)?,
     })

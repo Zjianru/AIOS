@@ -22,7 +22,8 @@ impl TaskAcceptTool {
                     "title": {"type": "string", "description": TASK_ACCEPT_TITLE_DESCRIPTION},
                     "requirement": {"type": "string", "description": "What the task must do, in the user's words."},
                     "dod": {"type": "string", "description": "How the result will be judged complete."},
-                    "cwd": {"type": "string", "description": "Directory to work in; omit to use this conversation's directory. It must already exist."},
+                    "cwd": {"type": "string", "description": "Directory to work in; omit to use the project's default directory, then this conversation's directory. A path you pass must already exist."},
+                    "project": {"type": "string", "description": "Project id from the fixed block's project list that this task belongs to. Omit for personal tasks or when you are unsure; if unsure, ask the user (include the personal choice) before dispatching. Never infer a project from cwd."},
                     "write_scope": {"type": "string", "description": "One path this task may write: a file, or a directory and everything under it. Relative paths resolve against cwd. Omit for a read-only investigation."},
                     "worktree": {"type": "boolean", "description": "Run the task in a new git worktree under the data directory. Only when the user explicitly asks for a worktree. Defaults to false."},
                     "constraints": {"type": "array", "items": {"type": "string"}, "description": "The user's hard requirements (must/never rules), each copied verbatim from a user message. Omit when the user stated none. Every string is checked against the originating conversation and the whole call is rejected if one is not verbatim user text."}
@@ -39,7 +40,7 @@ impl Tool for TaskAcceptTool {
     }
 
     fn description(&self) -> &str {
-        "Dispatch a task to a ThinAgent and return its task id. Omit write_scope for a read-only investigation; pass one path for a writing task (a file, or a directory and everything under it). Pass worktree=true only when the user explicitly asked to work in a git worktree. The result arrives later as a task_report message; the user already sees a card, so answer only what is needed now and do not wait for the result."
+        "Dispatch a task to a ThinAgent and return its task id. Omit write_scope for a read-only investigation; pass one path for a writing task (a file, or a directory and everything under it). Pass project only when the task clearly belongs to one of the fixed block's projects; ask the user if unsure and never infer it from cwd. Omit project for a personal task. Pass worktree=true only when the user explicitly asked to work in a git worktree. The result arrives later as a task_report message; the user already sees a card, so answer only what is needed now and do not wait for the result."
     }
 
     fn parameters(&self) -> &Value {
@@ -86,6 +87,15 @@ impl Tool for TaskAcceptTool {
                     );
                 }
             };
+            let project = match args.get("project") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(value)) => {
+                    Some(value.clone()).filter(|value| !value.trim().is_empty())
+                }
+                Some(_) => {
+                    return ToolResult::error(call.id, ToolFailure::plain("project 必须是字符串"));
+                }
+            };
             let worktree = match args.get("worktree") {
                 None => false,
                 Some(Value::Bool(value)) => *value,
@@ -105,6 +115,7 @@ impl Tool for TaskAcceptTool {
                     requirement,
                     dod,
                     cwd,
+                    project,
                     write_scope,
                     worktree,
                     constraints,

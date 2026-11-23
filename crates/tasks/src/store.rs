@@ -1382,6 +1382,25 @@ impl Store {
         id: &TaskId,
         project_id: Option<&str>,
     ) -> Result<Vec<TaskId>, TaskError> {
+        self.set_placement(id, project_id, None)
+    }
+
+    /// 建任务/图时一次写归属和目录来源；图里整张一起写。
+    pub fn set_project_and_cwd_source(
+        &self,
+        id: &TaskId,
+        project_id: Option<&str>,
+        cwd_source: Option<&str>,
+    ) -> Result<Vec<TaskId>, TaskError> {
+        self.set_placement(id, project_id, Some(cwd_source))
+    }
+
+    fn set_placement(
+        &self,
+        id: &TaskId,
+        project_id: Option<&str>,
+        cwd_source: Option<Option<&str>>,
+    ) -> Result<Vec<TaskId>, TaskError> {
         let connection = self.lock()?;
         let all = load_all_tasks(&connection)?;
         let target = all
@@ -1405,10 +1424,18 @@ impl Store {
             }
             let mut task = task.clone();
             let next = project_id.map(str::to_owned);
-            if task.project_id == next {
+            let next_source = cwd_source.map(|source| source.map(str::to_owned));
+            if task.project_id == next
+                && next_source
+                    .as_ref()
+                    .is_none_or(|source| *source == task.cwd_source)
+            {
                 continue;
             }
             task.project_id = next;
+            if let Some(source) = next_source {
+                task.cwd_source = source;
+            }
             save_task(Some(self), &connection, &task)?;
             changed.push(task.id);
         }
@@ -2551,6 +2578,7 @@ fn task_row(
         cancelled: None,
         parent,
         project_id: None,
+        cwd_source: None,
         needs,
         arrangement,
         gate,

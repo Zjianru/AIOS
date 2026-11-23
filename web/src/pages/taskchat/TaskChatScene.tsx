@@ -38,6 +38,7 @@ import { Ledger } from './parts/ledger';
 import { ProgramSection, ProgramState } from './parts/program';
 import { ReviewSection } from './parts/review';
 import { TaskState } from './parts/state';
+import { TaskProjectPicker } from './parts/project';
 import { NO_CANVAS, NO_COUNTS, reasonOf } from './parts/helpers';
 import { subscribeRootFrames } from '@/data/liveRoot';
 import { reconnectDelayMs } from '@/data/reconnect';
@@ -702,6 +703,14 @@ export function TaskChatScene() {
               onCancel={() => void cancelTask()}
             />
           </div>
+          <div className="mt-1">
+            <TaskProjectPicker
+              task={task}
+              onChanged={(projectId) =>
+                setTask((current) => (current ? { ...current, projectId: projectId ?? undefined } : current))
+              }
+            />
+          </div>
           <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-2 text-ink-3">
             {task.writeScope ? (
               <span
@@ -718,6 +727,9 @@ export function TaskChatScene() {
             <span className="flex items-center gap-1">
               <FolderOpen className="size-3.5" />
               <span className="process-path">{displayPath(task.cwd)}</span>
+              {task.cwdSource === 'project' ? (
+                <span data-kind="task-cwd-source">项目默认目录</span>
+              ) : null}
             </span>
             <span>{program ? '程序门 · 自动检查' : 'ThinAgent · ' + task.model}</span>
             {!program && task.attempts > 1 ? (

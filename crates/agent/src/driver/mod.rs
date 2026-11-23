@@ -384,6 +384,10 @@ impl Inner {
         let fixed_block_state = config.fixed_block.clone().map(|block| {
             crate::fixed_block::FixedBlockState::load(&store, block.text, block.now_message)
         });
+        let dynamic_block_state = config
+            .dynamic_block
+            .clone()
+            .map(|source| crate::dynamic_block::DynamicBlockState::load(&store, source));
         // 固定块从 owner 的当前完整版本取：指令/skill/记忆/任务书各一个 source。
         // 不从 derive_messages 捡，否则第二次压缩前这些消息已被上次 Replace 藏掉。
         let mut fixed_block_sources: Vec<crate::CompactionFixedBlockSource> = Vec::new();
@@ -411,6 +415,15 @@ impl Inner {
                     kind: "guide".to_owned(),
                     identity: "guide".to_owned(),
                     text: text.clone(),
+                })
+            }));
+        }
+        if let Some(source) = config.dynamic_block.clone() {
+            fixed_block_sources.push(Arc::new(move || {
+                Some(crate::CompactionFixedBlock {
+                    kind: "projects".to_owned(),
+                    identity: "projects".to_owned(),
+                    text: source()?,
                 })
             }));
         }
@@ -503,6 +516,7 @@ impl Inner {
                 skill_roots,
                 bundled_skills,
                 fixed_block: fixed_block_state,
+                dynamic_block: dynamic_block_state,
                 spill_max_inline_tokens,
                 memory_identity,
                 memory_context,

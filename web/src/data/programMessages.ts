@@ -12,6 +12,7 @@ export const PROGRAM_MESSAGE_PREFIXES = [
   'restart:',
   'fixed-block:',
   'date-now:',
+  'dynamic-block:',
 ] as const;
 
 export function isProgramRpc(rpcId: string | null | undefined): boolean {

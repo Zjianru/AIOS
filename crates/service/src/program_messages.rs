@@ -6,7 +6,7 @@
 use model::{Message, MessageSource};
 
 /// 唯一一张程序消息表。
-pub(crate) const PROGRAM_MESSAGE_PREFIXES: [&str; 9] = [
+pub(crate) const PROGRAM_MESSAGE_PREFIXES: [&str; 10] = [
     "task-report:",
     "task-stop:",
     "task-cc:",
@@ -16,6 +16,7 @@ pub(crate) const PROGRAM_MESSAGE_PREFIXES: [&str; 9] = [
     "restart:",
     "fixed-block:",
     "date-now:",
+    "dynamic-block:",
 ];
 
 /// 需要按任务中继处理的前缀（工作页/做梦只看这四类）。
@@ -50,7 +51,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn table_is_exactly_the_nine_prefixes() {
+    fn table_is_exactly_the_ten_prefixes() {
         assert_eq!(
             PROGRAM_MESSAGE_PREFIXES,
             [
@@ -63,6 +64,7 @@ mod tests {
                 "restart:",
                 "fixed-block:",
                 "date-now:",
+                "dynamic-block:",
             ]
         );
         assert!(is_program_rpc("task-report:t:r"));
@@ -73,6 +75,7 @@ mod tests {
         assert!(is_program_rpc("appointment-wake:a:r"));
         assert!(is_program_rpc("restart:boot"));
         assert!(is_program_rpc("fixed-block:0123456789abcdef"));
+        assert!(is_program_rpc("dynamic-block:0123456789abcdef"));
         assert!(!is_program_rpc("confirm:card-1"));
     }
 

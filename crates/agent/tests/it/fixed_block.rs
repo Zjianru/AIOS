@@ -195,3 +195,57 @@ async fn now_message_follows_this_turns_user_message_in_the_model_request() {
     let year = chrono::Local::now().format("%Y").to_string();
     assert!(body[now_at..].contains(&year), "现在是当轮时间：{body}");
 }
+
+#[tokio::test]
+async fn dynamic_block_appends_only_when_its_text_changes() {
+    use std::sync::{Arc, Mutex};
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(SequenceResponder::new(vec![
+            sse(FINAL_TEXT_SSE.to_owned()),
+            sse(FINAL_TEXT_SSE.to_owned()),
+        ]))
+        .mount(&server)
+        .await;
+    let data = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let store = SessionStore::create(data.path(), project.path()).unwrap();
+    let id = store.id().clone();
+    drop(store);
+    let text = Arc::new(Mutex::new("项目清单甲".to_owned()));
+    let source = Arc::clone(&text);
+    let deps = || Deps {
+        model: model::DeepSeek::with_credentials(model_config(&server.uri()), test_credential())
+            .unwrap(),
+        tools: tools::ToolSet::builtin(),
+        store: SessionStore::open(data.path(), &id).unwrap(),
+    };
+    let mut config = isolated_config(data.path());
+    config.dynamic_block = Some(Arc::new(move || Some(source.lock().unwrap().clone())));
+    let agent = Agent::create(config, deps()).await.unwrap();
+    agent
+        .send(UserMessage::text("第一句"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    agent.idle().await;
+    *text.lock().unwrap() = "项目清单乙".to_owned();
+    agent
+        .send(UserMessage::text("第二句"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    agent.idle().await;
+    let requests = server.received_requests().await.unwrap();
+    let bodies: Vec<String> = requests
+        .iter()
+        .map(|request| String::from_utf8(request.body.clone()).unwrap())
+        .collect();
+    assert!(bodies[0].contains("项目清单甲"));
+    assert!(!bodies[0].contains("项目清单乙"));
+    assert!(bodies[1].contains("项目清单甲"));
+    assert!(bodies[1].contains("项目清单乙"));
+    assert!(
+        bodies[1].find("项目清单乙") > bodies[1].find("项目清单甲"),
+        "变化后的固定块要补在末尾"
+    );
+}

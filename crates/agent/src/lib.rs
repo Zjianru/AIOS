@@ -9,6 +9,7 @@ mod capabilities;
 mod compaction;
 mod compaction_capability;
 mod driver;
+mod dynamic_block;
 mod error;
 mod fixed_block;
 mod inbox;
@@ -85,6 +86,9 @@ pub struct FixedBlock {
     /// T077.6：每轮真实用户消息后追加「现在」；Kind 根会话开，别的 agent 默认关。
     pub now_message: bool,
 }
+
+/// 动态固定块来源：返回当前完整正文；None = 这次没有内容。
+pub use dynamic_block::DynamicBlockSource;
 
 /// 当前用户消息命中钥匙且有桥时才返回回忆；None = 这次不送。
 pub type MemoryFlashbackProvider =
@@ -186,6 +190,8 @@ pub struct AgentConfig {
     /// T077.2：页面清单这类固定块正文。旧会话没有当前版本时，下一次请求前补一条程序消息；
     /// 压缩时也作为固定块重铺。None = 不装。
     pub fixed_block: Option<FixedBlock>,
+    /// 可动态更新的固定块来源；内容变化时追加一条程序消息，压缩时也重铺。
+    pub dynamic_block: Option<DynamicBlockSource>,
     /// 工具写入范围（D85）：写类工具只允许写这个前缀下的路径；None = 不限。
     /// 服务给写任务的 ThinAgent 填；Kind、CLI 不填。
     pub write_scope: Option<PathBuf>,
@@ -257,6 +263,7 @@ impl Default for AgentConfig {
             no_wait: false,
             policy_prompt: None,
             fixed_block: None,
+            dynamic_block: None,
             write_scope: None,
             memory_context: None,
             memory_delivery: None,

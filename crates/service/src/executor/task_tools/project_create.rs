@@ -1,0 +1,97 @@
+//! Kind 的 project_create：用户直接说建项目时当场建，回执；重名不建。
+
+use super::super::*;
+use super::*;
+
+pub(crate) struct ProjectCreateTool {
+    data_dir: PathBuf,
+    parameters: Value,
+}
+
+impl ProjectCreateTool {
+    pub(crate) fn new(data_dir: PathBuf) -> Self {
+        Self {
+            data_dir,
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Project name, as the user said it."},
+                    "goal": {"type": "string", "description": "One sentence: what this project should become."},
+                    "dir": {"type": "string", "description": "Optional default working directory; a ~ path or an absolute path. It does not need to exist yet."}
+                },
+                "required": ["name", "goal"]
+            }),
+        }
+    }
+}
+
+impl Tool for ProjectCreateTool {
+    fn name(&self) -> &str {
+        "project_create"
+    }
+
+    fn description(&self) -> &str {
+        "Create a project directly when the user explicitly asks to create one. Returns the project id, name and default directory. If the name already exists, returns an error and creates nothing. Do not use this for a project you merely inferred; propose create_project on a confirmation card instead."
+    }
+
+    fn parameters(&self) -> &Value {
+        &self.parameters
+    }
+
+    fn condition(&self) -> ToolCondition {
+        ToolCondition::Always
+    }
+
+    fn execute<'a>(
+        &'a self,
+        call: ToolCall,
+        _context: &'a ToolContext,
+    ) -> ToolFuture<'a, ToolResult> {
+        Box::pin(async move {
+            let args = match parse_object(&call.arguments) {
+                Ok(args) => args,
+                Err(failure) => return ToolResult::error(call.id, failure),
+            };
+            let Some(name) = string_arg(&args, "name") else {
+                return ToolResult::error(call.id, ToolFailure::plain("name 不能为空"));
+            };
+            let Some(goal) = string_arg(&args, "goal") else {
+                return ToolResult::error(call.id, ToolFailure::plain("goal 不能为空"));
+            };
+            let dir = match args.get("dir") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(value)) => Some(value.as_str()),
+                Some(_) => {
+                    return ToolResult::error(call.id, ToolFailure::plain("dir 必须是字符串"));
+                }
+            };
+            let store = match tasks::ProjectStore::open(self.data_dir.join(tasks::PROJECTS_DB_FILE))
+            {
+                Ok(store) => store,
+                Err(error) => {
+                    return ToolResult::error(
+                        call.id,
+                        ToolFailure::plain(format!("项目库打不开：{error}")),
+                    );
+                }
+            };
+            match crate::projects::new_project(&store, &name, &goal, dir) {
+                Ok(project) => {
+                    let dir = project
+                        .dir
+                        .as_ref()
+                        .map(|dir| dir.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "无".to_owned());
+                    ToolResult::success(
+                        call.id,
+                        format!(
+                            "已建：项目 {}「{}」。默认目录{}，派任务时预填。",
+                            project.id, project.name, dir
+                        ),
+                    )
+                }
+                Err(error) => ToolResult::error(call.id, ToolFailure::plain(error.to_string())),
+            }
+        })
+    }
+}
