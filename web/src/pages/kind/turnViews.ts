@@ -14,6 +14,7 @@ import { contextPercent, contextTokens, emptyUsage, mergeUsage, modelLabel, reas
 
 import type { CanvasViewDoc } from './canvas.ts';
 import { gateVerdictOf, upstreamChangedOf, userRpcIdOf } from './relay.ts';
+import { isProgramRpc } from '@/data/programMessages';
 import type { CompactionView, InterimSay, MemoCardInfo, ToolStep, TurnLabels, TurnUserView, TurnViewData } from './viewTypes.ts';
 
 import type { QuestionView } from './viewTypes.ts';
@@ -417,6 +418,8 @@ export function deriveTurnViews(
           if (!mergeRelayIntoDispatch(relay)) ensure(turn).taskResults.push(relay);
           break;
         }
+        // 固定块补发等程序消息：只进模型请求，不画成用户气泡。
+        if (isProgramRpc(userRpcIdOf(data.message))) break;
         // T028.5：抄送 Kind 的那条不是用户气泡，单独由 taskCcFacts/ccViewOf 成行。
         if (taskCcOfMessage(data.message)) break;
         // T053：门判定的 relay 只给模型看结论，不把原文 JSON 画成用户气泡；
