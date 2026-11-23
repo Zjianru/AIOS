@@ -160,6 +160,7 @@ async fn accepts_valid_non_default_values() {
         allow_parallel_in_progress: true,
         no_wait: false,
         policy_prompt: None,
+        fixed_block: None,
         write_scope: None,
         memory_context: None,
         pre_compaction: None,

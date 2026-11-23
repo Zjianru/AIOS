@@ -16,7 +16,7 @@ use tools::{Tool, ToolCall, ToolCondition, ToolContext, ToolFailure, ToolFuture,
 use crate::protocol::WorkResponse;
 use crate::work::{TaskFact, WaitItem};
 
-/// 查询的六个主题。
+/// 查询的七个主题。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Topic {
     Settings,
@@ -48,6 +48,8 @@ pub struct QueryTool {
     data_dir: PathBuf,
     /// Keyring 的钥匙文件位置；None = 用数据目录里的配置/默认位置。
     identity: Option<PathBuf>,
+    /// 这个装配实际开出的 Kind 工具名单；product 的「能做」逐行跟它走。
+    tool_names: Vec<String>,
     parameters: Value,
 }
 
@@ -56,6 +58,10 @@ impl QueryTool {
         Self {
             data_dir: data_dir.into(),
             identity,
+            tool_names: crate::root::KIND_TOOLS
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -70,13 +76,18 @@ impl QueryTool {
         }
     }
 
+    pub fn with_tool_names(mut self, names: Vec<String>) -> Self {
+        self.tool_names = names;
+        self
+    }
+
     fn read(&self, topic: Topic, context: &ToolContext) -> Result<Value, ToolFailure> {
         match topic {
             Topic::Settings => self.settings(context),
             Topic::Connections => self.connections(),
             Topic::Models => self.models(),
             Topic::Usage => self.usage(context),
-            Topic::Product => Ok(product()),
+            Topic::Product => Ok(product(&self.tool_names)),
             Topic::Calendar => self.calendar(),
             Topic::Work => self.work(context),
         }
@@ -363,6 +374,32 @@ fn week_start_ms(now_ms: i64) -> i64 {
         .unwrap_or(now_ms)
 }
 
+/// T077.1 F2：逐条照抄 web/src/pages/work/workModel.ts 的 columnOf 顺序：
+/// 已关闭 → 等你 → 排队 → 在做 → 门已判 → 其余等你。
+fn column_of(
+    id: &str,
+    stage: &str,
+    gate: bool,
+    wait_task_ids: &std::collections::HashSet<&str>,
+) -> &'static str {
+    if stage == "closed" {
+        return "done";
+    }
+    if wait_task_ids.contains(id) {
+        return "wait";
+    }
+    if stage == "needs_conditions" || stage == "pending" {
+        return "queue";
+    }
+    if stage == "running" || stage == "ready_for_review" {
+        return "doing";
+    }
+    if gate && stage == "requirement_met" {
+        return "doing";
+    }
+    "wait"
+}
+
 fn project_work(response: &WorkResponse, now_ms: i64) -> Value {
     let wait_ids: std::collections::HashSet<&str> = response
         .wait
@@ -397,6 +434,17 @@ fn project_work(response: &WorkResponse, now_ms: i64) -> Value {
                 && task.closed_at.is_some_and(|at| at >= week_start)
         })
         .collect();
+    let task_columns = {
+        let mut groups = serde_json::Map::new();
+        for id in ["wait", "queue", "doing", "done"] {
+            groups.insert(id.to_owned(), json!([]));
+        }
+        for task in &response.tasks {
+            let column = column_of(task.id.as_str(), &task.stage, task.gate, &wait_ids);
+            groups[column].as_array_mut().unwrap().push(json!(task.id));
+        }
+        Value::Object(groups)
+    };
     json!({
         "generatedAt": response.generated_at,
         "counts": {
@@ -410,6 +458,7 @@ fn project_work(response: &WorkResponse, now_ms: i64) -> Value {
         "problems": problems,
         "advancing": advancing,
         "queue": queue,
+        "columns": task_columns,
         "doneThisWeek": {
             "count": done.len(),
             "titles": done.iter().map(|task| task.title.clone()).collect::<Vec<_>>(),
@@ -439,13 +488,22 @@ fn tool_can(tool: &str) -> &'static str {
         "memory_dream_now" => "整理一次记忆（做梦）。",
         "memory_undo_dream" => "撤销上一次整理。",
         "memory_delete_note" => "用户明确说删时删一条笔记。",
+        "task_accept" => "派一个任务或一张任务图，交给 ThinAgent。",
+        "task_status" => "读一个任务的状态和最近报告。",
+        "task_delivery" => "读任务的交付记录和结果卡。",
+        "task_stop" => "停掉任务正在跑的这一轮（不是取消任务）。",
+        "task_update" => "改未完成任务的写入范围或要求。",
+        "task_graph_propose" => "提议一张任务图，用户确认后才派。",
+        "task_continue" => "让被卡住/被停的任务在原会话接着做。",
+        "gate_check_again" => "重跑程序门检查。",
+        "appointment_cancel" => "取消一条日历约定。",
         _ => "做这件事。",
     }
 }
 
-fn product() -> Value {
-    // 「能做」跟着 Kind 的实际工具面走；工具表变了这里必须跟着变，不能再写静态清单。
-    let can: Vec<String> = crate::root::KIND_TOOLS
+/// T077.1 F1：product 的「能做」跟着装配实际开出的完整 Kind 名单逐行生成。
+fn product(tools: &[String]) -> Value {
+    let can: Vec<String> = tools
         .iter()
         .map(|tool| format!("{tool}：{}", tool_can(tool)))
         .collect();
@@ -475,7 +533,11 @@ impl Tool for QueryTool {
     }
 
     fn condition(&self) -> ToolCondition {
-        ToolCondition::AfterSkill(vec!["aios-settings".to_owned(), "aios-calendar".to_owned()])
+        ToolCondition::AfterSkill(vec![
+            "aios-guide".to_owned(),
+            "aios-settings".to_owned(),
+            "aios-calendar".to_owned(),
+        ])
     }
 
     fn execute<'a>(
@@ -520,32 +582,55 @@ mod tests {
     use crate::work::WaitItem;
 
     #[test]
-    fn product_can_has_exactly_one_line_per_kind_tool() {
-        let body = product();
+    fn product_can_has_exactly_one_line_per_complete_kind_tool() {
+        let full = crate::root::kind_tool_names(true);
+        let body = product(&full);
         let can = body["can"].as_array().expect("can 数组");
         let names: Vec<&str> = can
             .iter()
             .filter_map(Value::as_str)
             .map(|line| line.split('：').next().unwrap_or(""))
             .collect();
-        assert_eq!(
-            names.len(),
-            crate::root::KIND_TOOLS.len(),
-            "每个 Kind 工具一行"
-        );
-        for tool in crate::root::KIND_TOOLS {
-            assert!(names.contains(&tool), "工具面漏了 {tool}");
+        assert_eq!(names.len(), full.len(), "每个 Kind 工具一行");
+        for tool in &full {
+            assert!(names.contains(&tool.as_str()), "工具面漏了 {tool}");
             assert!(
                 can.iter().any(|line| {
                     line.as_str()
-                        .is_some_and(|text| text.starts_with(&(tool.to_owned() + "：")))
+                        .is_some_and(|text| text.starts_with(&(tool.clone() + "：")))
                 }),
                 "工具面缺一行 {tool}"
             );
         }
         for name in names {
-            assert!(crate::root::KIND_TOOLS.contains(&name), "名单外工具 {name}");
+            assert!(full.iter().any(|tool| tool == name), "名单外工具 {name}");
         }
+        for task_tool in [
+            "task_accept",
+            "task_status",
+            "task_delivery",
+            "task_stop",
+            "task_update",
+            "task_graph_propose",
+            "task_continue",
+            "gate_check_again",
+            "appointment_cancel",
+        ] {
+            assert!(
+                full.iter().any(|tool| tool == task_tool),
+                "缺任务工具 {task_tool}"
+            );
+        }
+        let base = product(&crate::root::kind_tool_names(false));
+        assert!(
+            !base["can"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(Value::as_str)
+                .any(|line| line.starts_with("task_accept：")),
+            "没任务运行时不能列任务工具"
+        );
         let cannot = body["cannot"].as_array().expect("cannot 数组");
         assert_eq!(cannot.len(), 3, "不能只留永远成立的三条");
         let text = serde_json::to_string(cannot).unwrap();
@@ -569,6 +654,38 @@ mod tests {
             write: None,
             version: None,
             appointment_id: None,
+        }
+    }
+
+    #[test]
+    fn work_columns_follow_the_shared_web_grouping_fixture() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../web/src/pages/work/work-grouping.fixture.json"
+        ))
+        .unwrap();
+        let wait_ids: std::collections::HashSet<&str> = fixture["waitTaskIds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        let mut groups = serde_json::Map::new();
+        for id in ["wait", "queue", "doing", "done"] {
+            groups.insert(id.to_owned(), json!([]));
+        }
+        for task in fixture["tasks"].as_array().unwrap() {
+            let id = task["id"].as_str().unwrap();
+            let stage = task["stage"].as_str().unwrap();
+            let gate = task["gate"].as_bool().unwrap();
+            let column = column_of(id, stage, gate, &wait_ids);
+            groups[column].as_array_mut().unwrap().push(json!(id));
+        }
+        for key in ["wait", "queue", "doing", "done"] {
+            assert_eq!(
+                Value::Object(groups.clone())[key],
+                fixture["groups"][key],
+                "组 {key} 与页面夹具不一致"
+            );
         }
     }
 

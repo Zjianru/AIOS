@@ -6,7 +6,7 @@
 use model::{Message, MessageSource};
 
 /// 唯一一张程序消息表。
-pub(crate) const PROGRAM_MESSAGE_PREFIXES: [&str; 7] = [
+pub(crate) const PROGRAM_MESSAGE_PREFIXES: [&str; 8] = [
     "task-report:",
     "task-stop:",
     "task-cc:",
@@ -14,6 +14,7 @@ pub(crate) const PROGRAM_MESSAGE_PREFIXES: [&str; 7] = [
     "upstream-changed:",
     "appointment-wake:",
     "restart:",
+    "fixed-block:",
 ];
 
 /// 需要按任务中继处理的前缀（工作页/做梦只看这四类）。
@@ -48,7 +49,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn table_is_exactly_the_seven_prefixes() {
+    fn table_is_exactly_the_eight_prefixes() {
         assert_eq!(
             PROGRAM_MESSAGE_PREFIXES,
             [
@@ -59,6 +60,7 @@ mod tests {
                 "upstream-changed:",
                 "appointment-wake:",
                 "restart:",
+                "fixed-block:",
             ]
         );
         assert!(is_program_rpc("task-report:t:r"));
@@ -68,6 +70,17 @@ mod tests {
         assert!(is_program_rpc("upstream-changed:u:d:r"));
         assert!(is_program_rpc("appointment-wake:a:r"));
         assert!(is_program_rpc("restart:boot"));
+        assert!(is_program_rpc("fixed-block:0123456789abcdef"));
         assert!(!is_program_rpc("confirm:card-1"));
+    }
+
+    #[test]
+    fn fixed_block_is_a_program_message_not_a_user_bubble() {
+        let message =
+            Message::user_text_with_request_id("页面清单", "fixed-block:0123456789abcdef");
+        assert!(is_program_message(&message));
+        assert!(is_program_rpc("fixed-block:0123456789abcdef"));
+        let user = Message::user_text_with_request_id("普通用户话", "user-rpc-1");
+        assert!(!is_program_message(&user));
     }
 }

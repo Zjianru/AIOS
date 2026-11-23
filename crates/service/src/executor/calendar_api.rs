@@ -649,7 +649,11 @@ impl TaskRuntime {
                     .latest_version_reason(&appointment.id)
                     .ok()
                     .flatten()
-                    .and_then(|reason| reason.strip_prefix("循环约定暂停：").map(str::to_owned))
+                    .and_then(|reason| {
+                        reason
+                            .strip_prefix(calendar::CYCLE_PAUSE_PREFIX)
+                            .map(str::to_owned)
+                    })
             } else {
                 None
             },

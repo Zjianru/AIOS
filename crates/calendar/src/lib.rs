@@ -3,6 +3,9 @@
 //! 只依赖 rusqlite/serde/rrule/chrono/chrono-tz；不依赖 service/agent/tasks/session/memory。
 //! 库文件是 <data-dir>/calendar.sqlite，schema 版本、迁移、单写者、事务都在 store。
 
+/// 循环约定被程序暂停时写进版本历史的固定前缀；写入和解析共用。
+pub const CYCLE_PAUSE_PREFIX: &str = "循环约定暂停：";
+
 pub mod error;
 pub mod review;
 pub mod schedule;

@@ -143,6 +143,14 @@ pub fn bundled_skills() -> &'static [BundledSkill] {
             unavailable_hint: "",
         },
         BundledSkill {
+            name: "aios-guide",
+            raw: include_str!("../bundled/aios-guide/SKILL.md"),
+            requires: None,
+            tools: &["aios_query"],
+            read_only: false,
+            unavailable_hint: "",
+        },
+        BundledSkill {
             name: "web",
             raw: include_str!("../bundled/web/SKILL.md"),
             requires: Some(crate::ToolKey::Exa),
@@ -869,5 +877,31 @@ mod warning_format_tests {
             "DSH 文案带 ignored 前缀：{}",
             warning.message
         );
+    }
+}
+
+#[cfg(test)]
+mod guide_tests {
+    use super::*;
+
+    #[test]
+    fn aios_guide_is_bundled_and_does_not_mention_cancellation() {
+        let guide = bundled_skills()
+            .iter()
+            .find(|skill| skill.name == "aios-guide")
+            .expect("aios-guide 在自带 skill 里");
+        assert_eq!(guide.tools, ["aios_query"]);
+        let parsed = parse_skill(guide.raw).expect("frontmatter 合法");
+        assert_eq!(parsed.name, "aios-guide");
+        assert!(
+            !guide.raw.contains("取消"),
+            "取消跟着 .5 上，.2 的说明书不能写"
+        );
+        for page in ["现在", "Kind", "工作", "任务", "监控", "记忆", "设置"] {
+            assert!(parsed.body.contains(page), "说明书漏页 {page}");
+        }
+        for card in ["结果卡", "确认卡", "提问卡", "接续卡", "约定到点条"] {
+            assert!(parsed.body.contains(card), "说明书漏卡 {card}");
+        }
     }
 }

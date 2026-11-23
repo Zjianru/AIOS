@@ -10,6 +10,7 @@ mod compaction;
 mod compaction_capability;
 mod driver;
 mod error;
+mod fixed_block;
 mod inbox;
 mod instructions;
 mod instructions_capability;
@@ -75,6 +76,12 @@ pub type MemoryContextProvider =
 pub struct MemoryFlashback {
     pub text: String,
     pub ids: Vec<String>,
+}
+
+/// T077.2：固定块正文；内容变化靠正文哈希识别，不手写版本号。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FixedBlock {
+    pub text: String,
 }
 
 /// 当前用户消息命中钥匙且有桥时才返回回忆；None = 这次不送。
@@ -174,6 +181,9 @@ pub struct AgentConfig {
     /// 追加在系统提示末尾的产品规则（照 DSH systemPrompt.section）；None = 不追加。
     /// 只在会话第一次请求建系统提示时生效；续接沿用日志里的系统提示。
     pub policy_prompt: Option<String>,
+    /// T077.2：页面清单这类固定块正文。旧会话没有当前版本时，下一次请求前补一条程序消息；
+    /// 压缩时也作为固定块重铺。None = 不装。
+    pub fixed_block: Option<FixedBlock>,
     /// 工具写入范围（D85）：写类工具只允许写这个前缀下的路径；None = 不限。
     /// 服务给写任务的 ThinAgent 填；Kind、CLI 不填。
     pub write_scope: Option<PathBuf>,
@@ -244,6 +254,7 @@ impl Default for AgentConfig {
             allow_parallel_in_progress: true,
             no_wait: false,
             policy_prompt: None,
+            fixed_block: None,
             write_scope: None,
             memory_context: None,
             memory_delivery: None,
