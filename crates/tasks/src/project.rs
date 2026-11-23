@@ -276,6 +276,8 @@ mod task_project_tests {
 
     fn task(cwd: &std::path::Path, title: &str) -> NewTask {
         NewTask {
+            project_id: None,
+            cwd_source: None,
             title: title.to_owned(),
             requirement: "做".to_owned(),
             dod: "做完".to_owned(),

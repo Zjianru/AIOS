@@ -8,13 +8,11 @@ use serde_json::{Value, json};
 use super::{ActionEnv, ActionFuture, ActionKind, ActionOutcome, CardFact};
 use crate::root_lifecycle::RootHost;
 
-pub(crate) struct CreateProjectAction {
-    data_dir: PathBuf,
-}
+pub(crate) struct CreateProjectAction;
 
 impl CreateProjectAction {
-    pub(crate) fn new(data_dir: PathBuf) -> Self {
-        Self { data_dir }
+    pub(crate) fn new(_data_dir: PathBuf) -> Self {
+        Self
     }
 
     fn field(raw: &Value, key: &str) -> Result<String, String> {
@@ -36,9 +34,8 @@ impl CreateProjectAction {
         crate::projects::normalize_project_fields(&name, &goal, dir)
     }
 
-    fn project(&self, name: &str) -> Result<Option<tasks::Project>, String> {
-        let store = tasks::ProjectStore::open(self.data_dir.join(tasks::PROJECTS_DB_FILE))
-            .map_err(|error| format!("项目库打不开：{error}"))?;
+    fn project(&self, host: &RootHost, name: &str) -> Result<Option<tasks::Project>, String> {
+        let store = host.projects().ok_or_else(|| "项目库没开".to_owned())?;
         let projects = store
             .list()
             .map_err(|error| format!("项目读不出来：{error}"))?;
@@ -89,11 +86,11 @@ impl ActionKind for CreateProjectAction {
     fn act<'a>(
         &'a self,
         details: &'a Value,
-        _host: &'a RootHost,
+        host: &'a RootHost,
     ) -> ActionFuture<'a, Result<ActionOutcome, String>> {
         Box::pin(async move {
             let project = self.normalized(details)?;
-            if let Some(existing) = self.project(&project.name)? {
+            if let Some(existing) = self.project(host, &project.name)? {
                 return Ok(ActionOutcome {
                     summary: format!(
                         "已经建过了：项目 {}「{}」。默认目录{}，派任务时预填。",
@@ -108,10 +105,9 @@ impl ActionKind for CreateProjectAction {
                     data: json!({ "project_id": existing.id, "name": existing.name }),
                 });
             }
-            let store = tasks::ProjectStore::open(self.data_dir.join(tasks::PROJECTS_DB_FILE))
-                .map_err(|error| format!("项目库打不开：{error}"))?;
+            let store = host.projects().ok_or_else(|| "项目库没开".to_owned())?;
             let created = crate::projects::new_project(
-                &store,
+                store,
                 &project.name,
                 &project.goal,
                 project
@@ -121,6 +117,7 @@ impl ActionKind for CreateProjectAction {
                     .as_deref(),
             )
             .map_err(|error| error.to_string())?;
+            host.notify_projects_changed();
             Ok(ActionOutcome {
                 summary: format!(
                     "已建：项目 {}「{}」。默认目录{}，派任务时预填。",

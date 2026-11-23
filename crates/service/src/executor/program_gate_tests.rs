@@ -12,6 +12,7 @@ use crate::root::RootSessionOptions;
 
 fn open_runtime(data_dir: &std::path::Path) -> Arc<TaskRuntime> {
     let options = RootSessionOptions {
+        projects: None,
         data_dir: data_dir.to_path_buf(),
         cwd: data_dir.to_path_buf(),
         model: model::DeepSeekConfig {
@@ -39,6 +40,8 @@ fn open_runtime(data_dir: &std::path::Path) -> Arc<TaskRuntime> {
 
 fn draft(title: &str) -> NewTask {
     NewTask {
+        project_id: None,
+        cwd_source: None,
         title: title.to_owned(),
         requirement: "把事做完".to_owned(),
         dod: "有结果".to_owned(),
@@ -632,6 +635,8 @@ async fn gate_check_again_refuses_four_other_states() {
     let task = store
         .create_task(
             NewTask {
+                project_id: None,
+                cwd_source: None,
                 title: "普通任务".to_owned(),
                 requirement: "做".to_owned(),
                 dod: "好".to_owned(),

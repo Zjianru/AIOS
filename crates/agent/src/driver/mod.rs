@@ -420,10 +420,11 @@ impl Inner {
         }
         if let Some(source) = config.dynamic_block.clone() {
             fixed_block_sources.push(Arc::new(move || {
+                let block = source()?;
                 Some(crate::CompactionFixedBlock {
-                    kind: "projects".to_owned(),
-                    identity: "projects".to_owned(),
-                    text: source()?,
+                    kind: block.kind.clone(),
+                    identity: block.kind,
+                    text: block.text,
                 })
             }));
         }

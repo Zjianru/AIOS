@@ -683,6 +683,7 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     ));
     let host = RootHost::open(
         RootSessionOptions {
+            projects: None,
             data_dir,
             cwd,
             model: placeholder_config,

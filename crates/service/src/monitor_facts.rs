@@ -815,6 +815,8 @@ mod tests {
             let task = store
                 .create_task(
                     tasks::NewTask {
+                        project_id: None,
+                        cwd_source: None,
                         title: format!("任务 {index}"),
                         requirement: "把事做完".to_owned(),
                         dod: "做完".to_owned(),
@@ -1201,6 +1203,8 @@ mod t075_usage_tests {
         let task = store
             .create_task(
                 tasks::NewTask {
+                    project_id: None,
+                    cwd_source: None,
                     title: "D78 标记文件".to_owned(),
                     requirement: "写标记文件".to_owned(),
                     dod: "标记文件存在".to_owned(),
@@ -1308,6 +1312,8 @@ mod t075_usage_tests {
         let task = store
             .create_task(
                 tasks::NewTask {
+                    project_id: None,
+                    cwd_source: None,
                     title: "异常事实任务".to_owned(),
                     requirement: "跑".to_owned(),
                     dod: "跑完".to_owned(),

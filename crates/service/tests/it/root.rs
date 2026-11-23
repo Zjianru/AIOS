@@ -342,7 +342,11 @@ async fn durable_rpc_id_is_idempotent_across_restart() {
             matches!(
                 &event.kind,
                 session::EventKind::UserMessage { message, .. }
-                    if matches!(message.source, model::MessageSource::User { .. })
+                    if matches!(
+                        &message.source,
+                        model::MessageSource::User { rpc_id: Some(rpc_id) }
+                            if rpc_id == "req-dup-restart"
+                    )
             )
         })
         .count();

@@ -172,13 +172,21 @@ impl RootHost {
                 )),
             },
             Call::ProjectCreate(request) => match self.projects() {
-                Some(store) => crate::projects::create(store, request).map(Response::ProjectCreate),
+                Some(store) => {
+                    let response = crate::projects::create(store, request)?;
+                    self.notify_projects_changed();
+                    Ok(Response::ProjectCreate(response))
+                }
                 None => Err(ServiceError::TaskUnavailable(
                     "项目库没开，建不了项目".to_owned(),
                 )),
             },
             Call::ProjectUpdate(request) => match self.projects() {
-                Some(store) => crate::projects::update(store, request).map(Response::ProjectUpdate),
+                Some(store) => {
+                    let response = crate::projects::update(store, request)?;
+                    self.notify_projects_changed();
+                    Ok(Response::ProjectUpdate(response))
+                }
                 None => Err(ServiceError::TaskUnavailable(
                     "项目库没开，改不了项目".to_owned(),
                 )),

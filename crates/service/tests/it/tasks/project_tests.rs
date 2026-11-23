@@ -7,6 +7,8 @@ use service::{
 
 fn draft(title: &str) -> NewTask {
     NewTask {
+        project_id: None,
+        cwd_source: None,
         title: title.to_owned(),
         requirement: "做".to_owned(),
         dod: "做完".to_owned(),
@@ -69,7 +71,7 @@ async fn project_protocol_create_update_list_and_task_assignment() {
         }))
         .await;
     assert!(
-        matches!(duplicate, Err(ServiceError::TaskUnavailable(message)) if message.contains("已经存在"))
+        matches!(duplicate, Err(ServiceError::TaskUnavailable(message)) if message.contains("已经有一个叫"))
     );
     let relative = fixture
         .host

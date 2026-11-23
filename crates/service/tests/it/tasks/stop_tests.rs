@@ -2441,6 +2441,8 @@ async fn update_gate_commands_act_stops_a_running_gate_then_reruns_the_new_comma
     runtime.set_pump_paused(true);
     let store = tasks_store(fixture.data());
     let draft = |title: &str| NewTask {
+        project_id: None,
+        cwd_source: None,
         title: title.to_owned(),
         requirement: "把事做完".to_owned(),
         dod: "有结果".to_owned(),

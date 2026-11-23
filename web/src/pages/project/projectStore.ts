@@ -8,6 +8,7 @@ import type { ProjectCreateRequest } from '@/data/generated/ProjectCreateRequest
 import type { ProjectUpdateRequest } from '@/data/generated/ProjectUpdateRequest';
 import type { ProjectView } from '@/data/generated/ProjectView';
 import { projectCreate, projectList, projectUpdate } from '@/data/service';
+import { subscribeRootFrames } from '@/data/liveRoot';
 
 /** 项目色只影响页面；按列表顺序取，不进库/协议。 */
 export const PROJECT_COLORS = [
@@ -98,6 +99,17 @@ export function projectLabel(
 ): string {
   if (!projectId) return '个人';
   return projects?.find((project) => project.id === projectId)?.name ?? projectId;
+}
+
+/** 挂上根会话的 task-changed：Kind 建/改项目后不刷新页面也能看到。 */
+export function mountProjectLive(): () => void {
+  const unsubscribe = subscribeRootFrames((frame) => {
+    if (frame.type === 'task-changed' || frame.type === 'ready') {
+      void useProjectStore.getState().refresh();
+    }
+  });
+  void useProjectStore.getState().refresh();
+  return unsubscribe;
 }
 
 /** 组件里用的归属名；个人返回「个人」。 */

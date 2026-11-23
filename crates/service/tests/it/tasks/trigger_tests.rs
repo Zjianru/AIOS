@@ -36,6 +36,8 @@ fn due_appointment(data: &Path, title: &str, cycle: Option<CycleSpec>) -> calend
 
 fn draft(data: &Path, title: &str) -> NewTask {
     NewTask {
+        project_id: None,
+        cwd_source: None,
         title: title.to_owned(),
         requirement: "做点事".to_owned(),
         dod: "做完".to_owned(),
@@ -410,7 +412,7 @@ async fn graph_cancel_makes_the_cycle_review_skip_without_a_trigger_task() {
         .find(|run| run.result == calendar::RunResult::Skipped)
         .unwrap();
     assert!(
-        run.reason.contains("跳过：绑定的任务已不在"),
+        run.reason.contains("跳过：绑定的任务已取消"),
         "{}",
         run.reason
     );

@@ -493,6 +493,8 @@ async fn task_facts_watch_sends_then_unchanged() {
     let task_id = {
         let tasks = tasks::Store::open(data.join("tasks.sqlite")).unwrap();
         let draft = tasks::NewTask {
+            project_id: None,
+            cwd_source: None,
             title: "盯任务事实".to_owned(),
             requirement: "看它变没变".to_owned(),
             dod: "DoD".to_owned(),
@@ -1073,12 +1075,12 @@ async fn url_watch_sends_baseline_changed_unchanged_and_keeps_state_on_failure()
     assert!(attachment_id.starts_with("sha256:"));
 
     let session_id = host.info().session_id.expect("根会话");
-    let snapshot = session::SessionStore::open_read_only(
-        data,
-        &session::SessionId::parse(&session_id).expect("会话 id"),
-    )
-    .expect("会话日志");
-    assert!(
+    let session_id = session::SessionId::parse(&session_id).expect("会话 id");
+    // 运行结果落库和会话日志追加不是一个原子动作；等 wake 事件真的落日志，别抢跑。
+    wait_until("wake 要带 change.attachment_id", || {
+        let Ok(snapshot) = session::SessionStore::open_read_only(data, &session_id) else {
+            return false;
+        };
         snapshot.events().iter().any(|event| {
             let session::EventKind::UserMessage { message, .. } = &event.kind else {
                 return false;
@@ -1087,9 +1089,9 @@ async fn url_watch_sends_baseline_changed_unchanged_and_keeps_state_on_failure()
             text.contains("appointment-wake")
                 && text.contains("change")
                 && text.contains(&attachment_id)
-        }),
-        "wake 要带 change.attachment_id"
-    );
+        })
+    })
+    .await;
 
     host.shutdown().await;
 }

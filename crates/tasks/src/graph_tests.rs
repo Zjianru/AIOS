@@ -20,6 +20,8 @@ fn open_store() -> (TempDir, Store) {
 
 fn draft(cwd: &Path, title: &str) -> NewTask {
     NewTask {
+        project_id: None,
+        cwd_source: None,
         title: title.to_owned(),
         requirement: format!("{title} 的要求"),
         dod: format!("{title} 的 DoD"),

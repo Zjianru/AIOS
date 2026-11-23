@@ -20,6 +20,8 @@ fn create(store: &Store, title: &str) -> Task {
     store
         .create_task(
             NewTask {
+                project_id: None,
+                cwd_source: None,
                 title: title.to_owned(),
                 requirement: "读官方文档，给出能操作的例子".to_owned(),
                 dod: "给出例子和出处".to_owned(),

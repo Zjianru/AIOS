@@ -222,7 +222,13 @@ async fn dynamic_block_appends_only_when_its_text_changes() {
         store: SessionStore::open(data.path(), &id).unwrap(),
     };
     let mut config = isolated_config(data.path());
-    config.dynamic_block = Some(Arc::new(move || Some(source.lock().unwrap().clone())));
+    config.dynamic_block = Some(Arc::new(move || {
+        Some(agent::DynamicBlock {
+            title: "AIOS 项目清单（内容有变化时只补这一条；不是新任务）：".to_owned(),
+            kind: "projects".to_owned(),
+            text: source.lock().unwrap().clone(),
+        })
+    }));
     let agent = Agent::create(config, deps()).await.unwrap();
     agent
         .send(UserMessage::text("第一句"), Delivery::FollowUp)

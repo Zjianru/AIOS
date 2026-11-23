@@ -147,6 +147,10 @@ impl RootHost {
         let inner = Arc::new(tokio::sync::Mutex::new(None));
         let selection = Arc::new(Mutex::new(selection));
         // 任务执行者和根会话共用选择与根会话槽；任务库打不开不影响 Kind 的对话。
+        let projects = tasks::ProjectStore::open(options.data_dir.join(tasks::PROJECTS_DB_FILE))
+            .ok()
+            .map(Arc::new);
+        options.projects = projects.clone();
         let task_runtime = match crate::executor::TaskRuntime::new(
             &options,
             Arc::clone(&selection),
@@ -160,9 +164,6 @@ impl RootHost {
             }
         };
         options.task_runtime = task_runtime.clone();
-        let projects = tasks::ProjectStore::open(options.data_dir.join(tasks::PROJECTS_DB_FILE))
-            .ok()
-            .map(Arc::new);
         let memory = crate::memory::MemoryRuntime::open(&options.data_dir)
             .ok()
             .map(Arc::new);
@@ -306,6 +307,13 @@ impl RootHost {
         self.task_runtime
             .as_ref()
             .map(|runtime| runtime.subscribe_task_changed())
+    }
+
+    /// 项目库变了：走 task-changed 推送，让页面重读项目 store（不推进 lastSeq）。
+    pub(crate) fn notify_projects_changed(&self) {
+        if let Some(runtime) = self.task_runtime.as_ref() {
+            runtime.notify_projects_changed();
+        }
     }
 
     /// 测试钩子：循环约定的 task_continue 准入原因（有就返回 Debug 文本）。

@@ -356,6 +356,8 @@ async fn a_restart_report_carries_the_last_report_capped_at_300_characters() {
     let store = tasks_store(data.path());
     let long = "报".repeat(400);
     let draft = tasks::NewTask {
+        project_id: None,
+        cwd_source: None,
         title: "有旧报告的".to_owned(),
         requirement: "找答案".to_owned(),
         dod: "有答案".to_owned(),

@@ -9,6 +9,7 @@ use crate::root::RootSessionOptions;
 fn open_runtime() -> (tempfile::TempDir, Arc<TaskRuntime>) {
     let directory = tempfile::tempdir().unwrap();
     let options = RootSessionOptions {
+        projects: None,
         data_dir: directory.path().to_path_buf(),
         cwd: directory.path().to_path_buf(),
         model: model::DeepSeekConfig {
@@ -58,6 +59,8 @@ fn runtime_store_task(
     store
         .create_task_with_constraints(
             tasks::NewTask {
+                project_id: None,
+                cwd_source: None,
                 title: "账本注入".to_owned(),
                 requirement: "把事做完".to_owned(),
                 dod: "有结果".to_owned(),
@@ -265,6 +268,7 @@ async fn ledger_note_tool_rejects_bad_kind_long_text_and_ended_attempt() {
     let (directory, _runtime) = open_runtime();
     let runtime = TaskRuntime::new(
         &crate::root::RootSessionOptions {
+            projects: None,
             data_dir: directory.path().to_path_buf(),
             cwd: directory.path().to_path_buf(),
             model: model::DeepSeekConfig {

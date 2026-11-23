@@ -1,17 +1,24 @@
 //! Kind 的 project_create：用户直接说建项目时当场建，回执；重名不建。
 
+use std::sync::Arc;
+
 use super::super::*;
 use super::*;
 
 pub(crate) struct ProjectCreateTool {
-    data_dir: PathBuf,
+    store: Option<Arc<tasks::ProjectStore>>,
+    runtime: Option<Arc<crate::executor::TaskRuntime>>,
     parameters: Value,
 }
 
 impl ProjectCreateTool {
-    pub(crate) fn new(data_dir: PathBuf) -> Self {
+    pub(crate) fn new(
+        store: Option<Arc<tasks::ProjectStore>>,
+        runtime: Option<Arc<crate::executor::TaskRuntime>>,
+    ) -> Self {
         Self {
-            data_dir,
+            store,
+            runtime,
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -65,18 +72,14 @@ impl Tool for ProjectCreateTool {
                     return ToolResult::error(call.id, ToolFailure::plain("dir 必须是字符串"));
                 }
             };
-            let store = match tasks::ProjectStore::open(self.data_dir.join(tasks::PROJECTS_DB_FILE))
-            {
-                Ok(store) => store,
-                Err(error) => {
-                    return ToolResult::error(
-                        call.id,
-                        ToolFailure::plain(format!("项目库打不开：{error}")),
-                    );
-                }
+            let Some(store) = self.store.as_ref() else {
+                return ToolResult::error(call.id, ToolFailure::plain("项目库没开"));
             };
-            match crate::projects::new_project(&store, &name, &goal, dir) {
+            match crate::projects::new_project(store, &name, &goal, dir) {
                 Ok(project) => {
+                    if let Some(runtime) = &self.runtime {
+                        runtime.notify_projects_changed();
+                    }
                     let dir = project
                         .dir
                         .as_ref()

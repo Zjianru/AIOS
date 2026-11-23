@@ -63,6 +63,8 @@ fn seed_task(data_dir: &Path, cwd: &Path, title: &str) {
     store
         .create_task_with(
             tasks::NewTask {
+                project_id: None,
+                cwd_source: None,
                 title: title.to_owned(),
                 requirement: "起一个后台命令，然后报回".to_owned(),
                 dod: "命令能被退出收尾停掉".to_owned(),

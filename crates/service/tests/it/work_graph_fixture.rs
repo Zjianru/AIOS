@@ -15,6 +15,8 @@ const T0: i64 = 1_790_000_000_000;
 
 fn draft(cwd: &Path, title: &str) -> NewTask {
     NewTask {
+        project_id: None,
+        cwd_source: None,
         title: title.to_owned(),
         requirement: format!("{title}：要做到可核对"),
         dod: format!("{title} 的 DoD"),

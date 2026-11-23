@@ -12,6 +12,8 @@ async fn a_task_frozen_with_the_eight_tool_list_still_launches() {
     let mut tools: Vec<String> = service::THIN_TOOLS.map(str::to_owned).to_vec();
     tools.retain(|name| name != "task_handback" && !name.starts_with("task_ledger_"));
     let draft = tasks::NewTask {
+        project_id: None,
+        cwd_source: None,
         title: "升级前受理的任务".to_owned(),
         requirement: "找答案".to_owned(),
         dod: "有答案".to_owned(),
@@ -712,6 +714,8 @@ async fn update_task_requirement_act_rejects_a_never_started_task_without_writin
     let task = store
         .create_task(
             NewTask {
+                project_id: None,
+                cwd_source: None,
                 title: "没开跑".to_owned(),
                 requirement: "原要求".to_owned(),
                 dod: "原 DoD".to_owned(),

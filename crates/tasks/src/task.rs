@@ -757,6 +757,10 @@ pub struct NewTask {
     pub conversation: ConversationId,
     pub model: ModelChoice,
     pub tools: Vec<String>,
+    /// 所属项目；建任务时和 cwd_source 同一次写入。
+    pub project_id: Option<String>,
+    /// 目录来源：user / project / conversation。
+    pub cwd_source: Option<String>,
 }
 
 impl NewTask {

@@ -22,7 +22,15 @@ fn digest(text: &str) -> String {
     format!("{hash:016x}")
 }
 
-pub type DynamicBlockSource = Arc<dyn Fn() -> Option<String> + Send + Sync>;
+/// 动态固定块：标题和 kind 由来源给，agent 只负责内容变了在末尾补一条。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DynamicBlock {
+    pub title: String,
+    pub kind: String,
+    pub text: String,
+}
+
+pub type DynamicBlockSource = Arc<dyn Fn() -> Option<DynamicBlock> + Send + Sync>;
 
 pub(crate) struct DynamicBlockState {
     source: DynamicBlockSource,
@@ -82,10 +90,10 @@ impl Capability for DynamicBlockCapability {
             if *phase != PreStepPhase::FixedBlocks {
                 return Ok(HookOutcome::Continue);
             }
-            let Some(text) = (self.state.source)() else {
+            let Some(block) = (self.state.source)() else {
                 return Ok(HookOutcome::Continue);
             };
-            let identity = digest(&text);
+            let identity = digest(&block.text);
             if self
                 .state
                 .last_seen
@@ -98,8 +106,9 @@ impl Capability for DynamicBlockCapability {
             }
             let message = Message::user_text_with_request_id(
                 format!(
-                    "AIOS 项目清单（内容有变化时只补这一条；不是新任务）：
-{text}"
+                    "{}
+{}",
+                    block.title, block.text
                 ),
                 RPC_PREFIX.to_owned() + &identity,
             );

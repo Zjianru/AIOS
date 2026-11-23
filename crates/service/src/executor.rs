@@ -332,6 +332,8 @@ pub struct TaskRuntime {
     gate_jobs: Mutex<std::collections::HashMap<String, Arc<RunningGate>>>,
     /// T058：任务事实变化（门判定/命令版本/接受）广播；任务 WS 用它在页面开着时重读。
     changed: broadcast::Sender<String>,
+    /// 根宿主已打开的项目库；建任务解析归属/目录共用这一份，不每步重开。
+    projects: Option<Arc<tasks::ProjectStore>>,
     /// 测试钩子：下一次 relay 在 Kind append 前「崩掉」——留下效果行，泵退出。
     crash_before_relay: AtomicBool,
     /// 日历库；打不开就没有日历能力。
@@ -407,6 +409,7 @@ impl TaskRuntime {
             pump_wakes: AtomicUsize::new(0),
             gate_jobs: Mutex::new(std::collections::HashMap::new()),
             changed,
+            projects: options.projects.clone(),
             crash_before_relay: AtomicBool::new(false),
             calendar: calendar::CalendarStore::open(options.data_dir.join("calendar.sqlite"))
                 .ok()
@@ -422,6 +425,11 @@ impl TaskRuntime {
     /// 根 WS 转发 task-changed 用。
     pub(crate) fn subscribe_task_changed(&self) -> broadcast::Receiver<String> {
         self.changed.subscribe()
+    }
+
+    /// 项目库变了也走 task-changed，让页面重读项目 store；空 id 表示不是某个任务。
+    pub(crate) fn notify_projects_changed(&self) {
+        drop(self.changed.send(String::new()));
     }
 
     /// 任务库（测试和诊断读同一份事实）。
@@ -1285,6 +1293,8 @@ impl TaskRuntime {
             .clone()
             .ok_or_else(|| "还没有可用的模型选择，不能建触发任务".to_owned())?;
         let draft = NewTask {
+            project_id: None,
+            cwd_source: None,
             title: appointment.title.clone(),
             requirement: appointment.condition.clone(),
             dod: "到点办完".to_owned(),
@@ -3201,8 +3211,10 @@ impl TaskRuntime {
         let project = match project {
             None => None,
             Some(project_id) => {
-                let store = tasks::ProjectStore::open(self.data_dir.join(tasks::PROJECTS_DB_FILE))
-                    .map_err(|error| ToolFailure::plain(format!("项目库打不开：{error}")))?;
+                let store = self
+                    .projects
+                    .as_ref()
+                    .ok_or_else(|| ToolFailure::plain("项目库没开，不能给任务挂项目"))?;
                 let project = store
                     .get(&project_id)
                     .map_err(|error| ToolFailure::plain(format!("项目读不出来：{error}")))?
@@ -3313,6 +3325,8 @@ impl TaskRuntime {
                 effort_wanted: selection.effort_wanted,
             },
             tools,
+            project_id: project.clone(),
+            cwd_source: cwd_source.clone(),
         };
         let policy = TaskPolicy {
             write_scope,
@@ -3324,11 +3338,6 @@ impl TaskRuntime {
             .store
             .create_task_once_with_constraints(draft, policy, constraints, &key, Self::now())
             .map_err(|error| ToolFailure::plain(error.to_string()))?;
-        if created {
-            self.store
-                .set_project_and_cwd_source(&task.id, project.as_deref(), cwd_source.as_deref())
-                .map_err(|error| ToolFailure::plain(error.to_string()))?;
-        }
         self.mark_dispatched(&conversation, &task);
         self.wake();
         Ok((task, created))
@@ -3396,6 +3405,8 @@ impl TaskRuntime {
                     conversation: ConversationId::new(conversation.as_str()),
                     model: model.clone(),
                     tools,
+                    project_id: project.clone(),
+                    cwd_source: cwd_source.clone(),
                 },
                 policy: TaskPolicy {
                     write_scope: item.write_scope,
@@ -3416,6 +3427,8 @@ impl TaskRuntime {
                 conversation: ConversationId::new(conversation.as_str()),
                 model,
                 tools: Vec::new(),
+                project_id: project.clone(),
+                cwd_source: cwd_source.clone(),
             },
             subtasks: frozen_subtasks,
         };
@@ -3423,9 +3436,6 @@ impl TaskRuntime {
         let (root, _created) = self
             .store
             .create_graph_once_with_constraints(graph, constraints, call_id, Self::now())
-            .map_err(|error| ToolFailure::plain(error.to_string()))?;
-        self.store
-            .set_project_and_cwd_source(&root.id, project.as_deref(), cwd_source.as_deref())
             .map_err(|error| ToolFailure::plain(error.to_string()))?;
         self.mark_dispatched(&conversation, &root);
         self.wake();
@@ -3850,7 +3860,6 @@ impl TaskRuntime {
         })
     }
 
-    /// T077.5：任务页/Kind 卡共用；沿用运行时的任务库与变化通知。
     /// 改任务归属（任务图整张）；只写 Task 字段，不动要求版本和目录。
     pub(crate) fn set_task_project(
         &self,
@@ -3867,6 +3876,7 @@ impl TaskRuntime {
             .collect())
     }
 
+    /// T077.5：任务页/Kind 卡共用；沿用运行时的任务库与变化通知。
     pub(crate) fn cancel_with_downstream(
         &self,
         task_id: &TaskId,
@@ -4065,6 +4075,8 @@ mod trigger_guard_tests {
 
     fn draft(cwd: &std::path::Path, title: &str) -> NewTask {
         NewTask {
+            project_id: None,
+            cwd_source: None,
             title: title.to_owned(),
             requirement: "到点做事".to_owned(),
             dod: "做完".to_owned(),
@@ -4122,6 +4134,7 @@ mod trigger_tool_tests {
     fn runtime() -> (tempfile::TempDir, Arc<TaskRuntime>) {
         let directory = tempfile::tempdir().unwrap();
         let options = RootSessionOptions {
+            projects: None,
             data_dir: directory.path().to_path_buf(),
             cwd: directory.path().to_path_buf(),
             model: model::DeepSeekConfig {
@@ -4151,6 +4164,8 @@ mod trigger_tool_tests {
 
     fn trigger_task(directory: &std::path::Path, runtime: &TaskRuntime) -> Task {
         let draft = NewTask {
+            project_id: None,
+            cwd_source: None,
             title: "到点任务".to_owned(),
             requirement: "到点办完".to_owned(),
             dod: "办完".to_owned(),

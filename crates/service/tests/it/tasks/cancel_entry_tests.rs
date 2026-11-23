@@ -5,6 +5,8 @@ use super::*;
 
 fn draft(title: &str) -> NewTask {
     NewTask {
+        project_id: None,
+        cwd_source: None,
         title: title.to_owned(),
         requirement: "做".to_owned(),
         dod: "做完".to_owned(),
@@ -98,6 +100,8 @@ async fn cancel_tasks_act_reports_actual_downstream_ids() {
     fn subtask(cwd: &std::path::Path, title: &str, after: Vec<usize>) -> tasks::NewSubtask {
         tasks::NewSubtask {
             task: NewTask {
+                project_id: None,
+                cwd_source: None,
                 title: title.to_owned(),
                 requirement: "做".to_owned(),
                 dod: "做完".to_owned(),

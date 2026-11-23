@@ -19,6 +19,8 @@ fn open() -> (TempDir, Store) {
 
 fn draft(cwd: &Path, title: &str) -> NewTask {
     NewTask {
+        project_id: None,
+        cwd_source: None,
         title: title.to_owned(),
         requirement: "把事做完".to_owned(),
         dod: "有结果".to_owned(),

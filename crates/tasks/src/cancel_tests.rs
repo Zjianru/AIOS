@@ -14,6 +14,8 @@ fn open() -> (tempfile::TempDir, Store) {
 
 fn draft() -> NewTask {
     NewTask {
+        project_id: None,
+        cwd_source: None,
         title: "查一下取消".to_owned(),
         requirement: "读文档".to_owned(),
         dod: "给出例子".to_owned(),

@@ -46,6 +46,7 @@ pub fn test_credential(data_dir: &Path) -> Arc<dyn model::CredentialSource> {
 /// 根会话的默认测试配置；调用方按需覆盖字段。
 pub fn options(data_dir: &Path) -> RootSessionOptions {
     RootSessionOptions {
+        projects: None,
         data_dir: data_dir.to_path_buf(),
         cwd: data_dir.to_path_buf(),
         model: DeepSeekConfig {

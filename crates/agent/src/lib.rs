@@ -88,7 +88,7 @@ pub struct FixedBlock {
 }
 
 /// 动态固定块来源：返回当前完整正文；None = 这次没有内容。
-pub use dynamic_block::DynamicBlockSource;
+pub use dynamic_block::{DynamicBlock, DynamicBlockSource};
 
 /// 当前用户消息命中钥匙且有桥时才返回回忆；None = 这次不送。
 pub type MemoryFlashbackProvider =

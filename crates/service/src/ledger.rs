@@ -290,6 +290,8 @@ mod ledger_tests {
 
     fn draft(title: &str) -> NewTask {
         NewTask {
+            project_id: None,
+            cwd_source: None,
             title: title.to_owned(),
             requirement: "把结果写出来".to_owned(),
             dod: "有出处".to_owned(),

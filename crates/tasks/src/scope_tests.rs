@@ -29,6 +29,8 @@ fn task_cwd() -> (tempfile::TempDir, PathBuf) {
 
 fn draft(cwd: &Path) -> NewTask {
     NewTask {
+        project_id: None,
+        cwd_source: None,
         title: "改一下判重".to_owned(),
         requirement: "把重复判断改成按 url".to_owned(),
         dod: "同一个 url 只留一条".to_owned(),

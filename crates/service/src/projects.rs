@@ -47,8 +47,7 @@ pub(crate) fn new_project(
 }
 
 /// Kind 固定块/程序消息里的项目清单正文；内容变化时由动态固定块整条补。
-pub(crate) fn project_block_text(data_dir: &std::path::Path) -> Option<String> {
-    let store = tasks::ProjectStore::open(data_dir.join(tasks::PROJECTS_DB_FILE)).ok()?;
+pub(crate) fn project_block_text(store: &tasks::ProjectStore) -> Option<String> {
     let projects = store.list().ok()?;
     if projects.is_empty() {
         return Some("项目清单：还没有项目。".to_owned());
@@ -139,7 +138,7 @@ pub(crate) fn prepare_project(
         .map_err(project_error)?
     {
         return Err(ServiceError::TaskUnavailable(format!(
-            "项目名字「{}」已经存在",
+            "已经有一个叫「{}」的项目",
             draft.name
         )));
     }

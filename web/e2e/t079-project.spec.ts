@@ -70,7 +70,7 @@ test('项目：侧栏新建、项目页逐项改、工作页 ?p=、监控 ?p= �
     await page.locator('[data-kind="new-project"]').click();
     await page.locator('[data-kind="new-project-name"]').fill('清河县农技站');
     await page.locator('[data-kind="new-project-submit"]').dispatchEvent('click');
-    await expect(page.locator('[data-kind="new-project-error"]')).toContainText('已经存在', {
+    await expect(page.locator('[data-kind="new-project-error"]')).toContainText('已经有一个叫', {
       timeout: 20_000,
     });
     await page.getByRole('button', { name: '取消', exact: true }).click();
@@ -124,7 +124,7 @@ test('项目：侧栏新建、项目页逐项改、工作页 ?p=、监控 ?p= �
     const nameInput = page.locator('input[data-kind="project-edit-name"]');
     await nameInput.fill('别的项目');
     await nameInput.press('Enter');
-    await expect(page.locator('[data-kind="project-save-error"]')).toContainText('已经存在', {
+    await expect(page.locator('[data-kind="project-save-error"]')).toContainText('已经有一个叫', {
       timeout: 20_000,
     });
     // 刷新后名字没被改坏。
@@ -315,6 +315,26 @@ test('项目页：四组、完成只列5和「还有N件」链工作页、空项
     await page.locator('[data-kind="new-project-submit"]').click();
     await expect(page.locator('[data-page="project"]')).toBeVisible({ timeout: 20_000 });
     await expect(page.locator('[data-kind="project-empty"]')).toBeVisible();
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('项目变化推送：服务建项目后侧栏不刷新就出现', async ({ page, request }) => {
+  const fixture = await startKernelFixture({ t030: 'write' });
+  try {
+    await page.goto(urlOf(fixture, '#kind'));
+    await expect(page.locator('[data-kind="sidebar-projects"]')).toBeVisible({ timeout: 20_000 });
+    await page.waitForTimeout(500);
+    const created = await apiPost(request, fixture, {
+      method: 'project_create',
+      name: '推送项目',
+      goal: '不刷新也要看到',
+    });
+    expect(created.ok()).toBeTruthy();
+    await expect(
+      page.locator('[data-kind="sidebar-project"]').filter({ hasText: '推送项目' }),
+    ).toBeVisible({ timeout: 10_000 });
   } finally {
     await fixture.close();
   }

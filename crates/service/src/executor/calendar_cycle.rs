@@ -297,6 +297,8 @@ mod attempt_signature_tests {
         let task = store
             .create_task(
                 tasks::NewTask {
+                    project_id: None,
+                    cwd_source: None,
                     title: "循环签名".to_owned(),
                     requirement: "每轮改不同文件".to_owned(),
                     dod: "dod".to_owned(),

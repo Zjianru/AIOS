@@ -1131,6 +1131,8 @@ async fn task_writes_reach_the_root_ws_changed_channel() {
         .store()
         .create_task(
             NewTask {
+                project_id: None,
+                cwd_source: None,
                 title: "查一下 changed".to_owned(),
                 requirement: "有事实就重读".to_owned(),
                 dod: "页面不用轮询".to_owned(),

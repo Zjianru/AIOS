@@ -13,6 +13,8 @@ use tempfile::tempdir;
 
 fn draft(cwd: &std::path::Path, title: &str) -> NewTask {
     NewTask {
+        project_id: None,
+        cwd_source: None,
         title: title.to_owned(),
         requirement: format!("{title}：测量用任务"),
         dod: format!("{title} 的 DoD"),

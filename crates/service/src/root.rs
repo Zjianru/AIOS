@@ -79,6 +79,8 @@ pub struct RootSessionOptions {
     pub exa_base_url: Option<String>,
     /// AIOS 自己的监听地址；web::serve 绑定后填入。web_fetch 读它拒绝读自己。
     pub web_listen: Option<std::sync::Arc<std::sync::OnceLock<std::net::SocketAddr>>>,
+    /// 根宿主已打开的项目库；服务装配后填入，建任务/固定块/项目工具共用这一份。
+    pub projects: Option<std::sync::Arc<tasks::ProjectStore>>,
     /// T024.3：任务执行者（服务装配；测试可借它暂停效果泵）。None = 不开任务工具。
     #[doc(hidden)]
     pub task_runtime: Option<std::sync::Arc<crate::executor::TaskRuntime>>,
@@ -133,6 +135,10 @@ impl std::fmt::Debug for RootSessionOptions {
                     .web_listen
                     .as_ref()
                     .and_then(|cell| cell.get().copied()),
+            )
+            .field(
+                "projects",
+                &self.projects.as_ref().map(|_| "<project-store>"),
             )
             .field(
                 "task_runtime",
@@ -300,7 +306,8 @@ pub async fn open_root_session_with(
             options.identity.clone(),
         )),
         std::sync::Arc::new(crate::executor::ProjectCreateTool::new(
-            options.data_dir.clone(),
+            options.projects.clone(),
+            options.task_runtime.clone(),
         )) as std::sync::Arc<dyn tools::Tool>,
     ];
     extra_tools.extend(web_extra_tools(&options));
@@ -349,10 +356,13 @@ pub async fn open_root_session_with(
         text: format!("{PAGE_LIST}{KIND_OUTPUT_RULES}"),
         now_message: true,
     });
-    {
-        let data_dir = options.data_dir.clone();
+    if let Some(projects) = options.projects.clone() {
         config.dynamic_block = Some(std::sync::Arc::new(move || {
-            crate::projects::project_block_text(&data_dir)
+            Some(agent::DynamicBlock {
+                title: "AIOS 项目清单（内容有变化时只补这一条；不是新任务）：".to_owned(),
+                kind: "projects".to_owned(),
+                text: crate::projects::project_block_text(&projects)?,
+            })
         }));
     }
     // Kind 根会话：记忆注入 + 压缩前日记 + 记忆工具；库打不开不挡根会话，但产品路径要接上。

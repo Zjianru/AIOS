@@ -18,7 +18,12 @@ import {
 } from '@/components/ui/sidebar';
 import { useAppStore } from '@/app/store';
 import { go } from '@/app/navigate';
-import { useProjectStore, projectCode, projectColor } from '@/pages/project/projectStore';
+import {
+  mountProjectLive,
+  useProjectStore,
+  projectCode,
+  projectColor,
+} from '@/pages/project/projectStore';
 import { NewProjectDialog } from '@/pages/project/NewProjectDialog';
 import type { ParsedRoute } from '@/app/route';
 import { navOf } from '@/app/route';
@@ -82,15 +87,12 @@ function SidebarInner({ route }: { route: ParsedRoute }) {
   const theme = useAppStore((s) => s.theme);
   const toggleTheme = useAppStore((s) => s.toggleTheme);
   const projects = useProjectStore((state) => state.projects);
-  const refreshProjects = useProjectStore((state) => state.refresh);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   // T059 F3：现在 / Kind / 工作都有入口；设置仍在左下角。
   const mainNav = MAIN_NAV.filter((item) => item.id !== 'settings');
   const settingsItem = MAIN_NAV.find((item) => item.id === 'settings')!;
 
-  useEffect(() => {
-    if (projects === null) void refreshProjects();
-  }, [projects, refreshProjects]);
+  useEffect(() => mountProjectLive(), []);
 
   return (
     <ShadcnSidebar

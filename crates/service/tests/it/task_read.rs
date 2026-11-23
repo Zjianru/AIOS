@@ -16,6 +16,8 @@ async fn open_host(data: &Path) -> RootHost {
 
 fn draft(conversation: &ConversationId, cwd: &Path, title: &str) -> NewTask {
     NewTask {
+        project_id: None,
+        cwd_source: None,
         title: title.to_owned(),
         requirement: "读归档，说明判重规则".to_owned(),
         dod: "给出规则和一个会漏判的例子".to_owned(),

@@ -611,6 +611,8 @@ fn seed_ready_task(
     let task = store
         .create_task(
             NewTask {
+                project_id: None,
+                cwd_source: None,
                 title: title.to_owned(),
                 requirement: format!("{title} 的要求"),
                 dod: format!("{title} 的 DoD"),
