@@ -135,6 +135,17 @@ async fn nearest_appointment_wakes_and_far_one_waits() {
         wake_text.contains("appointment_wake") && wake_text.contains("read its facts first"),
         "appointment-wake 正文带第 20 条规则：{wake_text}"
     );
+    let wake: serde_json::Value = serde_json::from_str(&wake_text).unwrap();
+    let local = wake["appointment"]["nominal_local"].as_str().unwrap();
+    assert!(
+        local.contains('-') && local.contains(':'),
+        "本地时间：{local}"
+    );
+    let late = wake["appointment"]["late"].as_str().unwrap();
+    assert!(
+        late.starts_with("比约定时间晚了") || late == "准时",
+        "晚多久：{late}"
+    );
     assert_eq!(
         near_runs[0].sent_turn,
         Some(sent_turn),

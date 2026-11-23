@@ -532,6 +532,7 @@ impl TaskRuntime {
                 return;
             }
         };
+        let now_ms = chrono::Local::now().timestamp_millis();
         let mut body = json!({
             "task_id": trigger_task.id.as_str(),
             "kind": "appointment_wake",
@@ -547,6 +548,8 @@ impl TaskRuntime {
                 "merged_count": run.merged_count,
                 "manual": run.manual,
                 "reason": run.reason,
+                "nominal_local": crate::date_facts::local_clock(run.nominal_at),
+                "late": crate::date_facts::late_text(run.nominal_at, now_ms),
             }
         });
         if appointment.watch.is_some()

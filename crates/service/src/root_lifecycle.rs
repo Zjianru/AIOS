@@ -1,5 +1,6 @@
 //! 根会话生命周期：打开/安装/重开根会话，维护 ready 状态与上下文占用。
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -414,6 +415,7 @@ impl RootHost {
             memory.backfill(&self.options.data_dir, &conversation_id);
         }
         let service_host = ServiceHost::new_with_memory(agent, memory);
+        let date_agent = service_host.agent().clone();
         let mut source = service_host.subscribe_events();
         let tx = self.events.clone();
         let context = Arc::clone(&self.context);
@@ -421,9 +423,19 @@ impl RootHost {
         let calendar_runtime = self.task_runtime.clone();
         let forward_conversation = conversation_id.clone();
         let forward = tokio::spawn(async move {
+            let mut real_user_turns = HashSet::new();
+            let mut dated_turns = HashSet::new();
             loop {
                 match source.recv().await {
                     Ok(event) => {
+                        if event.event_type == "user/message"
+                            && let Some(turn) =
+                                event.data.get("turn").and_then(serde_json::Value::as_u64)
+                            && !event_user_rpc(&event)
+                                .is_some_and(crate::program_messages::is_program_rpc)
+                        {
+                            real_user_turns.insert(turn);
+                        }
                         if let Some(used) = context_used(&event) {
                             // 只更新占用；窗口是换模型时更新的另一个事实，旧事件不能盖回去。
                             context.lock().expect("context 锁被毒化").used = used;
@@ -448,6 +460,28 @@ impl RootHost {
                                 turn,
                                 i64::try_from(event.time).unwrap_or(i64::MAX),
                             );
+                        }
+                        // T077.6：真实用户回合结束后落一条「现在」纯文本程序消息，给下一轮
+                        // 模型看到本机时间；固定块不动，程序消息不画成用户气泡。
+                        if event.event_type == "turn/end"
+                            && let Some(turn) =
+                                event.data.get("turn").and_then(serde_json::Value::as_u64)
+                            && real_user_turns.contains(&turn)
+                            && dated_turns.insert(turn)
+                        {
+                            let at = i64::try_from(event.time).unwrap_or(i64::MAX);
+                            let message = model::UserMessage::text_with_request_id(
+                                crate::date_facts::now_line(at),
+                                format!("date-now:{turn}:{at}"),
+                            );
+                            let kind = session::EventKind::UserMessage {
+                                turn,
+                                step: 0,
+                                message: message.into_message(),
+                            };
+                            if let Err(error) = date_agent.append_event(kind).await {
+                                eprintln!("日期消息没写进会话：{error}");
+                            }
                         }
                         if event.event_type == "user/message"
                             && let Some(runtime) = &calendar_runtime

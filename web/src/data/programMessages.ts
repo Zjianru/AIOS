@@ -11,6 +11,7 @@ export const PROGRAM_MESSAGE_PREFIXES = [
   'appointment-wake:',
   'restart:',
   'fixed-block:',
+  'date-now:',
 ] as const;
 
 export function isProgramRpc(rpcId: string | null | undefined): boolean {

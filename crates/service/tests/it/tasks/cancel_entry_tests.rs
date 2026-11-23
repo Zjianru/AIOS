@@ -163,3 +163,46 @@ async fn cancel_tasks_act_reports_actual_downstream_ids() {
     assert!(cancelled.contains(&second.id.as_str()));
     assert!(outcome.summary.contains("取消 2 项"));
 }
+
+#[tokio::test]
+async fn root_user_turn_end_appends_local_now_message() {
+    let fixture = Fixture::new().await;
+    let _task = fixture.accept(false).await;
+    let root: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(fixture.data().join("kind-root.json")).unwrap(),
+    )
+    .unwrap();
+    let session_id = session::SessionId::parse(root["sessionId"].as_str().unwrap()).unwrap();
+    let mut found = None;
+    for _ in 0..100 {
+        let snapshot = session::SessionStore::open_read_only(fixture.data(), &session_id).unwrap();
+        for event in snapshot.events() {
+            if let session::EventKind::UserMessage { message, .. } = &event.kind
+                && let model::MessageSource::User {
+                    rpc_id: Some(rpc_id),
+                } = &message.source
+                && rpc_id.starts_with("date-now:")
+            {
+                let text = message.content.iter().find_map(|block| match block {
+                    model::ContentBlock::Text { text, .. } => Some(text.clone()),
+                    _ => None,
+                });
+                if let Some(text) = text {
+                    found = Some(text);
+                    break;
+                }
+            }
+        }
+        if found.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    }
+    let text = found.expect("用户回合结束后要有「现在」程序消息");
+    assert!(text.starts_with("现在："), "实际：{text}");
+    assert!(text.contains('（') && text.ends_with('）'), "实际：{text}");
+    assert!(
+        text.contains(&chrono::Local::now().format("%Y").to_string()),
+        "要写本机年份，不是零值时间：{text}"
+    );
+}
