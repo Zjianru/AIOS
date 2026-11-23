@@ -345,7 +345,7 @@ impl MemoryRuntime {
                     return;
                 }
                 // 轮次用事件自带的 turn：搜索命中要能指回那一轮。
-                (*turn, message_text(message))
+                (*turn, assistant_answer_text(message))
             }
             _ => return,
         };
@@ -400,6 +400,39 @@ impl MemoryRuntime {
             })
         })
     }
+}
+
+/// T078.1：这条 assistant 消息对用户说了什么。正文 + kind_say 各条按内容顺序拼；
+/// 记忆搜索索引和做梦共用，避免分条答案被当成空回答。
+pub(crate) fn assistant_answer_text(message: &model::Message) -> String {
+    let mut parts = Vec::new();
+    for block in &message.content {
+        match block {
+            model::ContentBlock::Text { text, .. } => parts.push(text.clone()),
+            model::ContentBlock::ToolCall {
+                name, arguments, ..
+            } if name == "kind_say" => {
+                let Ok(args) = serde_json::from_str::<serde_json::Value>(arguments) else {
+                    continue;
+                };
+                let Some(items) = args.get("parts").and_then(serde_json::Value::as_array) else {
+                    continue;
+                };
+                for item in items {
+                    if let Some(text) = item.as_str()
+                        && !text.trim().is_empty()
+                    {
+                        parts.push(text.to_owned());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    parts.join(
+        "
+",
+    )
 }
 
 fn message_text(message: &model::Message) -> String {
@@ -717,6 +750,37 @@ mod flashback_tests {
         assert!(
             runtime.flashback_for("毫不相关").unwrap().is_none(),
             "无钥匙/无桥不送"
+        );
+    }
+}
+
+#[cfg(test)]
+mod answer_text_tests {
+    use model::{ContentBlock, Message};
+
+    #[test]
+    fn assistant_answer_text_includes_text_and_kind_say_parts_in_order() {
+        let message = Message::assistant(
+            vec![
+                ContentBlock::text("先看结论。"),
+                ContentBlock::ToolCall {
+                    id: "call-say".to_owned(),
+                    name: "kind_say".to_owned(),
+                    arguments: r#"{"parts":["第一段","第二段"]}"#.to_owned(),
+                },
+                ContentBlock::Reasoning {
+                    text: "思考不显示".to_owned(),
+                    signature: None,
+                },
+            ],
+            "deepseek",
+            "deepseek-flash",
+        );
+        assert_eq!(
+            super::assistant_answer_text(&message),
+            "先看结论。
+第一段
+第二段"
         );
     }
 }

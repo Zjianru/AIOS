@@ -10,6 +10,7 @@ import { memo, useState } from 'react';
 import { toast } from 'sonner';
 import { ChevronRight, CircleAlert, RotateCw, Square } from 'lucide-react';
 import { CopyButton } from './CopyButton';
+import { kindEmojiChar } from './kindOutput';
 import { Markdown } from './Markdown';
 import { MemoChip } from './MemoChip';
 import { QuoteChip } from './QuoteChip';
@@ -281,15 +282,27 @@ function RichText({ text, elements }: { text: string; elements: TextElement[] })
 /** 流式回答：订阅流式文本，只有这一条重绘。 */
 function Answer({ view }: { view: TurnViewData }) {
   const streamed = useStreamStore((state) => (state.turnId === view.id ? state.text : null));
+  const streamedParts = useStreamStore((state) =>
+    state.turnId === view.id ? state.sayParts : null,
+  );
+  const liveReaction = useStreamStore((state) =>
+    state.turnId === view.id ? state.reaction : null,
+  );
   const text = streamed ?? view.answer?.text ?? '';
+  const parts = streamedParts?.length ? streamedParts : (view.sayParts ?? []);
+  // 只表情/空文本：没有回答块，也不画「正在想…」占位。
+  if (!text && parts.length === 0 && (view.reaction || liveReaction)) return null;
   const busyElsewhere =
     view.status !== 'inProgress' ||
     view.delivery !== null ||
     view.retry !== null ||
     view.question?.status === 'pending' ||
-    view.tools.some((tool) => tool.state === 'running');
-  if (!text && busyElsewhere) return null;
-  if (!text) {
+    view.tools.some(
+      (tool) =>
+        tool.state === 'running' && tool.name !== 'kind_say' && tool.name !== 'kind_react',
+    );
+  if (!text && parts.length === 0 && busyElsewhere) return null;
+  if (!text && parts.length === 0) {
     return (
       <div className="flex items-center gap-2 py-1 text-3 text-ink-3">
         <span className="inline-flex gap-1">
@@ -298,6 +311,21 @@ function Answer({ view }: { view: TurnViewData }) {
           <i className="size-1 animate-pulse rounded-full bg-ink-3 [animation-delay:300ms]" />
         </span>
         正在想…
+      </div>
+    );
+  }
+  if (parts.length > 0) {
+    return (
+      <div data-kind="assistant-answer" className="space-y-5">
+        {parts.map((part, index) => (
+          <div key={index} className="group/part relative" data-kind="assistant-say-part">
+            <Markdown text={part} elements={[]} />
+            <CopyButton
+              text={part}
+              className="absolute -right-8 top-0 opacity-0 transition-opacity group-hover/part:opacity-100"
+            />
+          </div>
+        ))}
       </div>
     );
   }
@@ -469,6 +497,10 @@ export const TurnRow = memo(function TurnRow({
   const drawing = useKindStore((state) =>
     state.drawingCanvas?.turnId === view.id ? state.drawingCanvas.title : null,
   );
+  const liveReaction = useStreamStore((state) =>
+    state.turnId === view.id ? state.reaction : null,
+  );
+  const reaction = view.reaction ?? liveReaction;
   // 工作过程里的路径相对会话工作目录显示（Kind 用 status 给的 cwd；任务对话用任务头部）。
   const kindCwd = useKindStore((state) => state.cwd);
   const cwd = cwdOverride ?? kindCwd;
@@ -548,6 +580,15 @@ export const TurnRow = memo(function TurnRow({
                 </div>
               );
             })()
+          ) : null}
+          {reaction ? (
+            <div
+              className="mr-auto -mt-0.5 rounded-full bg-raised px-1.5 py-0.5 text-3"
+              data-kind="kind-reaction"
+              title={'Kind 回了 ' + kindEmojiChar(reaction)}
+            >
+              {kindEmojiChar(reaction)}
+            </div>
           ) : null}
         </div>
       ) : view.taskResults.length > 0 ? null : (

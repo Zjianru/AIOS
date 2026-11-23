@@ -30,6 +30,7 @@ import type { TurnViewData } from './turnViews';
 import { applyTaskCardStates } from './taskCardState';
 import { canvasTracks, compactionViewOf, deriveTurnViews, mergeCanvasTracks, prependOlderViews, reconcileTaskCards, taskCcFacts } from './turnViews';
 import { contextPercent, contextTokens } from '@/data/turnUsage';
+import { partialKindReactId, partialKindSayParts } from './kindOutput';
 import { getModelSettings } from '@/data/keyring';
 import { go } from '@/app/navigate';
 import { mark } from '@/lib/perf';
@@ -215,6 +216,8 @@ function resetLiveStream(turn: number | null): void {
     turnId: turn === null ? null : 'turn-' + String(turn),
     itemId: null,
     text: '',
+    sayParts: [],
+    reaction: null,
   });
 }
 
@@ -400,6 +403,16 @@ function applyAgentEvent(event: AgentFrame['event']): void {
     if (typeof event.name === 'string' && event.name) call.name = event.name;
     if (typeof event.argumentsDelta === 'string') call.arguments += event.argumentsDelta;
     liveToolCalls.set(event.callId, call);
+    if (liveTurn !== null && call.name === 'kind_say') {
+      useStreamStore.setState({
+        turnId: 'turn-' + String(liveTurn),
+        sayParts: partialKindSayParts(call.arguments),
+      });
+    }
+    if (liveTurn !== null && call.name === 'kind_react') {
+      const reaction = partialKindReactId(call.arguments);
+      if (reaction) useStreamStore.setState({ turnId: 'turn-' + String(liveTurn), reaction });
+    }
     if (call.name !== 'canvas' || liveTurn === null) return;
     useKindStore.setState({
       drawingCanvas: { turnId: 'turn-' + String(liveTurn), title: canvasTitleOf(call.arguments) },
