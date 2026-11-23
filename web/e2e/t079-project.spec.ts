@@ -1,4 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
+import { randomUUID } from 'node:crypto';
+import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { apiPost, startKernelFixture, type KernelFixture } from './service-fixture';
 
 /**
@@ -33,6 +36,22 @@ test('项目：侧栏新建、项目页逐项改、工作页 ?p=、监控 ?p= �
     // 先派一张任务，任务本身是个人；后面用真协议改归属。
     await sendKind(page, '把 hello.txt 的判重改成按 url');
     await expect(page.locator('[data-kind="task-result"]').last()).toBeVisible({ timeout: 60_000 });
+    // 从任务库复制一张留在「个人」，这样工作页/监控的项目筛选有排除项可验。
+    const db = new DatabaseSync(path.join(fixture.dataDir, 'tasks.sqlite'));
+    try {
+      const row = db.prepare('SELECT value FROM task LIMIT 1').get() as { value: string };
+      const clone = JSON.parse(row.value) as Record<string, unknown>;
+      clone.id = randomUUID().replaceAll('-', '');
+      clone.title = '另外一件个人任务';
+      clone.parent = null;
+      clone.project_id = null;
+      db.prepare('INSERT INTO task (id, value) VALUES (?, ?)').run(
+        clone.id as string,
+        JSON.stringify(clone),
+      );
+    } finally {
+      db.close();
+    }
 
     await page.goto(urlOf(fixture, '#work'));
     const projectId = await createProject(
@@ -63,6 +82,8 @@ test('项目：侧栏新建、项目页逐项改、工作页 ?p=、监控 ?p= �
     };
     const task = work.tasks.find((item) => item.title.includes('判重改成按'));
     expect(task, 'Kind 派出的任务应在工作快照里').toBeTruthy();
+    const personalTask = work.tasks.find((item) => item.title === '另外一件个人任务');
+    expect(personalTask, '第二张任务应留在个人').toBeTruthy();
     const assigned = await apiPost(request, fixture, {
       method: 'task_set_project',
       taskId: task!.id,
@@ -122,10 +143,41 @@ test('项目：侧栏新建、项目页逐项改、工作页 ?p=、监控 ?p= �
     await expect(
       page.locator('[data-kind="work-card"], [data-kind="board-wait-item"]').filter({ hasText: '判重改成按' }),
     ).toHaveCount(0);
+    await expect(
+      page.locator('[data-kind="work-card"], [data-kind="board-wait-item"]').filter({ hasText: '另外一件个人任务' }),
+    ).toHaveCount(1);
 
     // 监控按项目筛；没归属的任务显示「个人」。
     await page.goto(urlOf(fixture, '#monitor?p=' + encodeURIComponent(projectId)));
     await expect(page.locator('[data-kind="monitor-project-trigger"]')).toContainText('清河县农技站');
+    // 项目筛选下花费只算项目内任务；全站合计/日柱不混进来。
+    const snapshotResponse = await apiPost(request, fixture, {
+      method: 'monitor-snapshot',
+      range: 'last7-days',
+      timezone: 'Asia/Shanghai',
+    });
+    const snapshot = (await snapshotResponse.json()) as {
+      tasks: { title: string; costUsd?: number | null; unpriced?: boolean }[];
+    };
+    const projectMonitorTask = snapshot.tasks.find((item) => item.title.includes('判重改成按'));
+    expect(projectMonitorTask, '项目任务应在监控快照里').toBeTruthy();
+    const expectedCost =
+      projectMonitorTask!.costUsd == null
+        ? '没采到'
+        : '$' +
+          (projectMonitorTask!.costUsd >= 100
+            ? projectMonitorTask!.costUsd.toFixed(0)
+            : projectMonitorTask!.costUsd >= 1
+              ? projectMonitorTask!.costUsd.toFixed(2)
+              : projectMonitorTask!.costUsd.toFixed(3)) +
+          (projectMonitorTask!.unpriced ? '+' : '');
+    const costKpi = page
+      .locator('[data-kind="cost-project-kpis"] [data-kind="kpi"]')
+      .filter({ hasText: '花费' });
+    await expect(costKpi).toContainText(expectedCost, { timeout: 20_000 });
+    await expect(page.locator('[data-kind="project-scope-note"]')).toContainText('不混全量');
+    await expect(page.locator('[data-kind="cost-daily"]')).toHaveCount(0);
+    await expect(page.locator('[data-kind="task-cards"] [data-kind="task-card"]')).toHaveCount(1);
     const taskCard = page.locator('[data-kind="task-card"]').filter({ hasText: '判重改成按' }).first();
     await expect(taskCard).toBeVisible({ timeout: 30_000 });
     await expect(taskCard.locator('[data-kind="task-project"]')).toContainText('清河县农技站');
@@ -139,6 +191,112 @@ test('项目：侧栏新建、项目页逐项改、工作页 ?p=、监控 ?p= �
     await page.getByRole('menuitemradio', { name: '个人' }).click();
     await expect(page.locator('[data-kind="monitor-project-trigger"]')).toContainText('个人');
     await expect(page.locator('[data-kind="task-card"]').filter({ hasText: '判重改成按' })).toHaveCount(0);
+    // 空项目：刷新让项目列表带上 API 建的「别的项目」，选它看空态。
+    await page.reload();
+    await page.locator('[data-kind="monitor-project-trigger"]').click();
+    await page.getByRole('menuitemradio', { name: '别的项目' }).click();
+    await expect(page.locator('[data-kind="monitor-project-trigger"]')).toContainText('别的项目');
+    await expect(page.locator('[data-kind="project-empty"]')).toBeVisible();
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('项目页：四组、完成只列5和「还有N件」链工作页、空项目态', async ({ page, request }) => {
+  test.setTimeout(240_000);
+  const fixture = await startKernelFixture({ t030: 'write' });
+  try {
+    await page.goto(urlOf(fixture));
+    await sendKind(page, '把 hello.txt 的判重改成按 url');
+    await expect(page.locator('[data-kind="task-result"]').last()).toBeVisible({ timeout: 60_000 });
+
+    await page.goto(urlOf(fixture, '#work'));
+    const projectId = await createProject(page, '四组项目', '覆盖四组', '');
+    await expect(page.locator('[data-page="project"]')).toBeVisible({ timeout: 20_000 });
+
+    const workResponse = await apiPost(request, fixture, { method: 'work' });
+    const work = (await workResponse.json()) as { tasks: { id: string; title: string }[] };
+    const original = work.tasks.find((item) => item.title.includes('判重改成按'));
+    expect(original).toBeTruthy();
+    const assigned = await apiPost(request, fixture, {
+      method: 'task_set_project',
+      taskId: original!.id,
+      projectId,
+    });
+    expect(assigned.ok()).toBeTruthy();
+
+    // 直接在任务库造状态：一个排队、一个在做、六个已取消（完成）。
+    const db = new DatabaseSync(path.join(fixture.dataDir, 'tasks.sqlite'));
+    try {
+      const row = db.prepare('SELECT value FROM task LIMIT 1').get() as { value: string };
+      const base = JSON.parse(row.value) as Record<string, unknown>;
+      const now = Date.now();
+      const insert = (task: Record<string, unknown>) => {
+        db.prepare('INSERT INTO task (id, value) VALUES (?, ?)').run(
+          task.id as string,
+          JSON.stringify(task),
+        );
+      };
+      const clone = (title: string, patch: Record<string, unknown>) => {
+        const task = structuredClone(base);
+        task.id = randomUUID().replaceAll('-', '');
+        task.title = title;
+        task.project_id = projectId;
+        task.parent = null;
+        task.arrangement = null;
+        task.acceptances = [];
+        task.needs = [];
+        Object.assign(task, patch);
+        insert(task);
+      };
+      clone('排队任务', { runs: [], reports: [], cancelled: null });
+      clone('在做任务', {
+        runs: [
+          {
+            id: 1,
+            started_at: now,
+            attempts: [
+              {
+                id: 1,
+                conversation: null,
+                trigger: 'launch',
+                handoffs: [],
+                started_at: now,
+                ended_at: null,
+                end: null,
+              },
+            ],
+          },
+        ],
+        reports: [],
+        cancelled: null,
+      });
+      for (let index = 0; index < 6; index += 1) {
+        clone('完成任务 ' + String(index + 1), {
+          cancelled: { at: now + 1000 + index, source: 'user' },
+        });
+      }
+    } finally {
+      db.close();
+    }
+
+    await page.reload();
+    await expect(page.locator('[data-page="project"]')).toBeVisible({ timeout: 20_000 });
+    for (const group of ['wait', 'doing', 'queue', 'done']) {
+      await expect(page.locator('[data-kind="project-task-group"][data-group="' + group + '"]')).toBeVisible({
+        timeout: 20_000,
+      });
+    }
+    await expect(page.locator('[data-kind="project-task-group"][data-group="done"] [data-kind="project-task"]')).toHaveCount(5);
+    await expect(page.locator('[data-kind="project-done-more"]')).toContainText('还有 1 件');
+    await page.locator('[data-kind="project-done-more"]').click();
+    await expect(page.locator('[data-kind="work-project-filter"]')).toContainText('四组项目');
+
+    // 空项目态：再建一个，不派任务。
+    await page.locator('[data-kind="new-project"]').click();
+    await page.locator('[data-kind="new-project-name"]').fill('空项目');
+    await page.locator('[data-kind="new-project-submit"]').click();
+    await expect(page.locator('[data-page="project"]')).toBeVisible({ timeout: 20_000 });
     await expect(page.locator('[data-kind="project-empty"]')).toBeVisible();
   } finally {
     await fixture.close();

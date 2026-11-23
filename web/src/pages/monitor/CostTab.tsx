@@ -131,6 +131,81 @@ function TaskCard({ task }: { task: MonitorTaskSummary }) {
   );
 }
 
+/** 项目筛选下只算能按 task.project_id 归到项目的花费/用量；不能分的明说，不混全量。 */
+function ProjectCostView({
+  tasks,
+  range,
+  setRange,
+}: {
+  tasks: MonitorTaskSummary[];
+  range: 'today' | 'last7-days' | 'month';
+  setRange: (range: 'today' | 'last7-days' | 'month') => void;
+}) {
+  const priced = tasks
+    .map((task) => task.costUsd)
+    .filter((value): value is number => value != null);
+  const cost = priced.length ? priced.reduce((sum, value) => sum + value, 0) : null;
+  const unpriced = tasks.some((task) => task.costUsd == null || task.unpriced);
+  const tokens = tasks.reduce((sum, task) => sum + task.inputTokens + task.outputTokens, 0);
+  const requests = tasks.reduce((sum, task) => sum + task.requests, 0);
+  const toolCalls = tasks.reduce((sum, task) => sum + task.toolCalls, 0);
+
+  return (
+    <div data-tab="cost" data-project-scope="true" className="space-y-4 pt-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <Segmented
+          value={range}
+          onChange={setRange}
+          options={[
+            ['today', '今天'],
+            ['last7-days', '近 7 天'],
+            ['month', '本月'],
+          ]}
+        />
+        <span className="text-1 text-ink-3">只算归属明确的数字；全站合计/日柱/时间环不混进来</span>
+      </div>
+
+      <div className="rounded-card border border-line bg-pane/40 px-3 py-2 text-1 leading-5 text-ink-2" data-kind="project-scope-note">
+        项目筛选只汇总 <b className="text-ink">能按任务归属到项目</b> 的花费、Token、请求和工具调用。
+        日柱、时间环、工具/命令排行、模型排行和全站合计无法按项目拆开，已隐藏，不混全量。
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-5" data-kind="cost-project-kpis">
+        <Kpi
+          label="花费"
+          value={cost == null ? <Missing /> : formatUsd(cost, unpriced)}
+          sub="只算项目内任务"
+        />
+        <Kpi label="Token" value={formatTokens(tokens)} sub="项目内任务输入 + 输出" />
+        <Kpi label="请求" value={requests} sub="项目内任务的模型请求" />
+        <Kpi label="工具" value={toolCalls} sub="项目内任务的工具调用" />
+        <Kpi
+          label="命令"
+          value={<span data-kind="cannot-split">无法分项</span>}
+          sub="快照没有按项目拆 bash 命令"
+        />
+      </div>
+
+      <div>
+        <div className="mb-3 mt-6 flex flex-wrap items-center gap-2">
+          <h2 className="text-3 font-semibold text-ink">任务</h2>
+          <span className="text-1 text-ink-3">{tasks.length} 件 · 点开看诊断</span>
+        </div>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3" data-kind="task-cards">
+          {tasks.map((task) => (
+            <TaskCard key={task.taskId} task={task} />
+          ))}
+          {tasks.length === 0 ? (
+            <p className="text-2 text-ink-3" data-kind="project-empty">
+              这个项目还没有任务。
+            </p>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function CostTab() {
   const snapshot = useMonitorStore((state) => state.snapshot);
   const route = useRouteStore((state) => state.route);
@@ -142,6 +217,9 @@ export function CostTab() {
   const tasks = (snapshot?.tasks ?? []).filter((task) =>
     matchesProject(task.projectId, projectFilter),
   );
+  if (projectFilter) {
+    return <ProjectCostView tasks={tasks} range={range} setRange={setRange} />;
+  }
   const models = snapshot?.models ?? [];
   const tools = snapshot?.tools ?? [];
   const commands = snapshot?.commands ?? [];
