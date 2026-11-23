@@ -53,7 +53,7 @@ impl Tool for KindReactTool {
     }
 
     fn description(&self) -> &str {
-        "React to the user's latest message with one emoji before answering. Call at most once, before kind_say; only use when a human would react. An emoji never replaces the answer."
+        "React to the user's latest message with one emoji. Call at most once, before kind_say; only use when a human would react. For a plain acknowledgement, heads-up, or thanks/praise for your work, the emoji can stand alone: react, end the turn immediately, and send no text reply. When the message also needs an answer or work, react before answering; a reaction never replaces a needed answer."
     }
 
     fn parameters(&self) -> &Value {
@@ -112,7 +112,9 @@ impl Tool for KindReactTool {
             };
             ToolResult::success_with_meta(
                 call.id,
-                format!("Reacted with {emoji_id}."),
+                format!(
+                    "Reacted with {emoji_id}. If this reaction stands alone, end the turn now and send no text."
+                ),
                 json!({
                     "kind_react": {
                         "emoji_id": emoji_id,

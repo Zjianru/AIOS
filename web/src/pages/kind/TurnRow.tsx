@@ -290,8 +290,11 @@ function Answer({ view }: { view: TurnViewData }) {
   );
   const text = streamed ?? view.answer?.text ?? '';
   const parts = streamedParts?.length ? streamedParts : (view.sayParts ?? []);
+  const reaction = view.reaction ?? liveReaction;
   // 只表情/空文本：没有回答块，也不画「正在想…」占位。
-  if (!text && parts.length === 0 && (view.reaction || liveReaction)) return null;
+  if (!text && parts.length === 0 && reaction) return null;
+  // 模型有时把同一个表情又当普通文本回一遍；已经贴了表情就不再画重复的空回答。
+  if (reaction && parts.length === 0 && text.trim() === kindEmojiChar(reaction)) return null;
   const busyElsewhere =
     view.status !== 'inProgress' ||
     view.delivery !== null ||
