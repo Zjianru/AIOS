@@ -599,6 +599,41 @@ fn project_graphs(all: &[Task], by_id: &HashMap<String, Task>) -> Vec<WorkGraphF
     graphs
 }
 
+/// 从会话日志折出还没回答/取消的问题；aios_query work 和页面共用同一判断。
+pub(crate) fn pending_questions(events: &[session::Event]) -> Vec<agent::Question> {
+    let mut pending: Vec<agent::Question> = Vec::new();
+    for event in events {
+        match &event.kind {
+            session::EventKind::QuestionAsked {
+                question_id,
+                question,
+                header,
+                options,
+                multi_select,
+                ..
+            } => pending.push(agent::Question {
+                id: question_id.clone(),
+                question: question.clone(),
+                header: header.clone(),
+                options: options
+                    .iter()
+                    .map(|label| agent::QuestionOption {
+                        label: label.clone(),
+                        description: None,
+                    })
+                    .collect(),
+                multi_select: *multi_select,
+            }),
+            session::EventKind::QuestionAnswered { question_id, .. }
+            | session::EventKind::QuestionCancelled { question_id, .. } => {
+                pending.retain(|item| item.id != *question_id);
+            }
+            _ => {}
+        }
+    }
+    pending
+}
+
 /// 组装一份工作快照。
 pub(crate) fn snapshot(
     store: &Store,
