@@ -86,19 +86,26 @@ impl Tool for KindReactTool {
                     )),
                 );
             }
-            let user_message_seq =
-                context
-                    .session_events()
-                    .iter()
-                    .rev()
-                    .find_map(|event| match &event.kind {
-                        session::EventKind::UserMessage { message, .. }
-                            if matches!(message.source, model::MessageSource::User { .. }) =>
-                        {
-                            Some(event.seq)
-                        }
-                        _ => None,
-                    });
+            let turn = context.turn();
+            let user_message_seq = context
+                .session_events()
+                .iter()
+                .rev()
+                .find_map(|event| match &event.kind {
+                    session::EventKind::UserMessage { turn: event_turn, message, .. }
+                        if *event_turn == turn
+                            && !crate::program_messages::is_program_message(message) =>
+                    {
+                        Some(event.seq)
+                    }
+                    _ => None,
+                });
+            let Some(user_message_seq) = user_message_seq else {
+                return ToolResult::error(
+                    call.id,
+                    ToolFailure::plain("这一轮没有用户的消息可以回"),
+                );
+            };
             ToolResult::success_with_meta(
                 call.id,
                 format!("Reacted with {emoji_id}."),
@@ -178,14 +185,19 @@ impl Tool for KindSayTool {
             let parts: Vec<String> = parts
                 .iter()
                 .map(|part| part.as_str().unwrap_or("").trim().to_owned())
-                .filter(|part| !part.is_empty())
                 .collect();
             if parts.len() < 2 {
                 return ToolResult::error(
                     call.id,
                     ToolFailure::plain(
-                        "kind_say needs at least 2 non-empty parts; answer in one text bubble instead",
+                        "kind_say needs at least 2 parts; answer in one text bubble instead",
                     ),
+                );
+            }
+            if parts.iter().any(String::is_empty) {
+                return ToolResult::error(
+                    call.id,
+                    ToolFailure::plain("kind_say parts must all be non-empty"),
                 );
             }
             ToolResult::success_with_meta(
@@ -213,6 +225,25 @@ mod tests {
         )
     }
 
+    fn user_event(seq: u64, turn: u64, rpc_id: &str) -> session::Event {
+        session::Event::new(
+            seq,
+            1,
+            session::EventKind::UserMessage {
+                turn,
+                step: 0,
+                message: model::Message::user_text_with_request_id("谢谢", rpc_id),
+            },
+        )
+    }
+
+    fn context_with_events(turn: u64, events: Vec<session::Event>) -> ToolContext {
+        let events = Arc::new(events);
+        context()
+            .with_turn(turn)
+            .observing_session(Arc::new(move || (*events).clone()))
+    }
+
     fn call(id: &str, name: &str, arguments: &str) -> ToolCall {
         ToolCall {
             id: id.to_owned(),
@@ -224,18 +255,45 @@ mod tests {
     #[tokio::test]
     async fn react_accepts_only_the_eleven_ids() {
         let tool = KindReactTool::new();
+        let ctx = context_with_events(1, vec![user_event(1, 1, "u1")]);
         let ok = tool
-            .execute(call("1", "kind_react", r#"{"emoji_id":"+1"}"#), &context())
+            .execute(call("1", "kind_react", r#"{"emoji_id":"+1"}"#), &ctx)
             .await;
         assert!(!ok.is_error);
         assert_eq!(ok.meta.unwrap()["kind_react"]["emoji_id"], "+1");
         let bad = tool
             .execute(
                 call("2", "kind_react", r#"{"emoji_id":"smile"}"#),
-                &context(),
+                &ctx,
             )
             .await;
         assert!(bad.is_error);
+    }
+
+    #[tokio::test]
+    async fn react_skips_program_messages_and_needs_a_user_message_this_turn() {
+        let tool = KindReactTool::new();
+        let ctx = context_with_events(
+            2,
+            vec![
+                user_event(1, 1, "u1"),
+                user_event(2, 2, "u2"),
+                user_event(3, 2, "fixed-block:abc"),
+                user_event(4, 2, "task-report:t:r"),
+            ],
+        );
+        let ok = tool
+            .execute(call("1", "kind_react", r#"{"emoji_id":"+1"}"#), &ctx)
+            .await;
+        assert!(!ok.is_error);
+        assert_eq!(ok.meta.unwrap()["kind_react"]["user_message_seq"], 2);
+
+        let no_user = context_with_events(3, vec![user_event(4, 3, "fixed-block:abc")]);
+        let error = tool
+            .execute(call("2", "kind_react", r#"{"emoji_id":"+1"}"#), &no_user)
+            .await;
+        assert!(error.is_error);
+        assert!(error.content.contains("这一轮没有用户的消息可以回"));
     }
 
     #[tokio::test]

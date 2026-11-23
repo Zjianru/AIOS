@@ -56,7 +56,7 @@ function repairJson(text: string): string {
     else if (char === ']' || char === '}') stack.pop();
   }
   if (inString) value += '"';
-  value = value.replace(/,s*$/, '');
+  value = value.replace(/,\s*$/, '');
   while (stack.length > 0) value += stack.pop();
   return value;
 }

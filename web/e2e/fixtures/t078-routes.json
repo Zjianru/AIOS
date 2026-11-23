@@ -3,7 +3,7 @@
     {
       "contains": "说说你的看法",
       "file": "t078-kind-say.jsonl",
-      "paceMs": 40
+      "paceMs": 1500
     }
   ]
 }

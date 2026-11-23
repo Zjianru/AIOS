@@ -28,3 +28,8 @@ assert.deepEqual(view.sayParts, ['甲', '乙']);
 assert.equal(view.reaction, 'heart');
 assert.equal(processStepsOf(view).some((step) => step.kind === 'tool'), false);
 console.log('kind output: derivation ok');
+
+const { parsePartialJson } = await import('../src/pages/kind/kindOutput.ts');
+assert.deepEqual(parsePartialJson('{"parts":["甲"],}'), { parts: ['甲'] });
+assert.deepEqual(parsePartialJson('{"parts":["甲","乙",],}'), { parts: ['甲', '乙'] });
+console.log('kind output: trailing comma repair ok');

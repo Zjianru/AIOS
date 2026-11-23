@@ -285,8 +285,13 @@ function Answer({ view }: { view: TurnViewData }) {
   const streamedParts = useStreamStore((state) =>
     state.turnId === view.id ? state.sayParts : null,
   );
+  const liveReaction = useStreamStore((state) =>
+    state.turnId === view.id ? state.reaction : null,
+  );
   const text = streamed ?? view.answer?.text ?? '';
   const parts = streamedParts?.length ? streamedParts : (view.sayParts ?? []);
+  // 只表情/空文本：没有回答块，也不画「正在想…」占位。
+  if (!text && parts.length === 0 && (view.reaction || liveReaction)) return null;
   const busyElsewhere =
     view.status !== 'inProgress' ||
     view.delivery !== null ||
