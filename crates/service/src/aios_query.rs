@@ -153,8 +153,16 @@ impl QueryTool {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| i64::try_from(duration.as_millis()).unwrap_or(i64::MAX))
             .unwrap_or_default();
-        let response = crate::work::snapshot(&store, &events, &pending, now)
+        let mut response = crate::work::snapshot(&store, &events, &pending, now)
             .map_err(|error| ToolFailure::plain(format!("工作快照读不出来：{error}")))?;
+        // 页面 work_snapshot 还会合并日历暂停的等你项；这里必须走同一个合并，否则件数对不上。
+        let calendar_path = self.data_dir.join("calendar.sqlite");
+        if calendar_path.exists()
+            && let Ok(calendar) = calendar::CalendarStore::open(&calendar_path)
+            && let Ok(waits) = crate::work::calendar_pause_waits(&calendar)
+        {
+            crate::work::merge_waits(&mut response, waits);
+        }
         Ok(project_work(&response, now))
     }
 
@@ -331,6 +339,7 @@ fn project_wait(item: &WaitItem) -> Value {
     json!({
         "id": id,
         "taskId": item.task_id,
+        "appointmentId": item.appointment_id,
         "title": item.title,
         "stage": item.stage,
         "reason": item.body,
@@ -561,6 +570,57 @@ mod tests {
             version: None,
             appointment_id: None,
         }
+    }
+
+    #[test]
+    fn work_topic_merges_calendar_pause_wait_like_page_snapshot() {
+        use std::sync::Arc;
+
+        let data = tempfile::tempdir().unwrap();
+        let now = 1_700_000_000_000_i64;
+        let calendar = calendar::CalendarStore::open(data.path().join("calendar.sqlite")).unwrap();
+        let appointment = calendar
+            .create_appointment(calendar::NewAppointment {
+                title: "循环约定".to_owned(),
+                condition: "列给我".to_owned(),
+                schedule: calendar::Schedule {
+                    rule: "FREQ=DAILY".to_owned(),
+                    timezone: "Asia/Shanghai".to_owned(),
+                    start_at: now,
+                },
+                binding: calendar::Binding::Task("task-cycle".to_owned()),
+                watch: None,
+                cycle: Some(calendar::CycleSpec {
+                    task_id: "task-cycle".to_owned(),
+                    max_rounds: None,
+                }),
+                duration_minutes: None,
+            })
+            .unwrap();
+        let paused = calendar
+            .pause_with_reason(&appointment.id, "等你确认下一轮")
+            .unwrap();
+        let store = tasks::Store::open(data.path().join("tasks.sqlite")).unwrap();
+        let mut page = crate::work::snapshot(&store, &[], &[], now).unwrap();
+        crate::work::merge_waits(
+            &mut page,
+            crate::work::calendar_pause_waits(&calendar).unwrap(),
+        );
+        assert_eq!(page.wait.len(), 1, "页面会合并日历暂停项");
+
+        let tool = QueryTool::new(data.path(), None);
+        let context = ToolContext::with_session(
+            data.path(),
+            Arc::new(tools::ToolSessionState::new(data.path(), "test")),
+        );
+        let projected = tool.work(&context).unwrap();
+        assert_eq!(projected["counts"]["wait"], page.wait.len());
+        assert_eq!(projected["wait"][0]["appointmentId"], paused.id);
+        assert!(
+            projected["wait"][0]["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("等你确认下一轮"))
+        );
     }
 
     #[test]

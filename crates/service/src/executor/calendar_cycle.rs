@@ -4,8 +4,6 @@ use super::*;
 use crate::work::WaitItem;
 use calendar::{AppointmentStatus, NewRun, RunResult, TriggerKind};
 
-const CYCLE_PAUSE_PREFIX: &str = "循环约定暂停：";
-
 impl TaskRuntime {
     /// 根会话里一条 task-report 送到后调：找绑这个任务、在用的循环约定。
     pub(crate) fn calendar_on_task_report(&self, task_id: &str) {
@@ -167,43 +165,7 @@ impl TaskRuntime {
     /// 工作快照里的「等你」：被程序暂停的循环约定。
     pub(crate) fn calendar_pause_waits(&self) -> Result<Vec<WaitItem>, String> {
         let store = self.calendar()?;
-        let appointments = store
-            .list_appointments()
-            .map_err(|error| error.to_string())?;
-        let mut waits = Vec::new();
-        for appointment in appointments {
-            if appointment.status != AppointmentStatus::Paused {
-                continue;
-            }
-            let Some(cycle) = &appointment.cycle else {
-                continue;
-            };
-            let Some(reason) = store
-                .latest_version_reason(&appointment.id)
-                .map_err(|error| error.to_string())?
-            else {
-                continue;
-            };
-            let Some(reason) = reason.strip_prefix(CYCLE_PAUSE_PREFIX) else {
-                continue;
-            };
-            waits.push(WaitItem {
-                kind: "answer".to_owned(),
-                task_id: Some(cycle.task_id.clone()),
-                title: appointment.title.clone(),
-                stage: None,
-                need: format!("循环约定暂停了：{reason}"),
-                body: reason.to_owned(),
-                at: appointment.updated_at,
-                turn: None,
-                also: Vec::new(),
-                pick: None,
-                write: None,
-                version: Some(appointment.version),
-                appointment_id: Some(appointment.id.clone()),
-            });
-        }
-        Ok(waits)
+        crate::work::calendar_pause_waits(store)
     }
 
     fn cycle_no_progress(&self, task: &Task) -> bool {
