@@ -383,6 +383,10 @@ fn after_waiting(task: &Task, stage: Stage, latest: Option<&tasks::Report>) -> b
 
 fn task_wait_kinds(meta: &FactMeta<'_>, gate_passed: bool) -> Vec<&'static str> {
     let mut kinds = Vec::new();
+    // 已取消/已关闭的任务不再有任何「等你」项；否则旧的 ready 报告还会挂出接受按钮。
+    if meta.task.cancelled.is_some() || meta.stage == Stage::Closed {
+        return kinds;
+    }
     if meta.task.is_interrupted() {
         kinds.push(KIND_RESUME);
     }

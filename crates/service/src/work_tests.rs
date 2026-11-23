@@ -1284,9 +1284,8 @@ fn work_facts_carry_changed_count_and_running_since() {
 #[test]
 fn cancelled_task_leaves_wait_and_keeps_cancelled_at_on_fact() {
     let (_directory, store) = open_store();
-    let task = store
-        .create_task(draft(Path::new("/tmp/work-cancel"), "取消任务"), T0)
-        .unwrap();
+    // 有 ready 报告的任务：取消后不能再挂「接受」等你项。
+    let task = ready_task(&store, Path::new("/tmp/work-cancel"), "取消任务", T0);
     store
         .cancel(&task.id, tasks::CancellationSource::User, None, T0 + 10)
         .unwrap();
