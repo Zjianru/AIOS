@@ -152,6 +152,10 @@ export interface FixtureOptions {
   t078Say?: boolean;
   /** T078.2：Kind 只回表情、空文本完成。 */
   t078ReactOnly?: boolean;
+  /** T079.1：有 reaction、正文只是同一表情（页面不画回答）。 */
+  t078ReactEcho?: boolean;
+  /** T079.1：有 reaction、正文还有别的字（页面照画回答）。 */
+  t078ReactText?: boolean;
   /// 监控 WS 双任务夹具（t029 多 task_accept + 放慢 ThinAgent 回放）。
  /// ：任务图夹具——Kind 先 skill 再 task_graph_propose，再 propose_action 出确认卡；
  /// 卡上的 task_id 用 __GRAPH_ID__ 占位，由回放从请求体里换成真图 id。

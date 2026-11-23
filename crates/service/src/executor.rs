@@ -1039,6 +1039,7 @@ impl TaskRuntime {
                 write_scope: crate::result_cards::write_scope_display(&task),
                 bash: task.bash,
                 cancelled_at: task.cancelled.as_ref().map(|cancelled| cancelled.at),
+                project_id: task.project_id.clone(),
                 model: task.model.model.clone(),
                 tools: task.tools.clone(),
                 attempts: task.runs.iter().map(|run| run.attempts.len() as u64).sum(),
@@ -3808,6 +3809,22 @@ impl TaskRuntime {
     }
 
     /// T077.5：任务页/Kind 卡共用；沿用运行时的任务库与变化通知。
+    /// T079：改任务归属（任务图整张）；只写 Task 字段，不动要求版本和目录。
+    pub(crate) fn set_task_project(
+        &self,
+        task_id: &str,
+        project_id: Option<&str>,
+    ) -> Result<Vec<String>, tasks::TaskError> {
+        let changed = self.store.set_project(&TaskId::from(task_id), project_id)?;
+        for id in &changed {
+            self.notify_changed(id);
+        }
+        Ok(changed
+            .into_iter()
+            .map(|id| id.as_str().to_owned())
+            .collect())
+    }
+
     pub(crate) fn cancel_with_downstream(
         &self,
         task_id: &TaskId,

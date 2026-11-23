@@ -110,6 +110,15 @@ pub enum Call {
     TaskContinue(TaskContinueRequest),
     /// T055：工作页/「现在」共用的工作快照（全部任务事实 + 五种「等你」项）。
     Work(WorkRequest),
+    /// T079：项目列表/创建/更新，任务归属。
+    #[serde(rename = "project_list")]
+    ProjectList(ProjectListRequest),
+    #[serde(rename = "project_create")]
+    ProjectCreate(ProjectCreateRequest),
+    #[serde(rename = "project_update")]
+    ProjectUpdate(ProjectUpdateRequest),
+    #[serde(rename = "task_set_project")]
+    TaskSetProject(TaskSetProjectRequest),
     /// 监控消耗：按用户时区口径现算全部任务/模型/工具/命令合计。
     MonitorSnapshot(MonitorSnapshotRequest),
     /// 监控诊断：一个任务/Attempt 的链路事实；Kind 不诊断。
@@ -189,6 +198,14 @@ pub enum Response {
     TaskContinue(TaskContinueResponse),
     /// T055：工作页/「现在」共用的工作快照。
     Work(WorkResponse),
+    #[serde(rename = "project_list")]
+    ProjectList(ProjectListResponse),
+    #[serde(rename = "project_create")]
+    ProjectCreate(ProjectCreateResponse),
+    #[serde(rename = "project_update")]
+    ProjectUpdate(ProjectUpdateResponse),
+    #[serde(rename = "task_set_project")]
+    TaskSetProject(TaskSetProjectResponse),
     MonitorSnapshot(MonitorSnapshotResponse),
     MonitorTask(MonitorTaskResponse),
     /// T055.2：组接受的结果（通过的一起记，没通过的逐项回原因）。
@@ -619,6 +636,9 @@ pub struct TaskReadHeader {
         skip_serializing_if = "Option::is_none"
     )]
     pub cancelled_at: Option<i64>,
+    /// T079：所属项目；None = 个人。
+    #[serde(default, rename = "projectId", skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
     /// 创建任务时冻结的模型（只给显示名，切换模型不影响它）。
     pub model: String,
     pub tools: Vec<String>,
@@ -737,6 +757,80 @@ pub struct WorkResponse {
     pub wait: Vec<crate::work::WaitItem>,
     /// 已确认、没取消的任务图；服务算好每条线的 kind/state/program，页面只排和画。
     pub graphs: Vec<crate::work::WorkGraphFact>,
+}
+
+/// T079：项目视图。code（首字）和颜色由页面按列表顺序算，不进协议/库。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectView {
+    pub id: String,
+    pub name: String,
+    pub goal: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ProjectListRequest {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectListResponse {
+    pub projects: Vec<ProjectView>,
+}
+
+/// 创建项目和更新项目共用的输入形状；更新多一个 id。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectCreateRequest {
+    pub name: String,
+    pub goal: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectCreateResponse {
+    pub project: ProjectView,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectUpdateRequest {
+    pub id: String,
+    pub name: String,
+    pub goal: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectUpdateResponse {
+    pub project: ProjectView,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskSetProjectRequest {
+    #[serde(rename = "taskId")]
+    pub task_id: String,
+    /// None = 归个人；任务图里改任一任务整张图一起改。
+    #[serde(rename = "projectId", default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskSetProjectResponse {
+    #[serde(rename = "taskId")]
+    pub task_id: String,
+    #[serde(rename = "projectId", default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    /// 实际改到的任务 id（任务图是整张图）。
+    pub changed: Vec<String>,
 }
 
 /// T055.2：组接受的一项（页面勾选时存下的报告与版本）。
@@ -1615,6 +1709,7 @@ pub struct MemoryActionResponse {
 #[serde(rename_all = "camelCase")]
 pub struct ActionDescribeRequest {
     pub action: String,
+    #[ts(type = "Record<string, unknown>")]
     pub details: serde_json::Value,
 }
 
@@ -1636,6 +1731,7 @@ pub struct ActionDescribeResponse {
 #[serde(rename_all = "camelCase")]
 pub struct ActionActRequest {
     pub action: String,
+    #[ts(type = "Record<string, unknown>")]
     pub details: serde_json::Value,
 }
 
@@ -1643,6 +1739,7 @@ pub struct ActionActRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ActionActResponse {
     pub summary: String,
+    #[ts(type = "Record<string, unknown>")]
     pub data: serde_json::Value,
 }
 
@@ -1677,7 +1774,7 @@ pub struct ActionActResponse {
 ///
 /// 连接上的旧价格乘数后来整条删掉，不升版本：两个请求里的这个字段本来就可省略，旧页再发
 /// 由 serde 当未知字段忽略；响应里少了它，旧页读到 undefined 也不会拿去定价。
-pub const PROTOCOL_VERSION: u64 = 25;
+pub const PROTOCOL_VERSION: u64 = 26;
 
 /// 日历读取：不带 appointmentId 读全部；带 week 时额外给那周的计划点。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]

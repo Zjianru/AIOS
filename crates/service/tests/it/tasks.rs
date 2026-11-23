@@ -39,6 +39,7 @@ mod cancel_entry_tests;
 mod dialog_tests;
 mod misc_tests;
 mod pause_tests;
+mod project_tests;
 mod report_tests;
 mod restart_tests;
 mod retained_background_tests;

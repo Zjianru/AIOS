@@ -18,6 +18,7 @@ mod executor;
 mod input;
 pub(crate) mod kind_output;
 mod ledger;
+mod projects;
 mod propose;
 mod protocol;
 mod result_cards;

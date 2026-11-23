@@ -1,6 +1,6 @@
 use super::*;
 
 #[test]
-fn protocol_version_is_25() {
-    assert_eq!(PROTOCOL_VERSION, 25, "T077.5 动作入口，协议升到 25");
+fn protocol_version_is_26() {
+    assert_eq!(PROTOCOL_VERSION, 26, "T079.1 项目方法，协议升到 26");
 }

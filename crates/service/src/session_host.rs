@@ -148,6 +148,13 @@ impl ServiceHost {
             Call::TaskAcceptMany(_) => Err(ServiceError::TaskUnavailable(
                 "组接受只能由根宿主做".to_owned(),
             )),
+            // 项目库在根宿主手里。
+            Call::ProjectList(_)
+            | Call::ProjectCreate(_)
+            | Call::ProjectUpdate(_)
+            | Call::TaskSetProject(_) => Err(ServiceError::TaskUnavailable(
+                "项目只能由根宿主读写".to_owned(),
+            )),
             // recheck 只对 RootHost 有意义；裸 ServiceHost 直接回根状态 ok（宿主不回退）。
             Call::Recheck(_) => Ok(Response::Recheck(RecheckResponse {
                 root: RootState::Ok,

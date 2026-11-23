@@ -10,6 +10,10 @@ export type TaskFact = { id: string, title: string,
  */
 stage: string, parent?: string | null,
 /**
+ * T079：所属项目；None = 个人。
+ */
+projectId?: string | null,
+/**
  * 当前要求版本的写入范围；相对任务 cwd 显示；None = 只读调查任务。
  */
 writeScope?: string | null, version: number, attempts: number, createdAt: number,
@@ -45,4 +49,8 @@ after: Array<string>,
  * T055 审计：这是「等前置」的排队（上游还没可放行、也没有 blocked/failed/提问/被打断），
  * 不是「出了问题」；「现在」的问题组按它排除。
  */
-afterWaiting: boolean, latest?: WorkLatest | null, acceptedAt?: number | null, closedAt?: number | null, cancelledAt?: number | null, };
+afterWaiting: boolean, latest?: WorkLatest | null, acceptedAt?: number | null, closedAt?: number | null,
+/**
+ * T077：任务被取消的时间；页面完成列写「取消于」，本周完成排除。
+ */
+cancelledAt?: number | null, };

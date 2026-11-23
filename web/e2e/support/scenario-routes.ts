@@ -154,6 +154,8 @@ export function t013RouteFile(options: FixtureOptions): string | null {
 
 /** T078.2：Kind 先 kind_react 再 kind_say 的分条/表情回放。 */
 export function t078RouteFile(options: FixtureOptions): string | null {
+  if (options.t078ReactEcho) return 't078-routes-react-echo.json';
+  if (options.t078ReactText) return 't078-routes-react-text.json';
   if (options.t078ReactOnly) return 't078-routes-react.json';
   return options.t078Say ? 't078-routes.json' : null;
 }

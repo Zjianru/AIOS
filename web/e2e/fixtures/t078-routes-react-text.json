@@ -1,0 +1,5 @@
+{
+  "routes": [
+    { "contains": "表情加一句", "file": "t078-kind-react-text.jsonl", "paceMs": 20 }
+  ]
+}

@@ -46,3 +46,34 @@ test('Kind 只回表情、空文本：有表情、无回答块、无「正在想
     await fixture.close();
   }
 });
+
+test('107621b：有 reaction、正文 trim 只是同一表情，不画回答块', async ({ page }) => {
+  test.setTimeout(90_000);
+  const fixture = await startKernelFixture({ t078ReactEcho: true });
+  try {
+    await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind');
+    await page.getByPlaceholder('和 Kind 说…').fill('只回个表情');
+    await page.getByRole('button', { name: '发送', exact: true }).click();
+    await expect(page.locator('[data-kind="kind-reaction"]')).toHaveCount(1, { timeout: 20_000 });
+    await expect(page.locator('[data-kind="assistant-answer"]')).toHaveCount(0);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('107621b：有 reaction、正文还有别的字，照画回答块', async ({ page }) => {
+  test.setTimeout(90_000);
+  const fixture = await startKernelFixture({ t078ReactText: true });
+  try {
+    await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind');
+    await page.getByPlaceholder('和 Kind 说…').fill('表情加一句');
+    await page.getByRole('button', { name: '发送', exact: true }).click();
+    await expect(page.locator('[data-kind="kind-reaction"]')).toHaveCount(1, { timeout: 20_000 });
+    await expect(page.locator('[data-kind="assistant-answer"]')).toHaveCount(1, { timeout: 20_000 });
+    await expect(page.locator('[data-kind="assistant-answer"]')).toContainText(
+      '看到你这么说，我也高兴。',
+    );
+  } finally {
+    await fixture.close();
+  }
+});

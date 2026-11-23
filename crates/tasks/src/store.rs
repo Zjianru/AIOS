@@ -1375,6 +1375,46 @@ impl Store {
         save_task(Some(self), &connection, &task)
     }
 
+    /// T079：改任务归属。单派任务只改自己；任务图里改任一任务都整张图一起改
+    /// （总任务 + 全部子任务），返回实际改到的 id。
+    pub fn set_project(
+        &self,
+        id: &TaskId,
+        project_id: Option<&str>,
+    ) -> Result<Vec<TaskId>, TaskError> {
+        let connection = self.lock()?;
+        let all = load_all_tasks(&connection)?;
+        let target = all
+            .iter()
+            .find(|task| task.id == *id)
+            .ok_or_else(|| TaskError::TaskNotFound(id.to_string()))?;
+        let root_id = target.parent.clone().unwrap_or_else(|| target.id.clone());
+        let root_is_graph = all
+            .iter()
+            .find(|task| task.id == root_id)
+            .is_some_and(|task| task.arrangement.is_some());
+        let mut changed = Vec::new();
+        for task in &all {
+            let in_scope = if root_is_graph {
+                task.id == root_id || task.parent.as_ref() == Some(&root_id)
+            } else {
+                task.id == *id
+            };
+            if !in_scope {
+                continue;
+            }
+            let mut task = task.clone();
+            let next = project_id.map(str::to_owned);
+            if task.project_id == next {
+                continue;
+            }
+            task.project_id = next;
+            save_task(Some(self), &connection, &task)?;
+            changed.push(task.id);
+        }
+        Ok(changed)
+    }
+
     /// 给触发任务写那一轮结束的事实（幂等；已有就不改）。
     pub fn set_round_end(
         &self,
@@ -2510,6 +2550,7 @@ fn task_row(
         acceptances: Vec::new(),
         cancelled: None,
         parent,
+        project_id: None,
         needs,
         arrangement,
         gate,

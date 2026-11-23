@@ -164,6 +164,34 @@ impl RootHost {
             }
             // T055：工作页/「现在」共用的一份工作快照（任务库 + Kind 根会话事实）。
             Call::Work(_) => self.work_snapshot().await.map(Response::Work),
+            // T079：项目库在根宿主；项目方法不依赖根会话是否可用。
+            Call::ProjectList(_) => match self.projects() {
+                Some(store) => crate::projects::list(store).map(Response::ProjectList),
+                None => Err(ServiceError::TaskUnavailable(
+                    "项目库没开，读不了项目".to_owned(),
+                )),
+            },
+            Call::ProjectCreate(request) => match self.projects() {
+                Some(store) => crate::projects::create(store, request).map(Response::ProjectCreate),
+                None => Err(ServiceError::TaskUnavailable(
+                    "项目库没开，建不了项目".to_owned(),
+                )),
+            },
+            Call::ProjectUpdate(request) => match self.projects() {
+                Some(store) => crate::projects::update(store, request).map(Response::ProjectUpdate),
+                None => Err(ServiceError::TaskUnavailable(
+                    "项目库没开，改不了项目".to_owned(),
+                )),
+            },
+            Call::TaskSetProject(request) => {
+                let (Some(runtime), Some(projects)) = (self.task_runtime(), self.projects()) else {
+                    return Err(ServiceError::TaskUnavailable(
+                        "任务库或项目库没开，改不了归属".to_owned(),
+                    ));
+                };
+                crate::projects::set_task_project(runtime, projects, request)
+                    .map(Response::TaskSetProject)
+            }
             Call::MonitorSnapshot(request) => {
                 let kind_events = {
                     let guard = self.inner.lock().await;

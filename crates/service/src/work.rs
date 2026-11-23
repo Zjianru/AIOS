@@ -118,6 +118,9 @@ pub struct TaskFact {
     pub stage: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
+    /// T079：所属项目；None = 个人。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
     /// 当前要求版本的写入范围；相对任务 cwd 显示；None = 只读调查任务。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub write_scope: Option<String>,
@@ -735,6 +738,7 @@ pub(crate) fn snapshot(
                 .parent
                 .as_ref()
                 .map(|parent| parent.as_str().to_owned()),
+            project_id: task.project_id.clone(),
             write_scope: crate::result_cards::write_scope_display(task),
             version: task.requirement_version(),
             attempts: task.runs.iter().map(|run| run.attempts.len() as u64).sum(),
