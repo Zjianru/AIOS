@@ -884,7 +884,7 @@ fn conversation_window_lines(
                 if message.role != model::Role::Assistant {
                     continue;
                 }
-                let text = message_text(message);
+                let text = super::assistant_answer_text(message);
                 if text.trim().is_empty() {
                     continue;
                 }

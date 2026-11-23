@@ -488,6 +488,8 @@ fn tool_can(tool: &str) -> &'static str {
         "memory_dream_now" => "整理一次记忆（做梦）。",
         "memory_undo_dream" => "撤销上一次整理。",
         "memory_delete_note" => "用户明确说删时删一条笔记。",
+        "kind_react" => "先给用户本轮消息回一个表情（最多一个）。",
+        "kind_say" => "最后把回答分成 2 条以上发；成功后这一轮结束。",
         "task_accept" => "派一个任务或一张任务图，交给 ThinAgent。",
         "task_status" => "读一个任务的状态和最近报告。",
         "task_delivery" => "读任务的交付记录和结果卡。",

@@ -121,3 +121,4 @@ AIOS 是本地 agent 内核：会话日志是唯一事实来源，loop 只做驱
 - **前端只显示能用的部分**：侧栏与路由固定为接上内核的产品状态，不保留演示开关/脚本；不可达页的假数据不进入真路径。
 - **四类持久文件共用一处原子写**：根状态、设置、汇率缓存、Keyring 私有文件都走 `credentials::atomic`（临时文件写 + fsync 文件 + rename + fsync 目录），失败向上返回；tools/fs 的硬链接原子写另属工具写路径，没有目录 fsync，错误走 ToolFailure。
 - **取消单项（T077.3）**：任务行只增 cancelled{at,source,from} 事实，不进事件日志；阶段派生最先判取消、直接 closed。Store::cancel 同一事务写取消记录并排一条 cancel 效果，效果泵领到后立即掐断该任务在跑的宿主、不等资源收束；迟到报告只进历史，不改阶段。已取消任务的继续/接续/说话/改要求/改范围/门重判/改门命令/转发 relay/单项与组接受都回同一句固定原因。工作快照过滤绑已取消任务的确认卡和等你项，TaskFact 增 cancelled_at，完成列写「取消于」，本周完成按 cancelled_at 排除；协议 24。
+- **Kind 输出通道（T078.1）**：kind_react(emoji_id 11 enum) 只把表情和本轮用户消息 seq 写进 tool/result.meta；kind_say(parts>=2) 把分条写进 meta。两工具本来进日志，不改 assistant 事件/日志类型/协议。StopAtTools：一步所有工具执行完后，只要有成功的 kind_say 就 StepEnd::Completed，不再调模型；kind_say 报错继续让模型改。读 Kind 回答统一走 memory::assistant_answer_text（正文 + kind_say 各条按顺序），记忆索引和做梦共用。

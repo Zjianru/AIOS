@@ -758,6 +758,17 @@ pub(super) async fn run_step(
     if abort.load(Ordering::SeqCst) || outcome.cancelled {
         return Ok(StepEnd::Aborted);
     }
+    // T078.1 StopAtTools：这一步全执行完，里面有成功的 kind_say 就直接结束本轮，
+    // 不再调模型；kind_say 失败（如只有一条）照常 Continue 让模型改。
+    if calls
+        .iter()
+        .zip(outcome.results.iter())
+        .any(|(call, result)| {
+            call.name == "kind_say" && !result.is_error && result.error_code.is_none()
+        })
+    {
+        return Ok(StepEnd::Completed);
+    }
     Ok(StepEnd::Continue)
 }
 
