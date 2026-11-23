@@ -149,6 +149,25 @@ function ProjectCostView({
   const tokens = tasks.reduce((sum, task) => sum + task.inputTokens + task.outputTokens, 0);
   const requests = tasks.reduce((sum, task) => sum + task.requests, 0);
   const toolCalls = tasks.reduce((sum, task) => sum + task.toolCalls, 0);
+  const byModel = new Map<
+    string,
+    { model: string; requests: number; cost: number | null; unpriced: boolean }
+  >();
+  for (const task of tasks) {
+    const current = byModel.get(task.model) ?? {
+      model: task.model,
+      requests: 0,
+      cost: null,
+      unpriced: false,
+    };
+    current.requests += task.requests;
+    if (task.costUsd != null) current.cost = (current.cost ?? 0) + task.costUsd;
+    current.unpriced ||= task.costUsd == null || task.unpriced;
+    byModel.set(task.model, current);
+  }
+  const modelRows = [...byModel.values()].sort(
+    (left, right) => (right.cost ?? -1) - (left.cost ?? -1) || right.requests - left.requests,
+  );
 
   return (
     <div data-tab="cost" data-project-scope="true" className="space-y-4 pt-4">
@@ -167,7 +186,7 @@ function ProjectCostView({
 
       <div className="rounded-card border border-line bg-pane/40 px-3 py-2 text-1 leading-5 text-ink-2" data-kind="project-scope-note">
         项目筛选只汇总 <b className="text-ink">能按任务归属到项目</b> 的花费、Token、请求和工具调用。
-        日柱、时间环、工具/命令排行、模型排行和全站合计无法按项目拆开，已隐藏，不混全量。
+        模型排行只合计项目内任务；日柱、时间环、工具/命令排行和全站合计无法按项目拆开，已隐藏，不混全量。
       </div>
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-5" data-kind="cost-project-kpis">
@@ -185,6 +204,26 @@ function ProjectCostView({
           sub="快照没有按项目拆 bash 命令"
         />
       </div>
+
+      <Card title="模型" note="只按项目内任务的模型和请求汇总">
+        <div className="space-y-0.5" data-kind="cost-project-models">
+          {modelRows.length ? (
+            modelRows.map((row) => (
+              <RankRow
+                key={row.model}
+                name={row.model}
+                count={row.requests}
+                max={Math.max(1, ...modelRows.map((item) => item.requests))}
+                color={MODEL_COLOR}
+                mono
+                right={row.cost == null ? <Missing /> : formatUsd(row.cost, row.unpriced)}
+              />
+            ))
+          ) : (
+            <p className="text-2 text-ink-3"><Missing what="项目内还没有任务" /></p>
+          )}
+        </div>
+      </Card>
 
       <div>
         <div className="mb-3 mt-6 flex flex-wrap items-center gap-2">
