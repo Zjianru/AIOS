@@ -59,6 +59,7 @@ dependencies = [
 name = "agent"
 version = "0.0.0"
 dependencies = [
+ "chrono",
  "credentials",
  "insta",
  "model",

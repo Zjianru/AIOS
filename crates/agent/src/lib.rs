@@ -82,6 +82,8 @@ pub struct MemoryFlashback {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FixedBlock {
     pub text: String,
+    /// T077.6：每轮真实用户消息后追加「现在」；Kind 根会话开，别的 agent 默认关。
+    pub now_message: bool,
 }
 
 /// 当前用户消息命中钥匙且有桥时才返回回忆；None = 这次不送。

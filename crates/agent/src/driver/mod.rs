@@ -381,10 +381,9 @@ impl Inner {
                 skill_roots,
                 bundled_skills.clone(),
             );
-        let fixed_block_state = config
-            .fixed_block
-            .clone()
-            .map(|block| crate::fixed_block::FixedBlockState::load(&store, block.text));
+        let fixed_block_state = config.fixed_block.clone().map(|block| {
+            crate::fixed_block::FixedBlockState::load(&store, block.text, block.now_message)
+        });
         // 固定块从 owner 的当前完整版本取：指令/skill/记忆/任务书各一个 source。
         // 不从 derive_messages 捡，否则第二次压缩前这些消息已被上次 Replace 藏掉。
         let mut fixed_block_sources: Vec<crate::CompactionFixedBlockSource> = Vec::new();

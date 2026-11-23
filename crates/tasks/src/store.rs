@@ -1167,9 +1167,7 @@ impl Store {
             if task.cancelled.is_some() {
                 continue;
             }
-            if task.id != *id
-                && stage_with_graph(&transaction, &task).ok() == Some(Stage::Closed)
-            {
+            if task.id != *id && stage_with_graph(&transaction, &task).ok() == Some(Stage::Closed) {
                 continue;
             }
             let cancellation = self.mark_cancelled(&transaction, &mut task, source, from, now)?;

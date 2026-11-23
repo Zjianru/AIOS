@@ -6,6 +6,7 @@
 use chrono::{Local, TimeZone};
 
 /// 本机时区名：优先 TZ，其次 /etc/localtime 的 zoneinfo 路径，最后用当前偏移。
+#[cfg(test)]
 pub(crate) fn timezone_name() -> String {
     if let Ok(tz) = std::env::var("TZ")
         && !tz.trim().is_empty()
@@ -33,6 +34,7 @@ pub(crate) fn local_clock(ms: i64) -> String {
 }
 
 /// 每轮末尾的纯文本：现在：2026-11-23 13:30（Asia/Shanghai）。
+#[cfg(test)]
 pub(crate) fn now_line(now_ms: i64) -> String {
     format!("现在：{}（{}）", local_clock(now_ms), timezone_name())
 }

@@ -9,13 +9,14 @@ use tasks::{TaskError, TaskId};
 use super::{ActionEnv, ActionFuture, ActionKind, ActionOutcome, CardFact};
 use crate::root_lifecycle::RootHost;
 
+/// 和 web/src/pages/work/workModel.ts 的 STAGE_LABEL 同一张表；G1 共用夹具两边断言。
 fn stage_zh(stage: tasks::Stage) -> &'static str {
     match stage {
-        tasks::Stage::NeedsConditions => "缺条件",
-        tasks::Stage::Pending => "排队中",
-        tasks::Stage::Running => "在做",
-        tasks::Stage::ReadyForReview => "等你核",
-        tasks::Stage::RequirementMet => "已判",
+        tasks::Stage::NeedsConditions => "待补足条件",
+        tasks::Stage::Pending => "待执行",
+        tasks::Stage::Running => "执行中",
+        tasks::Stage::ReadyForReview => "待检查",
+        tasks::Stage::RequirementMet => "任务要求已满足",
         tasks::Stage::Closed => "已关闭",
     }
 }
@@ -305,5 +306,26 @@ mod tests {
         assert_eq!(mixed.len(), 3);
         assert!(mixed[1].value.contains("已关闭"));
         assert!(mixed[2].value.contains("已取消"));
+    }
+
+    #[test]
+    fn stage_labels_match_the_shared_web_fixture() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../web/src/pages/work/work-grouping.fixture.json"
+        ))
+        .unwrap();
+        let labels = fixture["stageLabels"].as_object().unwrap();
+        for (key, label) in labels {
+            let stage = match key.as_str() {
+                "needs_conditions" => tasks::Stage::NeedsConditions,
+                "pending" => tasks::Stage::Pending,
+                "running" => tasks::Stage::Running,
+                "ready_for_review" => tasks::Stage::ReadyForReview,
+                "requirement_met" => tasks::Stage::RequirementMet,
+                "closed" => tasks::Stage::Closed,
+                other => panic!("夹具里有未知阶段：{other}"),
+            };
+            assert_eq!(stage_zh(stage), label.as_str().unwrap(), "阶段 {key}");
+        }
     }
 }

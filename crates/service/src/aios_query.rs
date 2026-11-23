@@ -426,9 +426,13 @@ fn project_work(response: &WorkResponse, now_ms: i64) -> Value {
         .iter()
         .filter_map(|item| item.task_id.as_deref())
         .collect();
+    let by_id: std::collections::HashMap<&str, &TaskFact> = response
+        .tasks
+        .iter()
+        .map(|task| (task.id.as_str(), task))
+        .collect();
     let mut problems = Vec::new();
     let mut advancing = Vec::new();
-    let mut queue = Vec::new();
     let week_start = week_start_ms(now_ms);
     for task in &response.tasks {
         // G1：分组逐条照 web workModel.ts 的 columnOf / problemsOf / advancingOf。
@@ -436,8 +440,6 @@ fn project_work(response: &WorkResponse, now_ms: i64) -> Value {
             "queue" => {
                 if task.stage == "needs_conditions" && !task.after_waiting {
                     problems.push(project_task(task, "problems"));
-                } else {
-                    queue.push(project_task(task, "queue"));
                 }
             }
             "doing" => advancing.push(project_task(task, "advancing")),
@@ -468,13 +470,21 @@ fn project_work(response: &WorkResponse, now_ms: i64) -> Value {
         }
         Value::Object(groups)
     };
+    // J3：queue 就是 columns.queue，个数取列表长度；出了问题但仍在队列里的任务两边都在。
+    let queue: Vec<Value> = task_columns["queue"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter_map(|id| by_id.get(id).map(|task| project_task(task, "queue")))
+        .collect();
     json!({
         "generatedAt": response.generated_at,
         "counts": {
             "wait": response.wait.len(),
             "problems": problems.len(),
             "advancing": advancing.len(),
-            "queue": task_columns["queue"].as_array().map_or(0, Vec::len),
+            "queue": queue.len(),
             "doneThisWeek": done.len(),
         },
         "wait": response.wait.iter().map(project_wait).collect::<Vec<_>>(),
@@ -712,6 +722,22 @@ mod tests {
                 "组 {key} 与页面夹具不一致"
             );
         }
+        let problems: Vec<&str> = fixture["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|task| {
+                task["stage"].as_str() == Some("needs_conditions")
+                    && task["afterWaiting"].as_bool() != Some(true)
+                    && !wait_ids.contains(task["id"].as_str().unwrap())
+            })
+            .map(|task| task["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            json!(problems),
+            fixture["problems"],
+            "出了问题的任务两边都在"
+        );
         let now = fixture["now"].as_i64().unwrap();
         let week_start = week_start_ms(now);
         let done: Vec<&str> = fixture["tasks"]
@@ -808,5 +834,47 @@ mod tests {
         assert!(text.contains("任务甲"));
         assert!(text.contains("原因原文"));
         assert!(text.contains("actionOwner"));
+    }
+
+    fn task_fact(id: &str, stage: &str, after_waiting: bool) -> TaskFact {
+        serde_json::from_value(json!({
+            "id": id,
+            "title": id,
+            "stage": stage,
+            "version": 1,
+            "attempts": 0,
+            "createdAt": 1_699_000_000_000_i64,
+            "running": false,
+            "gate": false,
+            "after": [],
+            "afterWaiting": after_waiting,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn projection_queue_is_the_column_including_problem_tasks() {
+        let response = WorkResponse {
+            generated_at: 1_700_000_000_000,
+            tasks: vec![
+                task_fact("problem-1", "needs_conditions", false),
+                task_fact("queue-1", "pending", false),
+            ],
+            wait: Vec::new(),
+            graphs: Vec::new(),
+        };
+        let projected = project_work(&response, response.generated_at);
+        let ids = |key: &str| -> Vec<String> {
+            projected[key]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|item| item["id"].as_str().map(str::to_owned))
+                .collect()
+        };
+        assert_eq!(ids("problems"), vec!["problem-1"]);
+        assert_eq!(ids("queue"), vec!["problem-1", "queue-1"]);
+        assert_eq!(projected["counts"]["queue"], 2);
+        assert_eq!(projected["columns"]["queue"].as_array().unwrap().len(), 2);
     }
 }

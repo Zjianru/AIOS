@@ -45,6 +45,7 @@ async fn old_session_gets_changed_fixed_block_at_tail_then_stays() {
     let mut config = isolated_config(data.path());
     config.fixed_block = Some(agent::FixedBlock {
         text: "页面清单甲：现在、Kind、工作".to_owned(),
+        now_message: false,
     });
     let second = Agent::resume(id.clone(), config, deps()).await.unwrap();
     second
@@ -57,6 +58,7 @@ async fn old_session_gets_changed_fixed_block_at_tail_then_stays() {
     let mut config = isolated_config(data.path());
     config.fixed_block = Some(agent::FixedBlock {
         text: "页面清单乙：现在、Kind、工作、监控".to_owned(),
+        now_message: false,
     });
     let third = Agent::resume(id.clone(), config, deps()).await.unwrap();
     third
@@ -139,4 +141,52 @@ async fn old_session_gets_a_new_bundled_skill_directory_at_tail() {
         body.contains("new-guide"),
         "新进 skill 目录要在下一轮请求末尾"
     );
+}
+
+#[tokio::test]
+async fn now_message_follows_this_turns_user_message_in_the_model_request() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(SequenceResponder::new(vec![sse(FINAL_TEXT_SSE.to_owned())]))
+        .mount(&server)
+        .await;
+    let data = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let store = SessionStore::create(data.path(), project.path()).unwrap();
+    let id = store.id().clone();
+    drop(store);
+    let mut config = isolated_config(data.path());
+    config.fixed_block = Some(agent::FixedBlock {
+        text: "页面清单甲".to_owned(),
+        now_message: true,
+    });
+    let agent = Agent::create(
+        config,
+        Deps {
+            model: model::DeepSeek::with_credentials(
+                model_config(&server.uri()),
+                test_credential(),
+            )
+            .unwrap(),
+            tools: tools::ToolSet::builtin(),
+            store: SessionStore::open(data.path(), &id).unwrap(),
+        },
+    )
+    .await
+    .unwrap();
+    agent
+        .send(UserMessage::text("第一句"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    agent.idle().await;
+
+    let requests = server.received_requests().await.unwrap();
+    let body = String::from_utf8(requests[0].body.clone()).unwrap();
+    let user_at = body.find("第一句").expect("请求里要有用户消息");
+    let now_at = body.find("现在：").expect("请求里要有本轮的现在");
+    assert!(now_at > user_at, "现在要在用户消息之后：{body}");
+    assert_eq!(body.matches("现在：").count(), 1, "一轮只补一次");
+    let year = chrono::Local::now().format("%Y").to_string();
+    assert!(body[now_at..].contains(&year), "现在是当轮时间：{body}");
 }

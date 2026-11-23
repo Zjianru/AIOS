@@ -203,7 +203,7 @@ const KIND_POLICY: &str = concat!(
 /// T077.2：Kind 固定块里的页面清单；只列 web/src 真能打开的页，每页一句。
 pub(crate) const PAGE_LIST: &str = concat!(
     "AIOS 页面清单（用户按屏幕说话时先叫对名字，页面上的事实用 aios_query 的 work 主题读）：\n",
-    "- 现在：四组——等你决定、出了问题、在推进、排队，点项进对应任务或卡片。\n",
+    "- 现在：四组——等你决定、出了问题、在推进、本周完成，点项进对应任务或卡片。\n",
     "- Kind：和 Kind 的对话、输入框、结果卡和确认卡；任务报回也落在这里。\n",
     "- 工作：看板（排队 / 在做 / 等你 / 完成）、任务图、日历三个视图。\n",
     "- 任务：一个任务的要求、进展、Attempt、上下文和轨迹。\n",
@@ -321,6 +321,7 @@ pub async fn open_root_session_with(
     config.project_instructions_path_only = true;
     config.fixed_block = Some(agent::FixedBlock {
         text: PAGE_LIST.to_owned(),
+        now_message: true,
     });
     // Kind 根会话：记忆注入 + 压缩前日记 + 记忆工具；库打不开不挡根会话，但产品路径要接上。
     let memory = match memory {
