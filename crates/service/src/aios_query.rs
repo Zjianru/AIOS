@@ -474,7 +474,7 @@ fn project_work(response: &WorkResponse, now_ms: i64) -> Value {
             "wait": response.wait.len(),
             "problems": problems.len(),
             "advancing": advancing.len(),
-            "queue": queue.len(),
+            "queue": task_columns["queue"].as_array().map_or(0, Vec::len),
             "doneThisWeek": done.len(),
         },
         "wait": response.wait.iter().map(project_wait).collect::<Vec<_>>(),
