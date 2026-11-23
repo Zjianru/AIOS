@@ -1,17 +1,21 @@
 {
-  "waitTaskIds": ["wait-1"],
+  "waitTaskIds": ["wait-1", "in-run-wait"],
+  "now": 1700000000000,
   "tasks": [
-    { "id": "closed-1", "stage": "closed", "gate": false },
+    { "id": "closed-1", "stage": "closed", "gate": false, "closedAt": 1699996400000 },
+    { "id": "cancelled-1", "stage": "closed", "gate": false, "closedAt": 1699996400000, "cancelledAt": 1699996400000 },
     { "id": "wait-1", "stage": "ready_for_review", "gate": false },
+    { "id": "in-run-wait", "stage": "running", "gate": false },
     { "id": "queue-1", "stage": "pending", "gate": false },
     { "id": "doing-1", "stage": "running", "gate": false },
     { "id": "gate-done", "stage": "requirement_met", "gate": true },
     { "id": "gate-wait", "stage": "requirement_met", "gate": false }
   ],
   "groups": {
-    "done": ["closed-1"],
-    "wait": ["wait-1", "gate-wait"],
+    "done": ["closed-1", "cancelled-1"],
+    "wait": ["wait-1", "in-run-wait", "gate-wait"],
     "queue": ["queue-1"],
     "doing": ["doing-1", "gate-done"]
-  }
+  },
+  "doneThisWeek": ["closed-1"]
 }

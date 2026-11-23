@@ -83,6 +83,9 @@ pub enum Call {
     SessionModelSelect(SessionModelSelectRequest),
     /// 确认卡上的按钮：确认某一项，或者暂不。
     CardAct(CardActRequest),
+    /// T077.5：任务页菜单直接走登记动作：先读事实，再执行。
+    ActionDescribe(crate::protocol::ActionDescribeRequest),
+    ActionAct(crate::protocol::ActionActRequest),
     /// 查询连接余额/套餐余量。
     ConnectionQuota(ConnectionQuotaRequest),
     /// 设置页「联网搜索」：读 Exa 凭证（不含 key 正文）。
@@ -173,6 +176,8 @@ pub enum Response {
     SessionModelSelect(SessionModelSelectResponse),
     /// 确认卡动作的受理结果（已经有决定时原样返回那条决定）。
     CardAct(CardActResponse),
+    ActionDescribe(crate::protocol::ActionDescribeResponse),
+    ActionAct(crate::protocol::ActionActResponse),
     /// 附件仓库。
     AttachmentPut(AttachmentPutResponse),
     AttachmentGet(AttachmentGetResponse),
@@ -607,6 +612,13 @@ pub struct TaskReadHeader {
     /// 创建任务时冻结的 bash 开关；旧任务行按 false 读。
     #[serde(default)]
     pub bash: bool,
+    /// T077：任务取消时间；None = 没取消。
+    #[serde(
+        default,
+        rename = "cancelledAt",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub cancelled_at: Option<i64>,
     /// 创建任务时冻结的模型（只给显示名，切换模型不影响它）。
     pub model: String,
     pub tools: Vec<String>,
@@ -1599,6 +1611,41 @@ pub struct MemoryActionResponse {
     pub message: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionDescribeRequest {
+    pub action: String,
+    pub details: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionFact {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionDescribeResponse {
+    pub action: String,
+    pub facts: Vec<ActionFact>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionActRequest {
+    pub action: String,
+    pub details: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionActResponse {
+    pub summary: String,
+    pub data: serde_json::Value,
+}
+
 /// 服务协议版本：只增不改的对外面每次扩展都记在这里，Web ready 帧里带上。
 ///
 /// - 4：第一版；
@@ -1630,7 +1677,7 @@ pub struct MemoryActionResponse {
 ///
 /// 连接上的旧价格乘数后来整条删掉，不升版本：两个请求里的这个字段本来就可省略，旧页再发
 /// 由 serde 当未知字段忽略；响应里少了它，旧页读到 undefined 也不会拿去定价。
-pub const PROTOCOL_VERSION: u64 = 24;
+pub const PROTOCOL_VERSION: u64 = 25;
 
 /// 日历读取：不带 appointmentId 读全部；带 week 时额外给那周的计划点。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]

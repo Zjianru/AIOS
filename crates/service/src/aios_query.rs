@@ -330,6 +330,11 @@ fn task_reason(task: &TaskFact) -> String {
 
 fn project_task(task: &TaskFact, group: &str) -> Value {
     let (action, owner) = task_action(task, group);
+    let cancel = if task.cancelled_at.is_none() && task.stage != "closed" {
+        json!("取消（Kind 出卡）")
+    } else {
+        Value::Null
+    };
     json!({
         "id": task.id,
         "title": task.title,
@@ -338,6 +343,7 @@ fn project_task(task: &TaskFact, group: &str) -> Value {
         "also": [],
         "action": action,
         "actionOwner": owner,
+        "cancel": cancel,
     })
 }
 
@@ -358,6 +364,7 @@ fn project_wait(item: &WaitItem) -> Value {
         "also": item.also,
         "action": action,
         "actionOwner": owner,
+        "cancel": "取消（Kind 出卡）",
     })
 }
 
@@ -400,6 +407,19 @@ fn column_of(
     "wait"
 }
 
+fn done_this_week(
+    stage: &str,
+    gate: bool,
+    cancelled_at: Option<i64>,
+    closed_at: Option<i64>,
+    week_start: i64,
+) -> bool {
+    stage == "closed"
+        && !gate
+        && cancelled_at.is_none()
+        && closed_at.is_some_and(|at| at >= week_start)
+}
+
 fn project_work(response: &WorkResponse, now_ms: i64) -> Value {
     let wait_ids: std::collections::HashSet<&str> = response
         .wait
@@ -411,27 +431,30 @@ fn project_work(response: &WorkResponse, now_ms: i64) -> Value {
     let mut queue = Vec::new();
     let week_start = week_start_ms(now_ms);
     for task in &response.tasks {
-        if task.stage == "closed" {
-            continue;
-        }
-        if task.stage == "needs_conditions"
-            && !task.after_waiting
-            && !wait_ids.contains(task.id.as_str())
-        {
-            problems.push(project_task(task, "problems"));
-        } else if task.stage == "running" || task.stage == "ready_for_review" {
-            advancing.push(project_task(task, "advancing"));
-        } else if task.stage == "needs_conditions" || task.stage == "pending" {
-            queue.push(project_task(task, "queue"));
+        // G1：分组逐条照 web workModel.ts 的 columnOf / problemsOf / advancingOf。
+        match column_of(task.id.as_str(), &task.stage, task.gate, &wait_ids) {
+            "queue" => {
+                if task.stage == "needs_conditions" && !task.after_waiting {
+                    problems.push(project_task(task, "problems"));
+                } else {
+                    queue.push(project_task(task, "queue"));
+                }
+            }
+            "doing" => advancing.push(project_task(task, "advancing")),
+            _ => {}
         }
     }
     let done: Vec<&TaskFact> = response
         .tasks
         .iter()
         .filter(|task| {
-            task.stage == "closed"
-                && !task.gate
-                && task.closed_at.is_some_and(|at| at >= week_start)
+            done_this_week(
+                &task.stage,
+                task.gate,
+                task.cancelled_at,
+                task.closed_at,
+                week_start,
+            )
         })
         .collect();
     let task_columns = {
@@ -687,6 +710,28 @@ mod tests {
                 "组 {key} 与页面夹具不一致"
             );
         }
+        let now = fixture["now"].as_i64().unwrap();
+        let week_start = week_start_ms(now);
+        let done: Vec<&str> = fixture["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|task| {
+                done_this_week(
+                    task["stage"].as_str().unwrap(),
+                    task["gate"].as_bool().unwrap(),
+                    task["cancelledAt"].as_i64(),
+                    task["closedAt"].as_i64(),
+                    week_start,
+                )
+            })
+            .map(|task| task["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            json!(done),
+            fixture["doneThisWeek"],
+            "本周完成与页面夹具不一致"
+        );
     }
 
     #[test]
@@ -755,7 +800,7 @@ mod tests {
         assert_eq!(projected["counts"]["wait"], 2);
         assert_eq!(projected["wait"].as_array().unwrap().len(), 2);
         let text = projected.to_string();
-        assert!(!text.contains("cancel"));
+        assert!(!text.contains("edges"));
         assert!(!text.contains("edges"));
         assert!(!text.contains("payload"));
         assert!(text.contains("任务甲"));

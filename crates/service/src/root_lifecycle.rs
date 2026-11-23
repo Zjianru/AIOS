@@ -912,3 +912,72 @@ impl RootHost {
         Ok(crate::protocol::CalendarActionResponse { appointment })
     }
 }
+
+impl RootHost {
+    /// T077.5：任务页菜单读登记动作的事实（和 Kind 确认卡共用同一份 describe）。
+    pub(crate) async fn action_describe(
+        &self,
+        request: crate::protocol::ActionDescribeRequest,
+    ) -> Result<crate::protocol::ActionDescribeResponse, crate::error::ServiceError> {
+        let kind = self.options.actions.get(&request.action).ok_or_else(|| {
+            crate::error::ServiceError::TaskUnavailable(format!(
+                "没有登记这个动作：{}",
+                request.action
+            ))
+        })?;
+        let details = kind
+            .details(&request.details)
+            .map_err(crate::error::ServiceError::TaskUnavailable)?;
+        let events = self.root_session_events().await;
+        let env = crate::actions::ActionEnv {
+            data_dir: &self.options.data_dir,
+            identity: self.options.identity.as_deref(),
+            events: &events,
+        };
+        let facts = kind
+            .describe(&details, &env)
+            .map_err(crate::error::ServiceError::TaskUnavailable)?
+            .into_iter()
+            .map(|fact| crate::protocol::ActionFact {
+                name: fact.name,
+                value: fact.value,
+            })
+            .collect();
+        Ok(crate::protocol::ActionDescribeResponse {
+            action: request.action,
+            facts,
+        })
+    }
+
+    /// T077.5：任务页菜单确认后执行同一个登记动作。
+    pub(crate) async fn action_act(
+        &self,
+        request: crate::protocol::ActionActRequest,
+    ) -> Result<crate::protocol::ActionActResponse, crate::error::ServiceError> {
+        let kind = self.options.actions.get(&request.action).ok_or_else(|| {
+            crate::error::ServiceError::TaskUnavailable(format!(
+                "没有登记这个动作：{}",
+                request.action
+            ))
+        })?;
+        let details = kind
+            .details(&request.details)
+            .map_err(crate::error::ServiceError::TaskUnavailable)?;
+        let outcome = kind
+            .act(&details, self)
+            .await
+            .map_err(crate::error::ServiceError::TaskUnavailable)?;
+        Ok(crate::protocol::ActionActResponse {
+            summary: outcome.summary,
+            data: outcome.data,
+        })
+    }
+
+    async fn root_session_events(&self) -> Vec<session::Event> {
+        let guard = self.inner.lock().await;
+        guard
+            .as_ref()
+            .map(|host| host.agent().session_events_from(0))
+            .unwrap_or_default()
+    }
+}

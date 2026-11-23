@@ -1038,6 +1038,7 @@ impl TaskRuntime {
                 cwd: task.cwd.to_string_lossy().into_owned(),
                 write_scope: crate::result_cards::write_scope_display(&task),
                 bash: task.bash,
+                cancelled_at: task.cancelled.as_ref().map(|cancelled| cancelled.at),
                 model: task.model.model.clone(),
                 tools: task.tools.clone(),
                 attempts: task.runs.iter().map(|run| run.attempts.len() as u64).sum(),
@@ -3804,6 +3805,24 @@ impl TaskRuntime {
             interrupted: true,
             message: "已停下这一轮".to_owned(),
         })
+    }
+
+    /// T077.5：任务页/Kind 卡共用；沿用运行时的任务库与变化通知。
+    pub(crate) fn cancel_with_downstream(
+        &self,
+        task_id: &TaskId,
+        source: tasks::CancellationSource,
+        from: Option<TaskId>,
+        now: i64,
+    ) -> Result<Vec<tasks::TaskCancellation>, tasks::TaskError> {
+        let result = self
+            .store
+            .cancel_with_downstream(task_id, source, from, now);
+        if result.is_ok() {
+            self.notify_changed(task_id);
+            self.wake();
+        }
+        result
     }
 
     pub(crate) async fn stop_task(

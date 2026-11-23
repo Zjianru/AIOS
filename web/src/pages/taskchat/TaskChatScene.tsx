@@ -15,7 +15,7 @@ import { toast } from 'sonner';
 import { go } from '@/app/navigate';
 import { useRouteStore } from '@/app/routeStore';
 import { useTaskChromeStore } from '@/app/taskChrome';
-import { connectTaskSession, displayPath, taskDelivery, taskInterrupt, taskRead, taskSay, taskStop } from '@/data/service';
+import { actionAct, actionDescribe, connectTaskSession, displayPath, taskDelivery, taskInterrupt, taskRead, taskSay, taskStop } from '@/data/service';
 import type { Frame, SendAttachmentRef, ServiceEvent } from '@/data/service';
 import type { DeliveryRecord } from '@/data/generated/DeliveryRecord';
 import type { TaskReadHeader } from '@/data/generated/TaskReadHeader';
@@ -478,6 +478,7 @@ export function TaskChatScene() {
               report: response.task.report,
               review: response.task.review,
               accepted: response.task.accepted,
+              cancelledAt: response.task.cancelledAt,
             }
           : response.task,
       );
@@ -524,6 +525,24 @@ export function TaskChatScene() {
       await refreshHeader();
     } catch (error) {
       toast('收尾停没插进去', { description: reasonOf(error) });
+    }
+  }
+
+  async function cancelTask() {
+    try {
+      const details = { task_ids: [taskId] };
+      const described = (await actionDescribe('cancel_tasks', details)) as unknown as {
+        facts: { name: string; value: string }[];
+      };
+      const lines = described.facts.map((fact) => fact.name + '：' + fact.value).join('\n');
+      if (!window.confirm('要取消这些任务吗？\n\n' + lines)) return;
+      const outcome = (await actionAct('cancel_tasks', details)) as unknown as {
+        summary: string;
+      };
+      toast('取消完成', { description: outcome.summary });
+      await refreshHeader();
+    } catch (error) {
+      toast('没取消', { description: reasonOf(error) });
     }
   }
 
@@ -677,8 +696,10 @@ export function TaskChatScene() {
               running={task.running || task.backgroundRunning}
               winding={winding}
               program={program !== null}
+              cancelled={Boolean(task.cancelledAt)}
               onStopNow={() => void stopNow()}
               onStopAfterReport={() => void stopAfterReport()}
+              onCancel={() => void cancelTask()}
             />
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-2 text-ink-3">
@@ -862,7 +883,15 @@ export function TaskChatScene() {
       </div>
       )}
 
-      {program ? (
+      {task.cancelledAt ? (
+        <div className="shrink-0 border-t border-line px-6 py-3">
+          <div className="mx-auto w-full max-w-[680px]">
+            <p className="text-2 text-ink-3" data-kind="task-cancelled-input">
+              这个任务已经取消了；要再做，让 Kind 新派一个。
+            </p>
+          </div>
+        </div>
+      ) : program ? (
         <div className="shrink-0 border-t border-line px-6 py-3">
           <div className="mx-auto w-full max-w-[680px]">
             <p className="text-2 text-ink-3" data-kind="task-footer">

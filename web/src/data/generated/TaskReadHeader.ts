@@ -13,6 +13,10 @@ writeScope?: string | null,
  */
 bash: boolean,
 /**
+ * T077：任务取消时间；None = 没取消。
+ */
+cancelledAt?: number | null,
+/**
  * 创建任务时冻结的模型（只给显示名，切换模型不影响它）。
  */
 model: string, tools: Array<string>, attempts: number,

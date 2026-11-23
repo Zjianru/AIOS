@@ -1087,6 +1087,49 @@ impl Store {
         Ok(cancelled)
     }
 
+    /// T077.5：只读预览取消范围（目标 + 未关闭下游 + 把关这些任务的门），不写库。
+    pub fn cancel_scope(&self, id: &TaskId) -> Result<Vec<Task>, TaskError> {
+        let conn = self.lock()?;
+        let all = load_all_tasks(&conn)?;
+        let by_id: HashMap<&str, &Task> = all.iter().map(|task| (task.id.as_str(), task)).collect();
+        let target = by_id
+            .get(id.as_str())
+            .ok_or_else(|| TaskError::TaskNotFound(id.to_string()))?;
+        if target.cancelled.is_none() && stage_with_graph(&conn, target)? == Stage::Closed {
+            return Err(TaskError::AlreadyClosed);
+        }
+        let mut order: Vec<TaskId> = vec![id.clone()];
+        let mut seen: HashSet<String> = HashSet::from([id.as_str().to_owned()]);
+        let mut index = 0;
+        while index < order.len() {
+            let current = order[index].clone();
+            index += 1;
+            for candidate in &all {
+                if seen.contains(candidate.id.as_str()) || candidate.cancelled.is_some() {
+                    continue;
+                }
+                if !(candidate.needs.iter().any(|need| need.from == current)
+                    || candidate.is_gate()
+                        && candidate
+                            .needs
+                            .first()
+                            .is_some_and(|need| need.from == current))
+                {
+                    continue;
+                }
+                if stage_with_graph(&conn, candidate).ok() == Some(Stage::Closed) {
+                    continue;
+                }
+                seen.insert(candidate.id.as_str().to_owned());
+                order.push(candidate.id.clone());
+            }
+        }
+        Ok(order
+            .into_iter()
+            .filter_map(|task_id| by_id.get(task_id.as_str()).map(|task| (*task).clone()))
+            .collect())
+    }
+
     /// T077.4：沿 needs 递归取消还没关闭的下游，顺手取消把关这些任务的里程碑/程序门。
     /// 目标、下游、门各排一条 cancel 效果；总任务不单独记，阶段仍由子任务派生。
     pub fn cancel_with_downstream(

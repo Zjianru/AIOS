@@ -8,14 +8,18 @@ export function TaskMenu({
   running,
   winding,
   program,
+  cancelled,
   onStopNow,
   onStopAfterReport,
+  onCancel,
 }: {
   running: boolean;
   winding: boolean;
   program: boolean;
+  cancelled: boolean;
   onStopNow: () => void;
   onStopAfterReport: () => void;
+  onCancel: () => void;
 }) {
   return (
     <DropdownMenu>
@@ -49,6 +53,17 @@ export function TaskMenu({
         </DropdownMenuItem>
         )}
         {running ? null : <div className="px-2 py-1.5 text-1 text-ink-3">现在没在跑。</div>}
+        <DropdownMenuItem
+          disabled={cancelled}
+          onSelect={onCancel}
+          className="flex-col items-start gap-0"
+          data-kind="task-cancel"
+        >
+          <span>取消任务</span>
+          <span className="text-1 text-ink-3">
+            {cancelled ? '这个任务已经取消了' : '关闭这项和还没关闭的下游；已关闭的不会连带'}
+          </span>
+        </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );

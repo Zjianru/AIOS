@@ -55,3 +55,26 @@ test('任务对话顶栏显示任务标题、可点回 Kind，不出现 task id'
     await fixture.close();
   }
 });
+
+test('任务菜单取消任务：看事实确认，取消后输入框灰、菜单已关闭项灰', async ({ page }) => {
+  test.setTimeout(120_000);
+  const fixture = await startKernelFixture({ t030: 'write' });
+  try {
+    await page.goto(urlOf(fixture));
+    await page.getByPlaceholder('和 Kind 说…').fill('把 hello.txt 的判重改成按 url');
+    await page.getByRole('button', { name: '发送', exact: true }).click();
+    const taskId = await taskIdOf(fixture);
+    await page.goto(urlOf(fixture, '#taskchat:' + taskId));
+    await expect(page.locator('[data-pane="task-conversation"]')).toBeVisible({ timeout: 30_000 });
+    await page.locator('[data-kind="task-menu"]').click();
+    page.once('dialog', (dialog) => void dialog.accept());
+    await page.locator('[data-kind="task-cancel"]').click();
+    await page.waitForTimeout(2000);
+    const footer = page.locator('[data-kind="task-cancelled-input"]');
+    await expect(footer).toBeVisible({ timeout: 30_000 });
+    await expect(footer).toContainText('这个任务已经取消了；要再做，让 Kind 新派一个。');
+    await expect(page.locator('[data-pane="task-conversation"]')).not.toContainText('和 ThinAgent 说');
+  } finally {
+    await fixture.close();
+  }
+});

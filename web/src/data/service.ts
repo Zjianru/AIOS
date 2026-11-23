@@ -601,3 +601,22 @@ export async function calendarAction(
 ): Promise<CalendarActionResponse> {
   return post({ method: 'calendar-action', appointmentId, action });
 }
+
+// T077.5：任务页菜单走登记动作，读事实后确认执行。
+import type { ActionDescribeRequest } from './generated/ActionDescribeRequest';
+import type { ActionDescribeResponse } from './generated/ActionDescribeResponse';
+import type { ActionActResponse } from './generated/ActionActResponse';
+
+export async function actionDescribe(
+  action: string,
+  details: ActionDescribeRequest['details'],
+): Promise<ActionDescribeResponse> {
+  return (await post({ method: 'action-describe', action, details } as never)) as unknown as ActionDescribeResponse;
+}
+
+export async function actionAct(
+  action: string,
+  details: ActionDescribeRequest['details'],
+): Promise<ActionActResponse> {
+  return (await post({ method: 'action-act', action, details } as never)) as unknown as ActionActResponse;
+}

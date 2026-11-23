@@ -885,7 +885,7 @@ mod guide_tests {
     use super::*;
 
     #[test]
-    fn aios_guide_is_bundled_and_does_not_mention_cancellation() {
+    fn aios_guide_is_bundled_and_teaches_the_cancel_card() {
         let guide = bundled_skills()
             .iter()
             .find(|skill| skill.name == "aios-guide")
@@ -893,10 +893,12 @@ mod guide_tests {
         assert_eq!(guide.tools, ["aios_query"]);
         let parsed = parse_skill(guide.raw).expect("frontmatter 合法");
         assert_eq!(parsed.name, "aios-guide");
+        assert!(parsed.body.contains("取消任务"), "T077.5 要教取消卡");
         assert!(
-            !guide.raw.contains("取消"),
-            "取消跟着 .5 上，.2 的说明书不能写"
+            parsed.body.contains("cancel_tasks"),
+            "取消要走登记的 cancel_tasks"
         );
+        assert!(parsed.body.contains("不要扩 task_stop"), "不能扩 task_stop");
         for page in ["现在", "Kind", "工作", "任务", "监控", "记忆", "设置"] {
             assert!(parsed.body.contains(page), "说明书漏页 {page}");
         }
