@@ -1,7 +1,5 @@
 //! T078.1：成功的 kind_say 这一轮直接结束，不再调模型。
 
-use std::sync::Arc;
-
 use agent::{Agent, Delivery, Deps};
 use model::UserMessage;
 use serde_json::Value;
