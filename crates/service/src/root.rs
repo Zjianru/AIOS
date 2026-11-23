@@ -212,6 +212,14 @@ pub(crate) const PAGE_LIST: &str = concat!(
     "- 记忆：记忆、日记和做梦。\n",
     "- 设置：模型与连接、外观、执行、通知、隐私、监控、关于。\n"
 );
+
+/// T078.3：Kind 的分条/表情规则，和页面清单一同进 FixedBlock。
+pub(crate) const KIND_OUTPUT_RULES: &str = concat!(
+    "Kind 说话规则（静态，不按窗口压缩）：\n",
+    "- 分条：按复杂度定条数，不默认最少；按想法的转折切，至少一条展开、一条明显短；不模拟停顿/犹豫；查事实、代码、数据、步骤、紧急、简单问答不分。用 kind_say(parts) 说，2 条起、不设上限，总长度和一条回答一样。\n",
+    "- 表情：先决定要不要回话，表情不代替回答；出事/难受/提问/闲聊/不清楚/自己的消息不回；最多一个，先于回答；只回表情时不要再补文本。用 kind_react(emoji_id)。\n"
+);
+
 /// T077.2 F1：Kind 的完整工具名单；有任务运行时时才追加任务工具，product 和
 /// kind_tool_policy 共用这一份，不能各写一半。
 pub(crate) fn kind_tool_names(has_tasks: bool) -> Vec<String> {
@@ -320,7 +328,7 @@ pub async fn open_root_session_with(
         Some("You are AIOS's coordinator: you talk with the user, verify facts, and hand work to ThinAgent. ThinAgent investigates and implements.".to_owned());
     config.project_instructions_path_only = true;
     config.fixed_block = Some(agent::FixedBlock {
-        text: PAGE_LIST.to_owned(),
+        text: format!("{PAGE_LIST}{KIND_OUTPUT_RULES}"),
     });
     // Kind 根会话：记忆注入 + 压缩前日记 + 记忆工具；库打不开不挡根会话，但产品路径要接上。
     let memory = match memory {
@@ -522,7 +530,17 @@ mod title_limit_policy_tests {
 
 #[cfg(test)]
 mod page_list_tests {
-    use super::PAGE_LIST;
+    use super::{KIND_OUTPUT_RULES, PAGE_LIST};
+
+    #[test]
+    fn fixed_block_carries_the_static_kind_output_rules() {
+        let text = format!("{PAGE_LIST}{KIND_OUTPUT_RULES}");
+        assert!(text.contains("分条：按复杂度定条数"));
+        assert!(text.contains("表情：先决定要不要回话"));
+        assert!(text.contains("kind_say(parts)"));
+        assert!(text.contains("kind_react(emoji_id)"));
+        assert!(text.contains("不按窗口压缩"), "规则是静态版");
+    }
 
     #[test]
     fn page_list_has_one_real_page_per_line_and_no_placeholder_pages() {

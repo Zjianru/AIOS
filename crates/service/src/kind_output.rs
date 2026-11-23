@@ -87,19 +87,23 @@ impl Tool for KindReactTool {
                 );
             }
             let turn = context.turn();
-            let user_message_seq = context
-                .session_events()
-                .iter()
-                .rev()
-                .find_map(|event| match &event.kind {
-                    session::EventKind::UserMessage { turn: event_turn, message, .. }
-                        if *event_turn == turn
+            let user_message_seq =
+                context
+                    .session_events()
+                    .iter()
+                    .rev()
+                    .find_map(|event| match &event.kind {
+                        session::EventKind::UserMessage {
+                            turn: event_turn,
+                            message,
+                            ..
+                        } if *event_turn == turn
                             && !crate::program_messages::is_program_message(message) =>
-                    {
-                        Some(event.seq)
-                    }
-                    _ => None,
-                });
+                        {
+                            Some(event.seq)
+                        }
+                        _ => None,
+                    });
             let Some(user_message_seq) = user_message_seq else {
                 return ToolResult::error(
                     call.id,
@@ -262,10 +266,7 @@ mod tests {
         assert!(!ok.is_error);
         assert_eq!(ok.meta.unwrap()["kind_react"]["emoji_id"], "+1");
         let bad = tool
-            .execute(
-                call("2", "kind_react", r#"{"emoji_id":"smile"}"#),
-                &ctx,
-            )
+            .execute(call("2", "kind_react", r#"{"emoji_id":"smile"}"#), &ctx)
             .await;
         assert!(bad.is_error);
     }
