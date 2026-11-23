@@ -227,6 +227,10 @@ fn cascade_cancels_downstream_recursively_and_their_gates_but_not_the_root_fact(
         .cancel_with_downstream(&first.id, CancellationSource::User, None, T0 + 10)
         .unwrap();
     assert_eq!(cancelled.len(), 4, "目标+乙+丙+门");
+    let cancelled_ids: Vec<&str> = cancelled.iter().map(|(id, _)| id.as_str()).collect();
+    for expected in [&first.id, &second.id, &third.id, &gate.id] {
+        assert!(cancelled_ids.contains(&expected.as_str()));
+    }
     for task in [&first, &second, &third, &gate] {
         let stored = store.task(&task.id).unwrap().unwrap();
         assert!(stored.cancelled.is_some(), "{} 应被连带取消", task.title);

@@ -1138,7 +1138,7 @@ impl Store {
         source: CancellationSource,
         from: Option<TaskId>,
         now: i64,
-    ) -> Result<Vec<TaskCancellation>, TaskError> {
+    ) -> Result<Vec<(TaskId, TaskCancellation)>, TaskError> {
         let mut conn = self.lock()?;
         let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let all = load_all_tasks(&transaction)?;
@@ -1200,7 +1200,8 @@ impl Store {
             if task_id != *id && stage_with_graph(&transaction, &task).ok() == Some(Stage::Closed) {
                 continue;
             }
-            cancellations.push(self.mark_cancelled(&transaction, &mut task, source, from, now)?);
+            let cancellation = self.mark_cancelled(&transaction, &mut task, source, from, now)?;
+            cancellations.push((task.id.clone(), cancellation));
         }
         transaction.commit()?;
         Ok(cancellations)

@@ -80,12 +80,27 @@ impl ActionKind for CancelTasksAction {
         let store = self.store()?;
         let mut facts = Vec::new();
         for id in &ids {
-            let task = self.task(&store, id)?;
+            let Ok(task) = self.task(&store, id) else {
+                facts.push(CardFact {
+                    name: id.clone(),
+                    value: "找不到这个任务".to_owned(),
+                });
+                continue;
+            };
             if task.cancelled.is_some() {
-                return Err(format!("任务「{}」已经取消了", task.title));
+                facts.push(CardFact {
+                    name: task.title.clone(),
+                    value: "已取消；不会重复取消".to_owned(),
+                });
+                continue;
             }
-            if store.stage(&task.id).map_err(|error| error.to_string())? == tasks::Stage::Closed {
-                return Err(format!("任务「{}」已经关闭了", task.title));
+            let stage = store.stage(&task.id).map_err(|error| error.to_string())?;
+            if stage == tasks::Stage::Closed {
+                facts.push(CardFact {
+                    name: task.title.clone(),
+                    value: "已关闭；不会连带".to_owned(),
+                });
+                continue;
             }
             let scope = store
                 .cancel_scope(&task.id)
@@ -96,13 +111,10 @@ impl ActionKind for CancelTasksAction {
                 .map(|task| task.title.as_str())
                 .collect();
             facts.push(CardFact {
-                name: task.title.to_string(),
+                name: task.title.clone(),
                 value: format!(
                     "阶段：{}；连带下游：{}",
-                    store
-                        .stage(&task.id)
-                        .map(tasks::Stage::key)
-                        .unwrap_or("unknown"),
+                    stage.key(),
                     if cascaded.is_empty() {
                         "无".to_owned()
                     } else {
@@ -127,13 +139,35 @@ impl ActionKind for CancelTasksAction {
             let mut cancelled = Vec::new();
             let mut refused = Vec::new();
             for id in ids {
+                let task_id = TaskId::from(id.as_str());
+                let Ok(task) = self.task(&self.store()?, id.as_str()) else {
+                    refused.push(json!({ "task_id": id, "reason": "找不到" }));
+                    continue;
+                };
+                if task.cancelled.is_some() {
+                    refused.push(json!({ "task_id": id, "reason": "已取消" }));
+                    continue;
+                }
+                if self
+                    .store()?
+                    .stage(&task_id)
+                    .map_err(|error| error.to_string())?
+                    == tasks::Stage::Closed
+                {
+                    refused.push(json!({ "task_id": id, "reason": "已关闭" }));
+                    continue;
+                }
                 match runtime.cancel_with_downstream(
-                    &TaskId::from(id.as_str()),
+                    &task_id,
                     tasks::CancellationSource::Kind,
                     None,
                     now_ms(),
                 ) {
-                    Ok(items) => cancelled.extend(items.iter().map(|_| id.clone())),
+                    Ok(items) => {
+                        for (cancelled_id, _) in items {
+                            cancelled.push(cancelled_id.as_str().to_owned());
+                        }
+                    }
                     Err(TaskError::AlreadyClosed) => {
                         refused.push(json!({ "task_id": id, "reason": "已关闭" }))
                     }
@@ -224,5 +258,41 @@ mod tests {
         assert_eq!(facts.len(), 1);
         assert!(facts[0].name.contains("要取消的任务"));
         assert!(facts[0].value.contains("连带下游"));
+
+        // 混合 active + 已关闭 + 已取消：不整张卡报错，逐项标出原因。
+        let done = store.create_task(draft(), 1_700_000_001_000).unwrap();
+        let attempt = store.begin_attempt(&done.id, 1_700_000_001_001).unwrap();
+        let report = store
+            .record_report(
+                &done.id,
+                attempt,
+                tasks::NewReport {
+                    state: tasks::ReportState::Ready,
+                    origin: tasks::ReportOrigin::Agent,
+                    summary: "已完成".to_owned(),
+                    question: None,
+                },
+                1_700_000_001_002,
+            )
+            .unwrap();
+        store.accept(&done.id, &report, 1_700_000_001_003).unwrap();
+        let gone = store.create_task(draft(), 1_700_000_002_000).unwrap();
+        store
+            .cancel(
+                &gone.id,
+                tasks::CancellationSource::User,
+                None,
+                1_700_000_002_001,
+            )
+            .unwrap();
+        let mixed = action
+            .describe(
+                &json!({"task_ids": [task.id.as_str(), done.id.as_str(), gone.id.as_str()]}),
+                &env,
+            )
+            .unwrap();
+        assert_eq!(mixed.len(), 3);
+        assert!(mixed[1].value.contains("已关闭"));
+        assert!(mixed[2].value.contains("已取消"));
     }
 }

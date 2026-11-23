@@ -3814,7 +3814,7 @@ impl TaskRuntime {
         source: tasks::CancellationSource,
         from: Option<TaskId>,
         now: i64,
-    ) -> Result<Vec<tasks::TaskCancellation>, tasks::TaskError> {
+    ) -> Result<Vec<(TaskId, tasks::TaskCancellation)>, tasks::TaskError> {
         let result = self
             .store
             .cancel_with_downstream(task_id, source, from, now);
