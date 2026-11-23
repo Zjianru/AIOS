@@ -13,7 +13,9 @@ test('Kind 分条和表情：流式 1 块变 2 块 + 气泡表情，两个工具
     await expect.poll(async () => parts.count(), { timeout: 30_000 }).toBe(1);
     await expect(parts.nth(0)).toContainText('第一段');
     await expect(parts).toHaveCount(2, { timeout: 30_000 });
-    await expect(parts.nth(1)).toContainText('第二段');
+    // 第二块写到一半时已经出现（不是等整条写完才蹦出来）。
+    await expect(parts.nth(1)).toContainText('第', { timeout: 30_000 });
+    await expect(parts.nth(1)).toContainText('第二段', { timeout: 30_000 });
     await expect(page.locator('[data-kind="kind-reaction"]')).toHaveCount(1);
     await expect(page.locator('[data-kind="kind-reaction"]')).toHaveAttribute(
       'title',

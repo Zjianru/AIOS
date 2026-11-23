@@ -7,7 +7,7 @@ import {
 
 
 assert.equal(kindEmojiChar('heart'), '❤️');
-assert.deepEqual(partialKindSayParts('{"parts":["第一段","第二'), ['第一段']);
+assert.deepEqual(partialKindSayParts('{"parts":["第一段","第二'), ['第一段', '第二']);
 assert.deepEqual(partialKindSayParts('{"parts":["第一段","第二段"]}'), ['第一段', '第二段']);
 assert.equal(partialKindReactId('{"emoji_id":"+1"}'), '+1');
 
@@ -29,7 +29,8 @@ assert.equal(view.reaction, 'heart');
 assert.equal(processStepsOf(view).some((step) => step.kind === 'tool'), false);
 console.log('kind output: derivation ok');
 
-const { parsePartialJson } = await import('../src/pages/kind/kindOutput.ts');
+const { parsePartialJson } = await import('../src/pages/kind/parsePartialJson.ts');
+assert.deepEqual(partialKindSayParts('{"parts":["甲","乙'), ['甲', '乙']);
 assert.deepEqual(parsePartialJson('{"parts":["甲"],}'), { parts: ['甲'] });
 assert.deepEqual(parsePartialJson('{"parts":["甲","乙",],}'), { parts: ['甲', '乙'] });
 console.log('kind output: trailing comma repair ok');
