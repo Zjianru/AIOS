@@ -11,6 +11,7 @@ import {
   taskResultRouteFile,
   t013RouteFile,
   t073RouteFile,
+  t078RouteFile,
   t030RouteFile,
   t052RouteFile,
   t053RouteFile,
@@ -37,7 +38,8 @@ export function startReplay(
  // 双会话（Kind + ThinAgent）按请求体各回各的脚本；路由文件里帧间隔逐条给。
   const routeFile =
     routesFile === undefined
-      ? (t030RouteFile(options) ??
+      ? (t078RouteFile(options) ??
+        t030RouteFile(options) ??
         restartRouteFile(options) ??
         t057RouteFile(options) ??
         t056RouteFile(options) ??

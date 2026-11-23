@@ -148,6 +148,8 @@ export interface FixtureOptions {
  /// worktree 场景会在起服务前把数据目录做成一个 git 仓库；expand 的第二段路由由测试
  /// 拿到真实任务 id 后再生成。
   t030?: 'write' | 'ask' | 'expand' | 'bash' | 'retained' | 'worktree' | 'nonrepo' | 'typo' | 'scope';
+  /** T078.2：Kind kind_react + kind_say 分条/表情回放。 */
+  t078Say?: boolean;
   /// 监控 WS 双任务夹具（t029 多 task_accept + 放慢 ThinAgent 回放）。
  /// ：任务图夹具——Kind 先 skill 再 task_graph_propose，再 propose_action 出确认卡；
  /// 卡上的 task_id 用 __GRAPH_ID__ 占位，由回放从请求体里换成真图 id。
