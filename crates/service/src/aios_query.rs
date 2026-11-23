@@ -722,16 +722,51 @@ mod tests {
                 "组 {key} 与页面夹具不一致"
             );
         }
-        let problems: Vec<&str> = fixture["tasks"]
+        // 不自己复写过滤条件：拿同一份夹具跑产品投影，取 problems 的 id 比。
+        let tasks: Vec<TaskFact> = fixture["tasks"]
             .as_array()
             .unwrap()
             .iter()
-            .filter(|task| {
-                task["stage"].as_str() == Some("needs_conditions")
-                    && task["afterWaiting"].as_bool() != Some(true)
-                    && !wait_ids.contains(task["id"].as_str().unwrap())
+            .map(|task| {
+                let mut fact = task_fact(
+                    task["id"].as_str().unwrap(),
+                    task["stage"].as_str().unwrap(),
+                    task["afterWaiting"].as_bool() == Some(true),
+                );
+                fact.gate = task["gate"].as_bool().unwrap();
+                fact.closed_at = task["closedAt"].as_i64();
+                fact.cancelled_at = task["cancelledAt"].as_i64();
+                fact
             })
-            .map(|task| task["id"].as_str().unwrap())
+            .collect();
+        let waits: Vec<WaitItem> = fixture["waitTaskIds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|id| {
+                serde_json::from_value(json!({
+                    "kind": "accept",
+                    "taskId": id.as_str().unwrap(),
+                    "title": id.as_str().unwrap(),
+                    "need": "等你",
+                    "body": "夹具",
+                    "at": 0,
+                }))
+                .unwrap()
+            })
+            .collect();
+        let response = WorkResponse {
+            generated_at: fixture["now"].as_i64().unwrap(),
+            tasks,
+            wait: waits,
+            graphs: Vec::new(),
+        };
+        let projected = project_work(&response, response.generated_at);
+        let problems: Vec<&str> = projected["problems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item["id"].as_str())
             .collect();
         assert_eq!(
             json!(problems),
