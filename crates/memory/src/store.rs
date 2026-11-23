@@ -1139,10 +1139,15 @@ impl MemoryStore {
         let now = write.valid_from.unwrap_or_else(|| (self.clock)());
         let mut conn = self.lock();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let scope = if write.project_id.is_some() {
+            Scope::Project
+        } else {
+            scope_of(&write.op)
+        };
         let candidates = if write.keys.is_empty() {
             Vec::new()
         } else {
-            candidates_in(&tx, scope_of(&write.op), &write.keys)?
+            candidates_in(&tx, scope, &write.keys)?
         };
         let relation = match write.relation.clone() {
             Some(relation) => relation,
@@ -1151,13 +1156,13 @@ impl MemoryStore {
                 return Err(WriteError::RelationRequired { candidates });
             }
         };
-        let (outcome, needs_card) = match relation {
+        let (mut outcome, needs_card) = match relation {
             RelationDecision::Independent => {
                 let item = create_with_details(
                     &tx,
                     layer,
                     binding,
-                    scope_of(&write.op),
+                    scope,
                     &title,
                     &summary,
                     &body,
@@ -1208,7 +1213,7 @@ impl MemoryStore {
                     &tx,
                     layer,
                     binding,
-                    scope_of(&write.op),
+                    scope,
                     &title,
                     &summary,
                     &body,
@@ -1240,7 +1245,7 @@ impl MemoryStore {
                         &tx,
                         Layer::Note,
                         Binding::Fallible,
-                        scope_of(&write.op),
+                        scope,
                         &title,
                         &summary,
                         &body,
@@ -1277,7 +1282,7 @@ impl MemoryStore {
                         &tx,
                         layer,
                         binding,
-                        scope_of(&write.op),
+                        scope,
                         &title,
                         &summary,
                         &body,
@@ -1305,6 +1310,16 @@ impl MemoryStore {
                 }
             }
         };
+        if let Some(project_id) = write.project_id.as_deref()
+            && let Some(item) = outcome.item.as_mut()
+        {
+            tx.execute(
+                "UPDATE memory SET project_id = ?1 WHERE id = ?2",
+                params![project_id, item.id],
+            )?;
+            item.project_id = Some(project_id.to_owned());
+            item.scope = Scope::Project;
+        }
         bump_version(&tx)?;
         tx.commit()?;
         if let Some(error) = needs_card {
@@ -1638,7 +1653,7 @@ fn bump_version(tx: &rusqlite::Transaction<'_>) -> Result<(), MemoryError> {
 
 fn items(conn: &Connection, where_clause: &str) -> Result<Vec<MemoryItem>, MemoryError> {
     let sql = format!(
-        "SELECT id, layer, binding, scope, title, summary, body, source_kind, source_ref, status, current_revision, updated_at, pinned, valid_from, valid_until, invalid_reason, superseded_by, possibly_stale FROM memory {where_clause}"
+        "SELECT id, layer, binding, scope, title, summary, body, source_kind, source_ref, status, current_revision, updated_at, pinned, valid_from, valid_until, invalid_reason, superseded_by, possibly_stale, project_id FROM memory {where_clause}"
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map([], item_from_row)?;
@@ -1677,6 +1692,7 @@ fn item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryItem> {
         invalid_reason: row.get(15)?,
         superseded_by: row.get(16)?,
         possibly_stale: row.get::<_, i64>(17)? != 0,
+        project_id: row.get(18)?,
     })
 }
 
@@ -1700,7 +1716,7 @@ fn diary_by_id(conn: &Connection, id: &str) -> Result<Option<DiaryEntry>, Memory
 
 fn item_by_id(conn: &Connection, id: &str) -> Result<Option<MemoryItem>, MemoryError> {
     let mut stmt = conn.prepare(
-        "SELECT id, layer, binding, scope, title, summary, body, source_kind, source_ref, status, current_revision, updated_at, pinned, valid_from, valid_until, invalid_reason, superseded_by, possibly_stale FROM memory WHERE id = ?1",
+        "SELECT id, layer, binding, scope, title, summary, body, source_kind, source_ref, status, current_revision, updated_at, pinned, valid_from, valid_until, invalid_reason, superseded_by, possibly_stale, project_id FROM memory WHERE id = ?1",
     )?;
     stmt.query_row(params![id], item_from_row)
         .optional()

@@ -82,6 +82,9 @@ pub struct MemoryItem {
     pub layer: Layer,
     pub binding: Binding,
     pub scope: Scope,
+    /// 项目范围时的项目 id；个人/角色为 None。旧行按 None 读。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
     pub title: String,
     pub summary: String,
     pub body: String,
@@ -479,6 +482,9 @@ pub struct MemoryMigrationReport {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryWrite {
     pub op: WriteOp,
+    /// 项目范围的项目 id；None = 个人。只在 Kind 记忆工具/直接写项目时给。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
     pub keys: Vec<MemoryKey>,
     pub relation: Option<RelationDecision>,
     /// 成立时间；None = 用现在。迁移/回填之外都写现在。
@@ -492,6 +498,7 @@ impl MemoryWrite {
     pub fn new(op: WriteOp) -> Self {
         Self {
             op,
+            project_id: None,
             keys: Vec::new(),
             relation: None,
             valid_from: None,

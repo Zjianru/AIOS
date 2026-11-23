@@ -557,6 +557,7 @@ async fn memory_page_reads_view_search_and_card_states() {
 
     let response = root
         .dispatch(service::Call::MemoryRead(service::MemoryReadRequest {
+            scope: None,
             query: Some("周报格式".to_owned()),
             item_id: None,
             refs: vec!["dream_permit".to_owned()],
@@ -622,6 +623,7 @@ async fn card_undo_is_recoverable_and_same_original_words_can_be_remembered_agai
     // 小卡按 ref 读状态：隔离区条目是 deleted（前端据此显示已撤销、收起按钮）。
     let response = root
         .dispatch(service::Call::MemoryRead(service::MemoryReadRequest {
+            scope: None,
             query: None,
             item_id: None,
             refs: vec![item.id.clone()],
@@ -894,6 +896,7 @@ async fn memory_replace_and_about_cards_resolve_through_protocol() {
     let card = match store
         .write_with_relation(
             memory::types::MemoryWrite {
+                project_id: None,
                 op: WriteOp::Remember {
                     title: "周报两段".to_owned(),
                     summary: String::new(),
@@ -1036,6 +1039,7 @@ async fn memory_flashback_used_is_recorded_when_memory_reads_the_sent_id() {
     store
         .write_with_relation(
             memory::types::MemoryWrite {
+                project_id: None,
                 op: memory::types::WriteOp::Note {
                     title: "新事".to_owned(),
                     summary: String::new(),

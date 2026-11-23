@@ -3044,7 +3044,7 @@ impl TaskRuntime {
         agent_config.project_instructions_path_only = false;
         if let Ok(memory) = crate::memory::MemoryRuntime::open(&self.data_dir) {
             let memory = std::sync::Arc::new(memory);
-            agent_config.memory_context = Some(memory.thin_provider());
+            agent_config.memory_context = Some(memory.thin_provider(task.project_id.clone()));
             agent_config.memory_delivery = Some(memory.delivery_hook());
         }
         let fixed_runtime = Arc::clone(self);

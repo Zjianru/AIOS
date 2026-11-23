@@ -557,6 +557,7 @@ async fn dream_failure_emits_failed_card() {
     assert!(!run.error.is_empty(), "失败原因要写进记录");
     let response = root
         .dispatch(service::Call::MemoryRead(service::MemoryReadRequest {
+            scope: None,
             query: None,
             item_id: None,
             refs: vec![run_id.clone()],
@@ -889,6 +890,7 @@ async fn undoing_a_correction_and_merge_marks_the_run_revoked() {
     let read_page = async |run_id: String| {
         let response = root
             .dispatch(service::Call::MemoryRead(service::MemoryReadRequest {
+                scope: None,
                 query: None,
                 item_id: None,
                 refs: vec![run_id],
@@ -981,6 +983,7 @@ async fn dream_with_no_changes_is_done_not_revoked() {
     }
     let response = root
         .dispatch(service::Call::MemoryRead(service::MemoryReadRequest {
+            scope: None,
             query: None,
             item_id: None,
             refs: vec![run_id],
@@ -1101,6 +1104,7 @@ async fn undoing_a_new_note_run_marks_the_card_revoked() {
     let read_page = async |run_id: String| {
         let response = root
             .dispatch(service::Call::MemoryRead(service::MemoryReadRequest {
+                scope: None,
                 query: None,
                 item_id: None,
                 refs: vec![run_id],

@@ -1465,6 +1465,9 @@ pub struct MemoryReadRequest {
     /// 搜索词；给空就是只读全量视图。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query: Option<String>,
+    /// 页面筛选：personal / project:<id>；None = 全量。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
     /// 条目详情：给出时响应里带这一条的修订历史。
     #[serde(default, rename = "itemId", skip_serializing_if = "Option::is_none")]
     pub item_id: Option<String>,
@@ -1480,6 +1483,9 @@ pub struct MemoryItemView {
     pub layer: String,
     pub binding: String,
     pub scope: String,
+    /// 项目范围时的项目 id；个人/角色为空。
+    #[serde(default, rename = "projectId", skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
     pub title: String,
     pub summary: String,
     pub body: String,
@@ -1783,7 +1789,7 @@ pub struct ActionActResponse {
 ///
 /// 连接上的旧价格乘数后来整条删掉，不升版本：两个请求里的这个字段本来就可省略，旧页再发
 /// 由 serde 当未知字段忽略；响应里少了它，旧页读到 undefined 也不会拿去定价。
-pub const PROTOCOL_VERSION: u64 = 27;
+pub const PROTOCOL_VERSION: u64 = 28;
 
 /// 日历读取：不带 appointmentId 读全部；带 week 时额外给那周的计划点。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]

@@ -163,6 +163,7 @@ impl MemoryTool {
                     "properties": {
                         "title": {"type": "string"},
                         "text": {"type": "string", "description": text_description},
+                        "project_id": {"type": "string", "description": "Optional existing project id from the fixed block's project list. Omit for a personal memory; never invent an id."},
                         "keys": {
                             "type": "array",
                             "items": {
@@ -384,6 +385,47 @@ impl MemoryTool {
                 ToolFailure::plain("内容里有敏感值，不能存"),
             );
         }
+        let project_id = match args.get("project_id") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(value)) => {
+                let value = value.trim();
+                (!value.is_empty()).then(|| value.to_owned())
+            }
+            Some(_) => {
+                return ToolResult::error(
+                    call.id.clone(),
+                    ToolFailure::plain("project_id 必须是字符串"),
+                );
+            }
+        };
+        if let Some(project_id) = project_id.as_deref() {
+            let store = match tasks::ProjectStore::open(
+                self.tools.data_dir.join(tasks::PROJECTS_DB_FILE),
+            ) {
+                Ok(store) => store,
+                Err(error) => {
+                    return ToolResult::error(
+                        call.id.clone(),
+                        ToolFailure::plain(format!("项目库打不开：{error}")),
+                    );
+                }
+            };
+            match store.get(project_id) {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    return ToolResult::error(
+                        call.id.clone(),
+                        ToolFailure::plain(format!("项目不存在：{project_id}")),
+                    );
+                }
+                Err(error) => {
+                    return ToolResult::error(
+                        call.id.clone(),
+                        ToolFailure::plain(format!("项目读不出来：{error}")),
+                    );
+                }
+            }
+        }
         let keys = parse_keys(args);
         let relation = parse_relation(args);
         let op = if remember {
@@ -407,6 +449,7 @@ impl MemoryTool {
             }
         };
         let write = MemoryWrite {
+            project_id,
             op,
             keys,
             relation,
@@ -1750,5 +1793,95 @@ mod tests {
                 .actor,
             "user"
         );
+    }
+}
+
+#[cfg(test)]
+mod project_note_tool_tests {
+    use super::*;
+    use std::sync::Arc;
+    use tools::{ToolCall, ToolContext, ToolSessionState};
+
+    fn context(dir: &std::path::Path) -> ToolContext {
+        ToolContext::with_session(
+            dir,
+            Arc::new(ToolSessionState::new(dir, "project-memory-test")),
+        )
+    }
+
+    fn tool_list(runtime: &Arc<MemoryRuntime>, dir: &std::path::Path) -> Vec<Arc<dyn Tool>> {
+        memory_tools(Arc::clone(runtime), dir, None, None)
+    }
+
+    fn find_tool(list: &[Arc<dyn Tool>], name: &str) -> Arc<dyn Tool> {
+        list.iter()
+            .find(|tool| tool.name() == name)
+            .unwrap()
+            .clone()
+    }
+
+    #[tokio::test]
+    async fn note_can_join_an_existing_project_and_rejects_a_missing_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_store =
+            tasks::ProjectStore::open(dir.path().join(tasks::PROJECTS_DB_FILE)).unwrap();
+        let project = project_store
+            .create(
+                tasks::NewProject {
+                    name: "记忆项目".to_owned(),
+                    goal: "记住项目的事".to_owned(),
+                    dir: None,
+                },
+                1,
+            )
+            .unwrap();
+        let runtime = Arc::new(MemoryRuntime::open(dir.path()).unwrap());
+        let list = tool_list(&runtime, dir.path());
+        let note = find_tool(&list, "memory_note");
+        let result = note
+            .execute(
+                ToolCall {
+                    id: "call-project-note".to_owned(),
+                    name: "memory_note".to_owned(),
+                    arguments: json!({
+                        "title": "项目笔记",
+                        "text": "这个项目先做数据",
+                        "project_id": project.id,
+                    })
+                    .to_string(),
+                },
+                &context(dir.path()),
+            )
+            .await;
+        assert!(!result.is_error, "{}", result.content);
+        let view = runtime.store().view().unwrap();
+        assert_eq!(
+            view.notes[0].project_id.as_deref(),
+            Some(project.id.as_str())
+        );
+        assert_eq!(view.notes[0].scope, memory::types::Scope::Project);
+
+        let missing = note
+            .execute(
+                ToolCall {
+                    id: "call-project-missing".to_owned(),
+                    name: "memory_note".to_owned(),
+                    arguments: json!({
+                        "title": "坏项目",
+                        "text": "不该写进去",
+                        "project_id": "no-such-project",
+                    })
+                    .to_string(),
+                },
+                &context(dir.path()),
+            )
+            .await;
+        assert!(missing.is_error);
+        assert!(
+            missing.content.contains("项目不存在"),
+            "{}",
+            missing.content
+        );
+        assert_eq!(runtime.store().view().unwrap().notes.len(), 1);
     }
 }

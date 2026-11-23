@@ -7,6 +7,7 @@ import { create } from 'zustand';
 import { toast } from 'sonner';
 import { reconnectDelayMs } from '@/data/reconnect';
 import { connectSession, memoryAction, memoryRead } from '@/data/service';
+import { useRouteStore } from '@/app/routeStore';
 import type { MemoryActionKind, MemoryReadResponse } from '@/data/service';
 
 interface MemoryState {
@@ -68,6 +69,7 @@ export const useMemoryState = create<MemoryState>((set, get) => ({
     try {
       const data = await memoryRead({
         query: (query ?? get().query).trim() || undefined,
+        scope: useRouteStore.getState().route.query.get('scope') ?? undefined,
       });
       set({ data, loading: false, error: null });
     } catch (error) {

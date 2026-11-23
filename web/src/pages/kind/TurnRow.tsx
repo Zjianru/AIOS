@@ -677,7 +677,7 @@ export const TurnRow = memo(function TurnRow({
             ) : null}
           </div>
 
-          {view.card && view.answer && !readOnly ? <ConfirmCard card={view.card} /> : null}
+          {view.card && (view.answer || (view.sayParts?.length ?? 0) > 0) && !readOnly ? <ConfirmCard card={view.card} /> : null}
 
           {view.status === 'interrupted' && view.stoppedAt ? (
             <div className="mt-1 flex items-center gap-1.5 text-2 text-ink-3" data-kind="stopped">

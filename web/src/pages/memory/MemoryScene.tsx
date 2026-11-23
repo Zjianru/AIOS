@@ -17,6 +17,8 @@ import type {
 import { memoryRead } from '@/data/service';
 import type { MemoryActionKind } from '@/data/service';
 import { go } from '@/app/navigate';
+import { useRouteStore } from '@/app/routeStore';
+import { useProjectName } from '@/pages/project/projectStore';
 import { mountMemoryLive, useMemoryState } from './memoryStore';
 
 function clock(at: number | null | undefined): string {
@@ -88,6 +90,7 @@ function ItemRow({
   onPin?: () => void;
   onRestore?: () => void;
 }) {
+  const projectName = useProjectName(item.projectId);
   return (
     <div
       data-kind="memory-item"
@@ -105,7 +108,11 @@ function ItemRow({
         <div className="flex items-center gap-2">
           <span className="truncate text-3 text-ink">{item.title || '（无标题）'}</span>
           <span className="shrink-0 rounded-btn bg-hover px-1.5 text-2 text-ink-3">
-            {item.scope === 'personal' ? '个人' : item.scope === 'project' ? '项目' : '角色'}
+            {item.scope === 'personal'
+              ? '个人'
+              : item.scope === 'project'
+                ? '项目 · ' + projectName
+                : '角色'}
           </span>
           {item.status === 'pinned' ? (
             <span className="shrink-0 text-2 text-ink-3">已定下来</span>
@@ -289,7 +296,14 @@ export function MemoryScene() {
   const [highlightId, setHighlightId] = useState<string | null>(null);
   const [highlightRun, setHighlightRun] = useState<string | null>(null);
 
+  const route = useRouteStore((state) => state.route);
+  const scope = route.query.get('scope');
   useEffect(() => mountMemoryLive(), []);
+  useEffect(() => {
+    void load();
+    // scope 变了要重读；load 自己从路由取 scope。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scope]);
 
   useEffect(() => {
     if (!highlightRun) return;

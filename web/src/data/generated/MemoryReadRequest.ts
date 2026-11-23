@@ -9,6 +9,10 @@ export type MemoryReadRequest = {
  */
 query?: string | null,
 /**
+ * 页面筛选：personal / project:<id>；None = 全量。
+ */
+scope?: string | null,
+/**
  * 条目详情：给出时响应里带这一条的修订历史。
  */
 itemId?: string | null,

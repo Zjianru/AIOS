@@ -1128,6 +1128,7 @@ fn remember_write(
     relation: Option<memory::types::RelationDecision>,
 ) -> memory::types::MemoryWrite {
     memory::types::MemoryWrite {
+        project_id: None,
         op: WriteOp::Remember {
             title: title.to_owned(),
             summary: String::new(),
@@ -1294,6 +1295,7 @@ fn related_write_contradict_fallible_invalidates_and_can_restore() {
         )
         .unwrap();
     let write = memory::types::MemoryWrite {
+        project_id: None,
         op: WriteOp::Note {
             title: "编码变了".to_owned(),
             summary: String::new(),
@@ -1578,6 +1580,7 @@ fn dream_validation_codes_cover_the_ten_rejections() {
     let sourced = store
         .write_with_relation(
             MemoryWrite {
+                project_id: None,
                 op: WriteOp::Note {
                     title: "有出处的笔记".to_owned(),
                     summary: "摘要".to_owned(),
@@ -1852,6 +1855,7 @@ fn flashback_requires_an_entity_key_and_a_relation_bridge() {
     let related = store
         .write_with_relation(
             MemoryWrite {
+                project_id: None,
                 op: WriteOp::Note {
                     title: "Linger 后来改了".to_owned(),
                     summary: String::new(),
@@ -1887,6 +1891,7 @@ fn flashback_requires_an_entity_key_and_a_relation_bridge() {
     let direct = store
         .write_with_relation(
             MemoryWrite {
+                project_id: None,
                 op: WriteOp::Note {
                     title: "Linger 直接命中".to_owned(),
                     summary: String::new(),
@@ -1922,4 +1927,44 @@ fn flashback_requires_an_entity_key_and_a_relation_bridge() {
             .is_empty()
     );
     assert_eq!(direct.layer, Layer::Note);
+}
+
+#[test]
+fn project_memory_writes_and_reads_project_id() {
+    let (store, _dir, _) = open();
+    let outcome = store
+        .write_with_relation(
+            MemoryWrite {
+                project_id: Some("p1".to_owned()),
+                op: WriteOp::Note {
+                    title: "清河项目的一条".to_owned(),
+                    summary: String::new(),
+                    body: "只属于这个项目".to_owned(),
+                    source_kind: "kind".to_owned(),
+                    source_ref: "turn:1".to_owned(),
+                },
+                keys: Vec::new(),
+                relation: None,
+                valid_from: None,
+                source_quote: None,
+            },
+            &WriteContext::kind(),
+        )
+        .unwrap();
+    let item = outcome.item.expect("写入条目");
+    assert_eq!(item.project_id.as_deref(), Some("p1"));
+    assert_eq!(item.scope, Scope::Project);
+    let read = store.item(&item.id).unwrap().unwrap();
+    assert_eq!(read.project_id.as_deref(), Some("p1"));
+    assert_eq!(read.scope, Scope::Project);
+    let view = store.view().unwrap();
+    assert_eq!(
+        view.notes
+            .iter()
+            .find(|note| note.id == item.id)
+            .unwrap()
+            .project_id
+            .as_deref(),
+        Some("p1")
+    );
 }

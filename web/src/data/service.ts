@@ -249,12 +249,13 @@ export async function sendMessage(
 
 /** 记忆页读取（M02/M05/M11）：关于你/条目/日记/隔离区/做梦/搜索/小卡状态。 */
 export async function memoryRead(
-  request: { query?: string; itemId?: string; refs?: string[] } = {},
+  request: { query?: string; itemId?: string; refs?: string[]; scope?: string } = {},
 ): Promise<MemoryReadResponse> {
   return post({
     method: 'memory-read',
     ...(request.query !== undefined ? { query: request.query } : {}),
     ...(request.itemId !== undefined ? { itemId: request.itemId } : {}),
+    ...(request.scope !== undefined ? { scope: request.scope } : {}),
     refs: request.refs ?? [],
   });
 }

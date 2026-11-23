@@ -19,6 +19,7 @@ use memory::types::{Binding, MemoryItem, Scope, WriteContext, WriteOp};
 
 pub struct MemoryRuntime {
     store: Arc<MemoryStore>,
+    data_dir: std::path::PathBuf,
 }
 
 /// 这条 user 消息是不是用户自己发的（程序送来的不算）；索引和「记住」的闸共用同一张表。
@@ -27,6 +28,14 @@ pub(crate) fn user_message_sent(message: &model::Message) -> bool {
         return false;
     }
     matches!(message.source, model::MessageSource::User { .. })
+}
+
+fn project_name(data_dir: &std::path::Path, id: &str) -> Option<String> {
+    tasks::ProjectStore::open(data_dir.join(tasks::PROJECTS_DB_FILE))
+        .ok()?
+        .get(id)
+        .ok()?
+        .map(|project| project.name)
 }
 
 impl MemoryRuntime {
@@ -43,6 +52,7 @@ impl MemoryRuntime {
         }
         Ok(Self {
             store: Arc::new(store),
+            data_dir: data_dir.to_path_buf(),
         })
     }
 
@@ -61,23 +71,32 @@ impl MemoryRuntime {
         let mut parts = Vec::new();
         if !view.about_you.is_empty() {
             parts.push("关于你：".to_owned());
-            parts.extend(
-                view.about_you
-                    .iter()
-                    .map(|item| format!("- {}", item_text(item))),
-            );
+            parts.extend(view.about_you.iter().map(|item| {
+                let label = item
+                    .project_id
+                    .as_deref()
+                    .and_then(|id| project_name(&self.data_dir, id))
+                    .map(|name| format!("（项目：{name}）"))
+                    .unwrap_or_default();
+                format!("- {}{label}", item_text(item))
+            }));
         }
         let entries: Vec<&MemoryItem> = view.entries.iter().chain(view.notes.iter()).collect();
         if !entries.is_empty() {
             parts.push("条目索引：".to_owned());
             parts.extend(entries.iter().map(|item| {
                 format!(
-                    "- {} · {} · {} · {} · {}",
+                    "- {} · {} · {} · {} · {}{}",
                     item.id,
                     item.title,
                     one_line_description(item),
                     item.scope.as_str(),
-                    item.binding.as_str()
+                    item.binding.as_str(),
+                    item.project_id
+                        .as_deref()
+                        .and_then(|id| project_name(&self.data_dir, id))
+                        .map(|name| format!(" · 项目：{name}"))
+                        .unwrap_or_default()
                 )
             }));
         }
@@ -103,16 +122,18 @@ impl MemoryRuntime {
 
     /// ThinAgent：只给个人范围、有约束力的条目。
     pub fn thin_context(&self) -> Option<String> {
-        self.thin_context_with_ids().map(|(text, _)| text)
+        self.thin_context_with_ids(None).map(|(text, _)| text)
     }
 
-    pub fn thin_context_with_ids(&self) -> Option<(String, Vec<String>)> {
+    pub fn thin_context_with_ids(&self, project_id: Option<&str>) -> Option<(String, Vec<String>)> {
         let view = self.store.view().ok()?;
         let mut parts = Vec::new();
         for item in view.about_you.iter().chain(view.entries.iter()) {
             if item.binding == Binding::Binding
                 && item.status == "active"
-                && item.scope == Scope::Personal
+                && (item.scope == Scope::Personal
+                    || (item.scope == Scope::Project
+                        && project_id.is_some_and(|id| item.project_id.as_deref() == Some(id))))
             {
                 parts.push(format!("- {}", item_text(item)));
             }
@@ -124,7 +145,14 @@ impl MemoryRuntime {
                 .about_you
                 .iter()
                 .chain(view.entries.iter())
-                .filter(|item| item.binding == Binding::Binding && item.status == "active")
+                .filter(|item| {
+                    item.binding == Binding::Binding
+                        && item.status == "active"
+                        && (item.scope == Scope::Personal
+                            || (item.scope == Scope::Project
+                                && project_id
+                                    .is_some_and(|id| item.project_id.as_deref() == Some(id))))
+                })
                 .map(|item| item.id.clone())
                 .collect();
             Some((
@@ -208,6 +236,7 @@ impl MemoryRuntime {
     pub fn flashback_provider(&self) -> agent::MemoryFlashbackProvider {
         let runtime = Arc::new(Self {
             store: Arc::clone(&self.store),
+            data_dir: self.data_dir.clone(),
         });
         Arc::new(move |message| runtime.flashback_for(message))
     }
@@ -215,6 +244,7 @@ impl MemoryRuntime {
     pub fn kind_provider(&self) -> MemoryContextProvider {
         let runtime = Arc::new(Self {
             store: Arc::clone(&self.store),
+            data_dir: self.data_dir.clone(),
         });
         Arc::new(move || {
             let identity = runtime
@@ -232,9 +262,10 @@ impl MemoryRuntime {
         })
     }
 
-    pub fn thin_provider(&self) -> MemoryContextProvider {
+    pub fn thin_provider(&self, project_id: Option<String>) -> MemoryContextProvider {
         let runtime = Arc::new(Self {
             store: Arc::clone(&self.store),
+            data_dir: self.data_dir.clone(),
         });
         Arc::new(move || {
             let identity = runtime
@@ -243,7 +274,7 @@ impl MemoryRuntime {
                 .map_err(|error| error.to_string())?
                 .to_string();
             Ok(runtime
-                .thin_context_with_ids()
+                .thin_context_with_ids(project_id.as_deref())
                 .map(|(text, ids)| MemoryContext {
                     identity,
                     text,
@@ -713,6 +744,7 @@ mod flashback_tests {
             .store()
             .write_with_relation(
                 MemoryWrite {
+                    project_id: None,
                     op: WriteOp::Note {
                         title: "Linger 新判重".to_owned(),
                         summary: String::new(),
@@ -782,5 +814,121 @@ mod answer_text_tests {
 第一段
 第二段"
         );
+    }
+}
+
+#[cfg(test)]
+mod project_scope_tests {
+    use super::*;
+    use memory::types::{MemoryWrite, WriteContext, WriteOp};
+
+    #[test]
+    fn project_memory_reaches_kind_index_thin_context_and_view() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_store =
+            tasks::ProjectStore::open(dir.path().join(tasks::PROJECTS_DB_FILE)).unwrap();
+        let project = project_store
+            .create(
+                tasks::NewProject {
+                    name: "清河项目".to_owned(),
+                    goal: "项目目标".to_owned(),
+                    dir: None,
+                },
+                1,
+            )
+            .unwrap();
+        let runtime = MemoryRuntime::open(dir.path()).unwrap();
+        let outcome = runtime
+            .store()
+            .write_with_relation(
+                MemoryWrite {
+                    project_id: Some(project.id.clone()),
+                    op: WriteOp::Remember {
+                        title: "项目规则".to_owned(),
+                        summary: String::new(),
+                        body: "这个项目先写测试".to_owned(),
+                        source_kind: "user".to_owned(),
+                        source_ref: "seq:1".to_owned(),
+                    },
+                    keys: Vec::new(),
+                    relation: None,
+                    valid_from: None,
+                    source_quote: None,
+                },
+                &WriteContext::user(),
+            )
+            .unwrap();
+        let item = outcome.item.unwrap();
+        assert_eq!(item.project_id.as_deref(), Some(project.id.as_str()));
+        assert_eq!(item.scope, memory::types::Scope::Project);
+
+        let kind = runtime.kind_context().unwrap();
+        assert!(kind.contains("项目：清河项目"), "{kind}");
+        let thin = runtime.thin_context_with_ids(Some(&project.id)).unwrap();
+        assert!(thin.0.contains("这个项目先写测试"), "{}", thin.0);
+        let view = runtime.store().view().unwrap();
+        assert_eq!(
+            view.about_you[0].project_id.as_deref(),
+            Some(project.id.as_str())
+        );
+    }
+}
+
+#[cfg(test)]
+mod project_page_scope_tests {
+    use super::*;
+    use memory::types::MemoryWrite;
+
+    #[test]
+    fn memory_page_scope_filters_by_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = MemoryRuntime::open(dir.path()).unwrap();
+        runtime
+            .store()
+            .write(
+                WriteOp::Remember {
+                    title: "个人规则".to_owned(),
+                    summary: String::new(),
+                    body: "个人".to_owned(),
+                    source_kind: "user".to_owned(),
+                    source_ref: "u1".to_owned(),
+                },
+                &WriteContext::user(),
+            )
+            .unwrap();
+        runtime
+            .store()
+            .write_with_relation(
+                MemoryWrite {
+                    project_id: Some("p1".to_owned()),
+                    op: WriteOp::Remember {
+                        title: "项目规则".to_owned(),
+                        summary: String::new(),
+                        body: "项目".to_owned(),
+                        source_kind: "user".to_owned(),
+                        source_ref: "u2".to_owned(),
+                    },
+                    keys: Vec::new(),
+                    relation: None,
+                    valid_from: None,
+                    source_quote: None,
+                },
+                &WriteContext::user(),
+            )
+            .unwrap();
+        let response = page::read(
+            Some(&Arc::new(runtime)),
+            None,
+            &[],
+            &crate::protocol::MemoryReadRequest {
+                scope: Some("project:p1".to_owned()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(response.about_you.len(), 1);
+        assert_eq!(response.about_you[0].title, "项目规则");
+        assert_eq!(response.entries.len(), 0);
+        assert!(response.diary.is_empty());
     }
 }

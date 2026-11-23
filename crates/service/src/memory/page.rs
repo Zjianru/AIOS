@@ -27,6 +27,7 @@ fn item_view(item: &MemoryItem) -> MemoryItemView {
         layer: item.layer.as_str().to_owned(),
         binding: item.binding.as_str().to_owned(),
         scope: item.scope.as_str().to_owned(),
+        project_id: item.project_id.clone(),
         title: item.title.clone(),
         summary: item.summary.clone(),
         body: item.body.clone(),
@@ -238,6 +239,22 @@ pub fn read(
     };
     let store = memory.store();
     let view = store.view().map_err(unavailable)?;
+    let project_scope = request
+        .scope
+        .as_deref()
+        .and_then(|scope| scope.strip_prefix("project:"))
+        .map(str::to_owned);
+    let personal_scope = request.scope.as_deref() == Some("personal");
+    let keep_item = |item: &MemoryItem| {
+        if let Some(project_id) = project_scope.as_deref() {
+            item.scope == memory::types::Scope::Project
+                && item.project_id.as_deref() == Some(project_id)
+        } else if personal_scope {
+            item.scope == memory::types::Scope::Personal
+        } else {
+            true
+        }
+    };
     let mut search = Vec::new();
     if let Some(query) = request.query.as_deref()
         && !query.trim().is_empty()
@@ -245,8 +262,14 @@ pub fn read(
         search = store
             .search(query, 30)
             .map_err(unavailable)?
-            .iter()
-            .map(hit_view)
+            .into_iter()
+            .filter(|hit| match hit {
+                SearchHit::Memory(item) => keep_item(item),
+                SearchHit::Diary(_) | SearchHit::Conversation { .. } => {
+                    project_scope.is_none() && !personal_scope
+                }
+            })
+            .map(|hit| hit_view(&hit))
             .collect();
     }
     let revisions = match request.item_id.as_deref() {
@@ -261,21 +284,44 @@ pub fn read(
     let version = store.version().map_err(unavailable)?;
     Ok(MemoryReadResponse {
         version,
-        about_you: view.about_you.iter().map(item_view).collect(),
-        entries: view.entries.iter().map(item_view).collect(),
-        notes: view.notes.iter().map(item_view).collect(),
-        diary: view
-            .diary
+        about_you: view
+            .about_you
             .iter()
-            .map(|entry| MemoryDiaryView {
-                id: entry.id.clone(),
-                day: entry.day.clone(),
-                text: entry.text.clone(),
-                source_ref: entry.source_ref.clone(),
-                created_at: entry.created_at,
-            })
+            .filter(|item| keep_item(item))
+            .map(item_view)
             .collect(),
-        quarantine: view.quarantine.iter().map(item_view).collect(),
+        entries: view
+            .entries
+            .iter()
+            .filter(|item| keep_item(item))
+            .map(item_view)
+            .collect(),
+        notes: view
+            .notes
+            .iter()
+            .filter(|item| keep_item(item))
+            .map(item_view)
+            .collect(),
+        diary: if project_scope.is_some() || personal_scope {
+            Vec::new()
+        } else {
+            view.diary
+                .iter()
+                .map(|entry| MemoryDiaryView {
+                    id: entry.id.clone(),
+                    day: entry.day.clone(),
+                    text: entry.text.clone(),
+                    source_ref: entry.source_ref.clone(),
+                    created_at: entry.created_at,
+                })
+                .collect()
+        },
+        quarantine: view
+            .quarantine
+            .iter()
+            .filter(|item| keep_item(item))
+            .map(item_view)
+            .collect(),
         search,
         cards: card_states(memory, root_events, &request.refs),
         dream: dream_view(memory, dream),

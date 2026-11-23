@@ -8,7 +8,7 @@ import { ChevronRight, Pencil } from 'lucide-react';
 import { useRouteStore } from '@/app/routeStore';
 import { go } from '@/app/navigate';
 import type { TaskFact } from '@/data/generated/TaskFact';
-import { displayPath, ServiceHttpError } from '@/data/service';
+import { displayPath, memoryRead, ServiceHttpError } from '@/data/service';
 import { useWorkPolling, useWorkStore } from '@/pages/work/workStore';
 import { STAGE_LABEL, columnOf, filterWorkForProject, nextOf } from '@/pages/work/workModel';
 import { useProjectStore, projectCode, projectColor } from './projectStore';
@@ -159,10 +159,29 @@ function ProjectPage() {
   const [draft, setDraft] = useState('');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [memoryCount, setMemoryCount] = useState<number | null>(null);
 
   useEffect(() => {
     if (projects === null) void refreshProjects();
   }, [projects, refreshProjects]);
+
+  useEffect(() => {
+    let alive = true;
+    setMemoryCount(null);
+    void memoryRead({ scope: 'project:' + projectId })
+      .then((memory) => {
+        if (!alive) return;
+        setMemoryCount(
+          memory.aboutYou.length + memory.entries.length + memory.notes.length,
+        );
+      })
+      .catch(() => {
+        if (alive) setMemoryCount(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [projectId]);
 
   const projectIndex = projects?.findIndex((project) => project.id === projectId) ?? -1;
   const project = projectIndex >= 0 ? projects?.[projectIndex] : null;
@@ -312,6 +331,11 @@ function ProjectPage() {
             className="rounded-full border border-line px-2.5 py-1 text-1 text-ink-2 transition-colors hover:bg-hover"
           >
             记忆
+            {memoryCount != null ? (
+              <span data-kind="project-memory-count" className="ml-1 text-ink-3">
+                项目记忆 {memoryCount} 条
+              </span>
+            ) : null}
           </button>
         </div>
 
