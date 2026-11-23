@@ -169,3 +169,149 @@ fn group_accept_refuses_a_cancelled_task_without_accepting_others_silently() {
         Some(CANCELLED_MESSAGE)
     );
 }
+
+fn graph_draft(cwd: &std::path::Path, title: &str) -> NewTask {
+    let mut task = draft();
+    task.title = title.to_owned();
+    task.requirement = format!("{title} 的要求");
+    task.dod = format!("{title} 的 DoD");
+    task.cwd = cwd.to_path_buf();
+    task
+}
+
+fn subtask(cwd: &std::path::Path, title: &str, after: Vec<usize>, gate: bool) -> NewSubtask {
+    NewSubtask {
+        task: graph_draft(cwd, title),
+        policy: TaskPolicy {
+            write_scope: (!gate).then(|| "out.txt".to_owned()),
+            worktree: false,
+            bash: false,
+        },
+        after,
+        milestone: gate,
+        program_gate: Vec::new(),
+    }
+}
+
+#[test]
+fn cascade_cancels_downstream_recursively_and_their_gates_but_not_the_root_fact() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path().join("tasks.sqlite")).unwrap();
+    let cwd = PathBuf::from("/tmp/cascade-cwd");
+    let graph = NewGraph {
+        root: graph_draft(&cwd, "总任务"),
+        subtasks: vec![
+            subtask(&cwd, "甲", vec![], false),
+            subtask(&cwd, "乙", vec![0], false),
+            subtask(&cwd, "丙", vec![1], false),
+            subtask(&cwd, "甲的门", vec![0], true),
+        ],
+    };
+    let root = store.create_graph(graph, T0).unwrap();
+    let children = store.children(&root.id).unwrap();
+    let by_title = |title: &str| {
+        children
+            .iter()
+            .find(|task| task.title == title)
+            .unwrap()
+            .clone()
+    };
+    let first = by_title("甲");
+    let second = by_title("乙");
+    let third = by_title("丙");
+    let gate = by_title("甲的门");
+    // 下游乙正在跑：取消要交给效果泵去立即停。
+    let attempt = store.begin_attempt(&second.id, T0 + 1).unwrap();
+
+    let cancelled = store
+        .cancel_with_downstream(&first.id, CancellationSource::User, None, T0 + 10)
+        .unwrap();
+    assert_eq!(cancelled.len(), 4, "目标+乙+丙+门");
+    for task in [&first, &second, &third, &gate] {
+        let stored = store.task(&task.id).unwrap().unwrap();
+        assert!(stored.cancelled.is_some(), "{} 应被连带取消", task.title);
+        assert_eq!(store.stage(&task.id).unwrap(), Stage::Closed);
+    }
+    assert_eq!(
+        store
+            .task(&second.id)
+            .unwrap()
+            .unwrap()
+            .cancelled
+            .unwrap()
+            .from,
+        Some(first.id.clone())
+    );
+    assert_eq!(
+        store
+            .task(&gate.id)
+            .unwrap()
+            .unwrap()
+            .cancelled
+            .unwrap()
+            .from,
+        Some(first.id.clone())
+    );
+    assert_eq!(store.task(&root.id).unwrap().unwrap().cancelled, None);
+    assert_eq!(
+        store
+            .task(&second.id)
+            .unwrap()
+            .unwrap()
+            .latest_attempt()
+            .unwrap()
+            .id,
+        attempt,
+        "在跑下游的 Attempt 行还在，停止由效果泵做"
+    );
+    for task in [&first, &second, &third, &gate] {
+        assert!(
+            store
+                .effect_pending(EffectKind::Cancel, task.id.as_str())
+                .unwrap(),
+            "{} 要排 cancel 效果",
+            task.title
+        );
+    }
+    let claimed = store.claim_effect(EffectKind::Cancel, T0 + 20).unwrap();
+    assert!(matches!(
+        claimed.map(|claim| claim.payload),
+        Some(EffectPayload::Cancel { .. })
+    ));
+}
+
+#[test]
+fn closed_task_cannot_be_cancelled_and_writes_nothing() {
+    let (_directory, store) = open();
+    let task = task(&store);
+    let attempt = store.begin_attempt(&task.id, T0 + 1).unwrap();
+    let report = store
+        .record_report(
+            &task.id,
+            attempt,
+            NewReport {
+                state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
+                summary: "已完成".to_owned(),
+                question: None,
+            },
+            T0 + 2,
+        )
+        .unwrap();
+    store.accept(&task.id, &report, T0 + 3).unwrap();
+    assert_eq!(store.stage(&task.id).unwrap(), Stage::Closed);
+    let before = store.closed_at(&task.id).unwrap();
+    let error = store
+        .cancel(&task.id, CancellationSource::User, None, T0 + 10)
+        .unwrap_err();
+    assert!(matches!(error, TaskError::AlreadyClosed));
+    let after = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(after.cancelled, None);
+    assert_eq!(store.closed_at(&task.id).unwrap(), before);
+    assert!(
+        !store
+            .effect_pending(EffectKind::Cancel, task.id.as_str())
+            .unwrap(),
+        "拒绝时不能排停效果"
+    );
+}

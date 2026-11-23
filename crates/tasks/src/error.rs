@@ -86,6 +86,8 @@ pub enum TaskError {
     /// T077：已取消任务的所有写入口统一拒绝这句话。
     #[error("这个任务已经取消了；要再做，让 Kind 新派一个。")]
     Cancelled,
+    #[error("这个任务已经关闭了，不能再取消")]
+    AlreadyClosed,
     #[error("任务还没有可以接受的结果报告")]
     NoReportToAccept,
     #[error("要求改过了：这份是第 {report} 版要求的结果，没有记接受")]

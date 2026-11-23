@@ -15,8 +15,11 @@ pub fn review(facts: &ReviewFacts) -> Review {
         return Review::NoRun;
     }
     if let Some(task) = &facts.bound_task {
-        if !task.exists || task.graph_cancelled {
+        if !task.exists {
             return Review::Skip("跳过：绑定的任务已不在".to_owned());
+        }
+        if task.graph_cancelled {
+            return Review::Skip("跳过：绑定的任务已取消".to_owned());
         }
         if task.closed {
             return Review::End;
@@ -108,7 +111,7 @@ mod tests {
         });
         assert_eq!(
             review(&facts),
-            Review::Skip("跳过：绑定的任务已不在".to_owned())
+            Review::Skip("跳过：绑定的任务已取消".to_owned())
         );
     }
 

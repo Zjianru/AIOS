@@ -1,5 +1,6 @@
 //! SQLite 存储：一个连接放在锁后，同步接口；建任务和排 launch、写报告和排 relay 各在一个事务里。
 
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
@@ -1078,26 +1079,117 @@ impl Store {
             transaction.commit()?;
             return Ok(existing.clone());
         }
+        if stage_with_graph(&transaction, &task)? == Stage::Closed {
+            return Err(TaskError::AlreadyClosed);
+        }
+        let cancelled = self.mark_cancelled(&transaction, &mut task, source, from, now)?;
+        transaction.commit()?;
+        Ok(cancelled)
+    }
+
+    /// T077.4：沿 needs 递归取消还没关闭的下游，顺手取消把关这些任务的里程碑/程序门。
+    /// 目标、下游、门各排一条 cancel 效果；总任务不单独记，阶段仍由子任务派生。
+    pub fn cancel_with_downstream(
+        &self,
+        id: &TaskId,
+        source: CancellationSource,
+        from: Option<TaskId>,
+        now: i64,
+    ) -> Result<Vec<TaskCancellation>, TaskError> {
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let all = load_all_tasks(&transaction)?;
+        let by_id: HashMap<&str, &Task> = all.iter().map(|task| (task.id.as_str(), task)).collect();
+        let target = by_id
+            .get(id.as_str())
+            .ok_or_else(|| TaskError::TaskNotFound(id.to_string()))?;
+        if target.cancelled.is_none() && stage_with_graph(&transaction, target)? == Stage::Closed {
+            return Err(TaskError::AlreadyClosed);
+        }
+        let mut order: Vec<(TaskId, Option<TaskId>)> = vec![(id.clone(), from)];
+        let mut seen: HashSet<String> = HashSet::from([id.as_str().to_owned()]);
+        let mut index = 0;
+        while index < order.len() {
+            let (current, _) = order[index].clone();
+            index += 1;
+            let mut push = |candidate: &Task, from: &TaskId| {
+                if candidate.cancelled.is_some()
+                    || seen.contains(candidate.id.as_str())
+                    || candidate.id == *from && false
+                {
+                    return;
+                }
+                if stage_with_graph(&transaction, candidate).ok() == Some(Stage::Closed) {
+                    return;
+                }
+                seen.insert(candidate.id.as_str().to_owned());
+                order.push((candidate.id.clone(), Some(from.clone())));
+            };
+            for candidate in &all {
+                // 下游：需要当前结果的后续任务。
+                if candidate
+                    .needs
+                    .iter()
+                    .any(|need| need.from.as_str() == current.as_str())
+                {
+                    push(candidate, &current);
+                }
+                // 门/里程碑：把关当前任务的独立门任务。
+                if candidate.is_gate()
+                    && candidate
+                        .needs
+                        .first()
+                        .is_some_and(|need| need.from.as_str() == current.as_str())
+                {
+                    push(candidate, &current);
+                }
+            }
+        }
+        let mut cancellations = Vec::new();
+        for (task_id, from) in order {
+            let Some(task) = by_id.get(task_id.as_str()) else {
+                continue;
+            };
+            let mut task = (*task).clone();
+            if task.cancelled.is_some() {
+                continue;
+            }
+            if task_id != *id && stage_with_graph(&transaction, &task).ok() == Some(Stage::Closed) {
+                continue;
+            }
+            cancellations.push(self.mark_cancelled(&transaction, &mut task, source, from, now)?);
+        }
+        transaction.commit()?;
+        Ok(cancellations)
+    }
+
+    fn mark_cancelled(
+        &self,
+        connection: &Connection,
+        task: &mut Task,
+        source: CancellationSource,
+        from: Option<TaskId>,
+        now: i64,
+    ) -> Result<TaskCancellation, TaskError> {
         let cancelled = TaskCancellation {
             at: now,
             source,
             from,
         };
         task.cancelled = Some(cancelled.clone());
-        save_task(Some(self), &transaction, &task)?;
+        save_task(Some(self), connection, task)?;
         // 取消后不再起跑：把还没被领走的 launch 一起收掉，避免效果泵反复试一个已取消任务。
-        transaction.execute(
+        connection.execute(
             "DELETE FROM effect WHERE kind = ?1 AND key = ?2",
-            params![EffectKind::Launch.as_str(), id.as_str()],
+            params![EffectKind::Launch.as_str(), task.id.as_str()],
         )?;
         self.enqueue_effect_in(
-            &transaction,
+            connection,
             &EffectPayload::Cancel {
-                task_id: id.clone(),
+                task_id: task.id.clone(),
             },
             now,
         )?;
-        transaction.commit()?;
         Ok(cancelled)
     }
 
@@ -2977,6 +3069,16 @@ fn load_task(connection: &Connection, id: &TaskId) -> Result<Option<Task>, TaskE
         Some(value) => Ok(Some(serde_json::from_str(&value)?)),
         None => Ok(None),
     }
+}
+
+fn load_all_tasks(connection: &Connection) -> Result<Vec<Task>, TaskError> {
+    let mut statement = connection.prepare("SELECT value FROM task")?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    let mut tasks = Vec::new();
+    for row in rows {
+        tasks.push(serde_json::from_str::<Task>(&row?)?);
+    }
+    Ok(tasks)
 }
 
 fn load_task_required(connection: &Connection, id: &TaskId) -> Result<Task, TaskError> {

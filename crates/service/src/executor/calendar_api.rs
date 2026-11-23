@@ -273,19 +273,20 @@ impl TaskRuntime {
                         .store
                         .stage(&task.id)
                         .map_err(|error| error.to_string())?;
-                    let graph_cancelled = match &task.parent {
-                        Some(parent) => self
-                            .store
-                            .task(parent)
-                            .ok()
-                            .flatten()
-                            .and_then(|root| root.arrangement)
-                            .is_some_and(|arrangement| arrangement.cancelled.is_some()),
-                        None => task
-                            .arrangement
-                            .as_ref()
-                            .is_some_and(|arrangement| arrangement.cancelled.is_some()),
-                    };
+                    let graph_cancelled = task.cancelled.is_some()
+                        || match &task.parent {
+                            Some(parent) => self
+                                .store
+                                .task(parent)
+                                .ok()
+                                .flatten()
+                                .and_then(|root| root.arrangement)
+                                .is_some_and(|arrangement| arrangement.cancelled.is_some()),
+                            None => task
+                                .arrangement
+                                .as_ref()
+                                .is_some_and(|arrangement| arrangement.cancelled.is_some()),
+                        };
                     Some(calendar::BoundTaskFacts {
                         exists: true,
                         graph_cancelled,
