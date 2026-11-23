@@ -423,7 +423,15 @@ export function deriveTurnViews(
           break;
         }
         // 固定块补发等程序消息：只进模型请求，不画成用户气泡。
-        if (isProgramRpc(userRpcIdOf(data.message))) break;
+        // 坏 JSON 的 task-report 解析不出卡，退回原始文本气泡，不按程序消息吞掉。
+        const rpcId = userRpcIdOf(data.message);
+        if (
+          isProgramRpc(rpcId) &&
+          !rpcId?.startsWith('task-report:') &&
+          !rpcId?.startsWith('appointment-wake:')
+        ) {
+          break;
+        }
         // T028.5：抄送 Kind 的那条不是用户气泡，单独由 taskCcFacts/ccViewOf 成行。
         if (taskCcOfMessage(data.message)) break;
         // T053：门判定的 relay 只给模型看结论，不把原文 JSON 画成用户气泡；

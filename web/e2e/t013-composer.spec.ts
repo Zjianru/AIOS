@@ -219,7 +219,19 @@ test('发送：粘贴折卡片后发出去，日志里有 paste 块', async ({ p
     await expect(page.locator('[data-kind="user-bubble"]').first()).toContainText('看这个粘贴', { timeout: 15_000 });
     const response = await apiPost(request, fixture, { method: 'events', maxMessages: 60 });
     const json = await response.json();
-    const userMessage = (json.events ?? []).find((event: { type: string }) => event.type === 'user/message');
+    const userMessage = (json.events ?? []).find(
+      (event: {
+        type: string;
+        data?: { message?: { source?: { kind?: string; rpcId?: string | null } } };
+      }) => {
+        const source = event.data?.message?.source;
+        return (
+          event.type === 'user/message' &&
+          source?.kind === 'user' &&
+          !(source.rpcId ?? '').match(/^(fixed-block|dynamic-block|date-now):/)
+        );
+      },
+    );
     const blocks = userMessage?.data?.message?.content ?? [];
     const pasteBlocks = blocks.filter((block: { type?: string; paste?: boolean }) => block.type === 'text' && block.paste === true);
     expect(pasteBlocks.length).toBe(1);

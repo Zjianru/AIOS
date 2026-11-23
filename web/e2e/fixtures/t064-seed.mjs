@@ -33,6 +33,14 @@ function previousWeekday(index) {
   return days[index] ?? localAt(-1, 9);
 }
 
+function currentWeekAt(dayIndex, hour) {
+  const date = new Date();
+  date.setHours(hour, 0, 0, 0);
+  const mondayOffset = (date.getDay() + 6) % 7;
+  date.setDate(date.getDate() - mondayOffset + dayIndex);
+  return date.getTime();
+}
+
 function sqlQuote(value) {
   return "'" + String(value).replaceAll("'", "''") + "'";
 }
@@ -101,7 +109,7 @@ export async function seedT064Calendar(dataDir) {
       condition: '明早九点提醒我交周报',
       rule: 'FREQ=DAILY;COUNT=1',
       timezone: 'Asia/Shanghai',
-      start_at: localAt(-1, 14),
+      start_at: currentWeekAt(0, 1),
       binding_kind: 'kind',
       binding_ref: '',
       next_trigger_at: null,
@@ -133,7 +141,7 @@ export async function seedT064Calendar(dataDir) {
       condition: '取消也要留块',
       rule: 'FREQ=DAILY',
       timezone: 'Asia/Shanghai',
-      start_at: localAt(-2, 16),
+      start_at: currentWeekAt(0, 1),
       binding_kind: 'kind',
       binding_ref: '',
       next_trigger_at: null,
@@ -184,9 +192,9 @@ export async function seedT064Calendar(dataDir) {
     "INSERT INTO appointment_version (appointment_id,version,title,condition,rule,timezone,start_at,binding_kind,binding_ref,watch_kind,watch_target,cycle_task_id,cycle_max_rounds,duration_minutes,reason,created_at) VALUES ('ap_watch',1,'盯 elkjs','elkjs 出新版就告诉我','FREQ=HOURLY;INTERVAL=6','Asia/Shanghai'," + String(Date.now() - 2 * DAY) + ",'kind','','url','https://example.com/elkjs',NULL,NULL,NULL,'create'," + String(Date.now() - 10 * DAY) + ");",
     "INSERT INTO appointment_version (appointment_id,version,title,condition,rule,timezone,start_at,binding_kind,binding_ref,watch_kind,watch_target,cycle_task_id,cycle_max_rounds,duration_minutes,reason,created_at) VALUES ('ap_loop',1,'循环测试','把 rank/ 的测试一轮轮做到全绿，最多 5 轮','FREQ=DAILY','Asia/Shanghai'," + String(Date.now() - 3 * DAY) + ",'task','task-demo',NULL,NULL,'task-demo',5,NULL,'create'," + String(Date.now() - 5 * DAY) + ");",
     "INSERT INTO appointment_version (appointment_id,version,title,condition,rule,timezone,start_at,binding_kind,binding_ref,watch_kind,watch_target,cycle_task_id,cycle_max_rounds,duration_minutes,reason,created_at) VALUES ('ap_loop',2,'循环测试','把 rank/ 的测试一轮轮做到全绿，最多 5 轮','FREQ=DAILY','Asia/Shanghai'," + String(Date.now() - 3 * DAY) + ",'task','task-demo',NULL,NULL,'task-demo',5,NULL,'循环约定暂停：连续 3 轮没有进展'," + String(Date.now() - 1 * DAY) + ");",
-    "INSERT INTO appointment_version (appointment_id,version,title,condition,rule,timezone,start_at,binding_kind,binding_ref,watch_kind,watch_target,cycle_task_id,cycle_max_rounds,duration_minutes,reason,created_at) VALUES ('ap_once',1,'交周报','明早九点提醒我交周报','FREQ=DAILY;COUNT=1','Asia/Shanghai'," + String(localAt(-1, 14)) + ",'kind','',NULL,NULL,NULL,NULL,30,'create'," + String(Date.now() - 6 * DAY) + ");",
+    "INSERT INTO appointment_version (appointment_id,version,title,condition,rule,timezone,start_at,binding_kind,binding_ref,watch_kind,watch_target,cycle_task_id,cycle_max_rounds,duration_minutes,reason,created_at) VALUES ('ap_once',1,'交周报','明早九点提醒我交周报','FREQ=DAILY;COUNT=1','Asia/Shanghai'," + String(currentWeekAt(0, 1)) + ",'kind','',NULL,NULL,NULL,NULL,30,'create'," + String(Date.now() - 6 * DAY) + ");",
     "INSERT INTO appointment_version (appointment_id,version,title,condition,rule,timezone,start_at,binding_kind,binding_ref,watch_kind,watch_target,cycle_task_id,cycle_max_rounds,duration_minutes,reason,created_at) VALUES ('ap_overlap',1,'撞车会','和早报撞时间','FREQ=DAILY','Asia/Shanghai'," + String(run1) + ",'kind','',NULL,NULL,NULL,NULL,30,'create'," + String(Date.now() - 9 * DAY) + ");",
-    "INSERT INTO appointment_version (appointment_id,version,title,condition,rule,timezone,start_at,binding_kind,binding_ref,watch_kind,watch_target,cycle_task_id,cycle_max_rounds,duration_minutes,reason,created_at) VALUES ('ap_cancelled',1,'取消的会','取消也要留块','FREQ=DAILY','Asia/Shanghai'," + String(localAt(-2, 16)) + ",'kind','',NULL,NULL,NULL,NULL,30,'create'," + String(Date.now() - 8 * DAY) + ");",
+    "INSERT INTO appointment_version (appointment_id,version,title,condition,rule,timezone,start_at,binding_kind,binding_ref,watch_kind,watch_target,cycle_task_id,cycle_max_rounds,duration_minutes,reason,created_at) VALUES ('ap_cancelled',1,'取消的会','取消也要留块','FREQ=DAILY','Asia/Shanghai'," + String(currentWeekAt(0, 1)) + ",'kind','',NULL,NULL,NULL,NULL,30,'create'," + String(Date.now() - 8 * DAY) + ");",
     "INSERT INTO appointment_version (appointment_id,version,title,condition,rule,timezone,start_at,binding_kind,binding_ref,watch_kind,watch_target,cycle_task_id,cycle_max_rounds,duration_minutes,reason,created_at) VALUES ('ap_standup',1,'每日站会','每天九点半站会','FREQ=DAILY','Asia/Shanghai'," + String(monday) + ",'kind','',NULL,NULL,NULL,NULL,15,'create'," + String(Date.now() - 2 * DAY) + ");",
   ].join('\n');
   const runs = [
@@ -197,8 +205,8 @@ export async function seedT064Calendar(dataDir) {
     "INSERT INTO run (appointment_id,nominal_at,manual,trigger_kind,result,reason,merged_count,created_at,updated_at,sent_turn,report_id,task_id) VALUES ('ap_loop'," + String(Date.now() - 2 * DAY) + ",0,'report','sent','第 1 轮报回',0," + String(Date.now() - 2 * DAY) + "," + String(Date.now() - 2 * DAY) + ",2,NULL,NULL);",
     "INSERT INTO run (appointment_id,nominal_at,manual,trigger_kind,result,reason,merged_count,created_at,updated_at,sent_turn,report_id,task_id) VALUES ('ap_loop'," + String(Date.now() - DAY) + ",0,'report','sent','第 2 轮报回',0," + String(Date.now() - DAY) + "," + String(Date.now() - DAY) + ",3,NULL,'t066-trigger-loop-3');",
     "INSERT INTO run (appointment_id,nominal_at,manual,trigger_kind,result,reason,merged_count,created_at,updated_at,sent_turn,report_id,task_id) VALUES ('ap_overlap'," + String(run1) + ",0,'due','sent','',0," + String(run1) + "," + String(run1) + ",3,NULL,'t066-trigger-overlap-1');",
-    "INSERT INTO run (appointment_id,nominal_at,manual,trigger_kind,result,reason,merged_count,created_at,updated_at,sent_turn,report_id,task_id) VALUES ('ap_cancelled'," + String(localAt(-2, 16)) + ",0,'due','sent','',0," + String(localAt(-2, 16)) + "," + String(localAt(-2, 16)) + ",2,NULL,'t066-trigger-cancelled-1');",
-    "INSERT INTO run (appointment_id,nominal_at,manual,trigger_kind,result,reason,merged_count,created_at,updated_at,sent_turn,report_id,task_id) VALUES ('ap_once'," + String(localAt(-1, 14)) + ",0,'due','sent','',0," + String(localAt(-1, 14)) + "," + String(localAt(-1, 14)) + ",2,NULL,'t066-trigger-once-1');",
+    "INSERT INTO run (appointment_id,nominal_at,manual,trigger_kind,result,reason,merged_count,created_at,updated_at,sent_turn,report_id,task_id) VALUES ('ap_cancelled'," + String(currentWeekAt(0, 1)) + ",0,'due','sent','',0," + String(currentWeekAt(0, 1)) + "," + String(currentWeekAt(0, 1)) + ",2,NULL,'t066-trigger-cancelled-1');",
+    "INSERT INTO run (appointment_id,nominal_at,manual,trigger_kind,result,reason,merged_count,created_at,updated_at,sent_turn,report_id,task_id) VALUES ('ap_once'," + String(currentWeekAt(0, 1)) + ",0,'due','sent','',0," + String(currentWeekAt(0, 1)) + "," + String(currentWeekAt(0, 1)) + ",2,NULL,'t066-trigger-once-1');",
   ].join('\n');
   const sql = [
     'PRAGMA journal_mode=WAL;',
@@ -255,8 +263,8 @@ export async function seedT064Calendar(dataDir) {
     ['t066-trigger-morning-3', taskRow('t066-trigger-morning-3', '早报', 'ap_morning', 3, 'trigger', { turn: 2, at: run3 + 25 * 60_000 }, run3)],
     ['t066-trigger-loop-3', taskRow('t066-trigger-loop-3', '循环测试', 'ap_loop', 6, 'trigger', { turn: 3, at: Date.now() - DAY + 20 * 60_000 }, Date.now() - DAY)],
     ['t066-trigger-overlap-1', taskRow('t066-trigger-overlap-1', '撞车会', 'ap_overlap', 7, 'trigger', { turn: 3, at: run1 + 30 * 60_000 }, run1)],
-    ['t066-trigger-cancelled-1', taskRow('t066-trigger-cancelled-1', '取消的会', 'ap_cancelled', 8, 'trigger', { turn: 2, at: localAt(-2, 16) + 30 * 60_000 }, localAt(-2, 16))],
-    ['t066-trigger-once-1', taskRow('t066-trigger-once-1', '交周报', 'ap_once', 9, 'trigger', { turn: 2, at: localAt(-1, 14) + 30 * 60_000 }, localAt(-1, 14))],
+    ['t066-trigger-cancelled-1', taskRow('t066-trigger-cancelled-1', '取消的会', 'ap_cancelled', 8, 'trigger', { turn: 2, at: currentWeekAt(0, 1) + 30 * 60_000 }, currentWeekAt(0, 1))],
+    ['t066-trigger-once-1', taskRow('t066-trigger-once-1', '交周报', 'ap_once', 9, 'trigger', { turn: 2, at: currentWeekAt(0, 1) + 30 * 60_000 }, currentWeekAt(0, 1))],
     ['t066-dispatched-1', taskRow('t066-dispatched-1', '调查 elkjs 调查', 'ap_loop', 6, 'dispatched', null, Date.now() - DAY + 5 * 60_000)],
   ];
   const tasksSql = [

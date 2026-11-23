@@ -44,7 +44,7 @@ async function sessionLog(fixture: { dataDir: string }): Promise<{
 }
 
 /// T014.2 清单 3/4/6（回放）：问模型和花费——工作过程里先加载 skill，再「查 AIOS」；
-/// 回答下面没有卡片；会话日志升到 17，加载记录只记一次一条新增。
+/// 回答下面没有卡片；会话日志升到 19，加载记录只记一次一条新增。
 test('问模型和花费：先加载 skill，再查 AIOS，回答下面没有卡片', async ({ page }) => {
   const fixture = await startKernelFixture({ t014Query: true });
   try {
@@ -65,7 +65,7 @@ test('问模型和花费：先加载 skill，再查 AIOS，回答下面没有卡
     await expect(page.locator('[data-kind="card"]')).toHaveCount(0);
 
     const log = await sessionLog(fixture);
-    expect(log.header.version, '会话日志升到 18（只升一次）').toBe(18);
+    expect(log.header.version, '会话日志升到 19（只升一次）').toBe(19);
     const registry = log.rows.filter((row) => row.type === 'tool/registry');
     expect(registry.length, '加载记录只在新增时记一条').toBe(2);
     const added = (registry[1].data as { additions: { name: string }[] }).additions.map(

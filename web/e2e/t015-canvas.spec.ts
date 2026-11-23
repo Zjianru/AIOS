@@ -535,11 +535,16 @@ test('切到第 1 版以后发一句：请求里给模型的画布仍是第 2 �
 async function userMessageBlocks(fixture: KernelFixture) {
   const events = await sessionEvents(fixture);
   return events
-    .filter(
-      (event) =>
+    .filter((event) => {
+      const source = event.data?.message?.source as
+        | { kind?: string; rpcId?: string | null }
+        | undefined;
+      return (
         event.type === 'user/message' &&
-        (event.data.message?.source as { kind?: string } | undefined)?.kind === 'user',
-    )
+        source?.kind === 'user' &&
+        !(source.rpcId ?? '').match(/^(fixed-block|dynamic-block|date-now):/)
+      );
+    })
     .map(
       (event) =>
         (event.data.message?.content ?? []) as {
@@ -710,12 +715,12 @@ async function readReady(page: Page): Promise<Record<string, unknown>> {
 }
 
 /** 验收：ready 帧协议版本 20（日历区间），旧的 root/context 字段照旧。 */
-test('ready 帧：协议版本 22，旧的 root/context 字段不变', async ({ page }) => {
+test('ready 帧：协议版本 28，旧的 root/context 字段不变', async ({ page }) => {
   const fixture = await startKernelFixture({ canvas: 'interactive' });
   try {
     await page.goto(urlOf(fixture));
     const ready = await readReady(page);
-    expect(ready.protocolVersion).toBe(22);
+    expect(ready.protocolVersion).toBe(28);
     expect(ready.root).toEqual({ state: 'ok' });
     expect(ready.context).toEqual(expect.objectContaining({ window: expect.any(Number) }));
   } finally {

@@ -118,7 +118,7 @@ test('T059 F3：侧栏现在/Kind/工作/记忆四项，工作和现在可进入
   try {
     await page.goto(urlOf(fixture));
     const nav = page.locator('[data-kind="sidebar-content"] button');
-    await expect(nav).toHaveCount(4);
+    await expect(nav).toHaveCount(6);
     await expect(nav.filter({ hasText: '现在' })).toHaveCount(1);
     await expect(nav.filter({ hasText: 'Kind' })).toHaveCount(1);
     await expect(nav.filter({ hasText: '工作' })).toHaveCount(1);

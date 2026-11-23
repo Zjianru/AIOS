@@ -319,9 +319,16 @@ test('再发一次：粘贴跟着重发（两次 user/message 都有 paste 块�
             type: string;
             data?: { message?: { source?: { kind?: string }; content?: { type?: string; paste?: boolean }[] } };
           }[];
-          const mine = events.filter(
-            (event) => event.type === 'user/message' && event.data?.message?.source?.kind === 'user',
-          );
+          const mine = events.filter((event) => {
+            const source = event.data?.message?.source as
+              | { kind?: string; rpcId?: string | null }
+              | undefined;
+            return (
+              event.type === 'user/message' &&
+              source?.kind === 'user' &&
+              !(source.rpcId ?? '').match(/^(fixed-block|dynamic-block|date-now):/)
+            );
+          });
           const second = mine[mine.length - 1];
           const blocks = second?.data?.message?.content ?? [];
           return mine.length >= 2 && blocks.some((block) => block.type === 'text' && block.paste === true) ? 1 : 0;
