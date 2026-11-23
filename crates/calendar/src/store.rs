@@ -448,7 +448,7 @@ impl CalendarStore {
                 cycle: appointment.cycle.clone(),
                 duration_minutes: appointment.duration_minutes,
             },
-            &format!("循环约定暂停：{reason}"),
+            &format!("{}{reason}", crate::CYCLE_PAUSE_PREFIX),
             now,
         )?;
         transaction.execute(

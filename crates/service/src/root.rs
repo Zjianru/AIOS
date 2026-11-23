@@ -198,13 +198,24 @@ const KIND_POLICY: &str = concat!(
     "\nDispatch tasks that are independent of each other separately with task_accept; only ordered work belongs in a task graph.",
 );
 
-/// Kind 的构造期工具策略：上面那份名单，有任务执行者时再加四个任务工具。
-///
-/// `no_wait` 照 T024.3 留着；Kind 已经没有 bash 和后台任务，这条策略现在基本用不到。
-fn kind_tool_policy(options: &RootSessionOptions) -> agent::ToolPolicy {
-    let mut only: Vec<String> = KIND_TOOLS.iter().map(|name| (*name).to_owned()).collect();
-    if options.task_runtime.is_some() {
-        only.extend(
+/// T077.2：Kind 固定块里的页面清单；只列 web/src 真能打开的页，每页一句。
+pub(crate) const PAGE_LIST: &str = concat!(
+    "AIOS 页面清单（用户按屏幕说话时先叫对名字，页面上的事实用 aios_query 的 work 主题读）：\n",
+    "- 现在：等你决定、出了问题、在推进、排队的汇总，点项进对应任务或卡片。\n",
+    "- Kind：和 Kind 的对话、输入框、结果卡和确认卡；任务报回也落在这里。\n",
+    "- 工作：看板（排队 / 在做 / 等你 / 完成）、任务图、日历三个视图。\n",
+    "- 任务：一个任务的要求、进展、Attempt、上下文和轨迹。\n",
+    "- 任务对话：和某一项任务的对话。\n",
+    "- 监控：消耗和费用、模型/工具/命令排行、在跑和排队；任务诊断在监控里，用量也并在监控。\n",
+    "- 记忆：记忆、日记和做梦。\n",
+    "- 设置：模型与连接、外观、执行、通知、隐私、监控、关于。\n"
+);
+/// T077.2 F1：Kind 的完整工具名单；有任务运行时时才追加任务工具，product 和
+/// kind_tool_policy 共用这一份，不能各写一半。
+pub(crate) fn kind_tool_names(has_tasks: bool) -> Vec<String> {
+    let mut names: Vec<String> = KIND_TOOLS.iter().map(|name| (*name).to_owned()).collect();
+    if has_tasks {
+        names.extend(
             [
                 "task_accept",
                 "task_status",
@@ -220,8 +231,15 @@ fn kind_tool_policy(options: &RootSessionOptions) -> agent::ToolPolicy {
             .map(str::to_owned),
         );
     }
+    names
+}
+
+/// Kind 的构造期工具策略：上面那份名单，有任务执行者时再加四个任务工具。
+///
+/// `no_wait` 照 T024.3 留着；Kind 已经没有 bash 和后台任务，这条策略现在基本用不到。
+fn kind_tool_policy(options: &RootSessionOptions) -> agent::ToolPolicy {
     agent::ToolPolicy {
-        only: Some(only),
+        only: Some(kind_tool_names(options.task_runtime.is_some())),
         no_wait: true,
     }
 }
@@ -243,10 +261,10 @@ pub async fn open_root_session_with(
     // `web_search`/`web_fetch` 联网（要 Exa 的 key 且加载过 `web`），任务工具
     // `task_accept`/`task_status` 派只读调查。CLI 的对话不装它们。
     let mut extra_tools = vec![
-        std::sync::Arc::new(crate::aios_query::QueryTool::new(
-            options.data_dir.clone(),
-            options.identity.clone(),
-        )) as std::sync::Arc<dyn tools::Tool>,
+        std::sync::Arc::new(
+            crate::aios_query::QueryTool::new(options.data_dir.clone(), options.identity.clone())
+                .with_tool_names(kind_tool_names(options.task_runtime.is_some())),
+        ) as std::sync::Arc<dyn tools::Tool>,
         std::sync::Arc::new(crate::propose::ProposeActionTool::new(
             std::sync::Arc::clone(&options.actions),
             options.data_dir.clone(),
@@ -295,6 +313,9 @@ pub async fn open_root_session_with(
     config.identity_prompt =
         Some("You are AIOS's coordinator: you talk with the user, verify facts, and hand work to ThinAgent. ThinAgent investigates and implements.".to_owned());
     config.project_instructions_path_only = true;
+    config.fixed_block = Some(agent::FixedBlock {
+        text: PAGE_LIST.to_owned(),
+    });
     // Kind 根会话：记忆注入 + 压缩前日记 + 记忆工具；库打不开不挡根会话，但产品路径要接上。
     let memory = match memory {
         Some(memory) => Some(memory),
@@ -490,5 +511,48 @@ mod title_limit_policy_tests {
         // 标题上限已在 task_accept/task_graph_propose 的 schema 说明里，常驻策略不再重复。
         assert!(!KIND_POLICY.contains("at most 20 characters"));
         assert!(!KIND_POLICY.contains("card label"));
+    }
+}
+
+#[cfg(test)]
+mod page_list_tests {
+    use super::PAGE_LIST;
+
+    #[test]
+    fn page_list_has_one_real_page_per_line_and_no_placeholder_pages() {
+        let rows: Vec<&str> = PAGE_LIST
+            .lines()
+            .filter(|line| line.starts_with("- "))
+            .collect();
+        assert_eq!(rows.len(), 8, "一句/页，八页");
+        for page in [
+            "现在",
+            "Kind",
+            "工作",
+            "任务",
+            "任务对话",
+            "监控",
+            "记忆",
+            "设置",
+        ] {
+            assert!(
+                rows.iter().any(|row| row.contains(page)),
+                "页面清单漏了 {page}"
+            );
+        }
+        assert!(rows.iter().any(|row| row.contains("工作")
+            && row.contains("看板")
+            && row.contains("任务图")
+            && row.contains("日历")));
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("监控") && row.contains("用量"))
+        );
+        for placeholder in ["能力", "资料", "项目工作台", "批注"] {
+            assert!(
+                !PAGE_LIST.contains(placeholder),
+                "占位页不能列：{placeholder}"
+            );
+        }
     }
 }

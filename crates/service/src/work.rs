@@ -913,7 +913,7 @@ fn now_millis() -> i64 {
         .unwrap_or_default()
 }
 
-/// 把日历等额外的「等你」项并进工作快照，按同一种排序。
+/// 读日历里被暂停的循环约定，投影成「等你」项。
 pub(crate) fn calendar_pause_waits(
     store: &calendar::CalendarStore,
 ) -> Result<Vec<WaitItem>, String> {
@@ -934,7 +934,7 @@ pub(crate) fn calendar_pause_waits(
         else {
             continue;
         };
-        let Some(reason) = reason.strip_prefix("循环约定暂停：") else {
+        let Some(reason) = reason.strip_prefix(calendar::CYCLE_PAUSE_PREFIX) else {
             continue;
         };
         waits.push(WaitItem {
@@ -956,6 +956,7 @@ pub(crate) fn calendar_pause_waits(
     Ok(waits)
 }
 
+/// 把日历等额外的「等你」项并进工作快照，按同一种排序。
 pub(crate) fn merge_waits(response: &mut WorkResponse, mut extra: Vec<WaitItem>) {
     if extra.is_empty() {
         return;

@@ -369,6 +369,7 @@ pub(crate) struct CapabilityStates {
     pub skill_roots: Vec<PathBuf>,
     /// 程序自带的 skill 来源（产品装配填；排在用户根后面）。
     pub bundled_skills: Vec<tools::BundledSkill>,
+    pub fixed_block: Option<crate::fixed_block::FixedBlockState>,
     pub spill_max_inline_tokens: usize,
     pub memory_identity: Arc<tokio::sync::Mutex<Option<String>>>,
     pub memory_context: Option<crate::MemoryContextProvider>,
@@ -383,36 +384,40 @@ pub(crate) struct CapabilityRegistry {
 
 impl CapabilityRegistry {
     pub(crate) fn production(states: CapabilityStates) -> Self {
-        Self {
-            capabilities: vec![
-                Box::new(CompactionCapability::new()),
-                Box::new(PruneCapability),
-                Box::new(InstructionsCapability::new((
-                    states.instructions,
-                    states.instruction_roots,
-                ))),
-                Box::new(crate::memory_capability::MemoryCapability::new((
-                    states.memory_identity,
-                    states.memory_context,
-                    states.memory_delivery,
-                    states.memory_flashback,
-                ))),
-                Box::new(SkillCapability::new((
-                    states.skill_catalog,
-                    states.skill_roots,
-                    states.bundled_skills,
-                ))),
-                Box::new(TodoCapability),
-                Box::new(AskCapability::new(states.ask)),
-                Box::new(SpillCapability::new(states.spill_max_inline_tokens)),
-                Box::new(ReminderCapability::new(states.reminder_chain)),
-                Box::new(ActionCardCapability),
-                Box::new(Placeholder {
-                    name: "jobs",
-                    hooks: JOBS_HOOKS,
-                }),
-            ],
+        let mut capabilities: Vec<Box<dyn Capability>> = vec![
+            Box::new(CompactionCapability::new()),
+            Box::new(PruneCapability),
+            Box::new(InstructionsCapability::new((
+                states.instructions,
+                states.instruction_roots,
+            ))),
+            Box::new(crate::memory_capability::MemoryCapability::new((
+                states.memory_identity,
+                states.memory_context,
+                states.memory_delivery,
+                states.memory_flashback,
+            ))),
+            Box::new(SkillCapability::new((
+                states.skill_catalog,
+                states.skill_roots,
+                states.bundled_skills,
+            ))),
+            Box::new(TodoCapability),
+            Box::new(AskCapability::new(states.ask)),
+            Box::new(SpillCapability::new(states.spill_max_inline_tokens)),
+            Box::new(ReminderCapability::new(states.reminder_chain)),
+            Box::new(ActionCardCapability),
+            Box::new(Placeholder {
+                name: "jobs",
+                hooks: JOBS_HOOKS,
+            }),
+        ];
+        if let Some(fixed_block) = states.fixed_block {
+            capabilities.push(Box::new(crate::fixed_block::FixedBlockCapability::new(
+                fixed_block,
+            )));
         }
+        Self { capabilities }
     }
 
     pub(crate) async fn answer(
