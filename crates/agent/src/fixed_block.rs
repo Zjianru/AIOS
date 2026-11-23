@@ -204,7 +204,7 @@ impl FixedBlockCapability {
         }
         let message = Message::user_text_with_request_id(
             format!(
-                "AIOS 页面清单（固定块，内容有变化时只补这一条；不是新任务）：
+                "AIOS 固定块（内容有变化时只补这一条；不是新任务）：
 {}",
                 self.state.text
             ),

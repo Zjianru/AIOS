@@ -78,6 +78,11 @@ async fn old_session_gets_changed_fixed_block_at_tail_then_stays() {
         "旧会话下一轮要看到新固定块"
     );
     assert_eq!(second_body.matches("页面清单甲").count(), 1, "只补一次");
+    assert!(
+        second_body.contains("AIOS 固定块"),
+        "固定块标题要通用，不写死页面"
+    );
+    assert!(!second_body.contains("AIOS 页面清单（固定块"));
     let third_body = &bodies[2];
     assert!(third_body.contains("页面清单乙"), "内容再变要补新版本");
     assert!(
