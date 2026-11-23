@@ -118,7 +118,7 @@ pub struct TaskFact {
     pub stage: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
-    /// T079：所属项目；None = 个人。
+    /// 所属项目；None = 个人。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
     /// 当前要求版本的写入范围；相对任务 cwd 显示；None = 只读调查任务。
@@ -154,7 +154,7 @@ pub struct TaskFact {
     pub accepted_at: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closed_at: Option<i64>,
-    /// T077：任务被取消的时间；页面完成列写「取消于」，本周完成排除。
+    /// 任务被取消的时间；页面完成列写「取消于」，本周完成排除。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cancelled_at: Option<i64>,
 }

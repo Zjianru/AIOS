@@ -1,4 +1,4 @@
-//! T079.1：项目协议三方法 + task_set_project；创建/更新共用校验。
+//! 项目协议三方法 + task_set_project；创建/更新共用校验。
 
 use super::*;
 use service::{

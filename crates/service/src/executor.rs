@@ -3809,7 +3809,7 @@ impl TaskRuntime {
     }
 
     /// T077.5：任务页/Kind 卡共用；沿用运行时的任务库与变化通知。
-    /// T079：改任务归属（任务图整张）；只写 Task 字段，不动要求版本和目录。
+    /// 改任务归属（任务图整张）；只写 Task 字段，不动要求版本和目录。
     pub(crate) fn set_task_project(
         &self,
         task_id: &str,

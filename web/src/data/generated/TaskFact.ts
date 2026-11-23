@@ -10,7 +10,7 @@ export type TaskFact = { id: string, title: string,
  */
 stage: string, parent?: string | null,
 /**
- * T079：所属项目；None = 个人。
+ * 所属项目；None = 个人。
  */
 projectId?: string | null,
 /**
@@ -51,6 +51,6 @@ after: Array<string>,
  */
 afterWaiting: boolean, latest?: WorkLatest | null, acceptedAt?: number | null, closedAt?: number | null,
 /**
- * T077：任务被取消的时间；页面完成列写「取消于」，本周完成排除。
+ * 任务被取消的时间；页面完成列写「取消于」，本周完成排除。
  */
 cancelledAt?: number | null, };

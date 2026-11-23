@@ -1,4 +1,4 @@
-//! T079：项目对象的最小存储。内核只存 id/name/goal/dir/created_at；
+//! 项目对象的最小存储。内核只存 id/name/goal/dir/created_at；
 //! 首字 code、颜色和页面统计都不进库。
 
 use std::path::PathBuf;

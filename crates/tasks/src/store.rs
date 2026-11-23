@@ -1375,7 +1375,7 @@ impl Store {
         save_task(Some(self), &connection, &task)
     }
 
-    /// T079：改任务归属。单派任务只改自己；任务图里改任一任务都整张图一起改
+    /// 改任务归属。单派任务只改自己；任务图里改任一任务都整张图一起改
     /// （总任务 + 全部子任务），返回实际改到的 id。
     pub fn set_project(
         &self,

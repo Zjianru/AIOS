@@ -71,7 +71,7 @@ pub struct RootHost {
     agent_forward: Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// T024.3 的任务执行者；None = 任务库打不开（根会话照常可用，但没有任务工具）。
     task_runtime: Option<Arc<crate::executor::TaskRuntime>>,
-    /// T079：项目库；打不开时项目方法返回不可用，根会话照常。
+    /// 项目库；打不开时项目方法返回不可用，根会话照常。
     projects: Option<Arc<tasks::ProjectStore>>,
     task_pump: Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// 当前生效的模型选择（连接/模型/想要的档）；session/model 的 durable 事实
@@ -275,7 +275,7 @@ impl RootHost {
         self.task_runtime.as_ref()
     }
 
-    /// T079：项目库；打不开时 None。
+    /// 项目库；打不开时 None。
     pub(crate) fn projects(&self) -> Option<&Arc<tasks::ProjectStore>> {
         self.projects.as_ref()
     }

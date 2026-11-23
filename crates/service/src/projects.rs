@@ -1,4 +1,4 @@
-//! T079：项目领域在服务端的校验与协议视图。创建/更新共用 prepare_project。
+//! 项目领域在服务端的校验与协议视图。创建/更新共用 prepare_project。
 
 use std::path::{Path, PathBuf};
 

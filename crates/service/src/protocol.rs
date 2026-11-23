@@ -110,7 +110,7 @@ pub enum Call {
     TaskContinue(TaskContinueRequest),
     /// T055：工作页/「现在」共用的工作快照（全部任务事实 + 五种「等你」项）。
     Work(WorkRequest),
-    /// T079：项目列表/创建/更新，任务归属。
+    /// 项目列表/创建/更新，任务归属。
     #[serde(rename = "project_list")]
     ProjectList(ProjectListRequest),
     #[serde(rename = "project_create")]
@@ -629,14 +629,14 @@ pub struct TaskReadHeader {
     /// 创建任务时冻结的 bash 开关；旧任务行按 false 读。
     #[serde(default)]
     pub bash: bool,
-    /// T077：任务取消时间；None = 没取消。
+    /// 任务取消时间；None = 没取消。
     #[serde(
         default,
         rename = "cancelledAt",
         skip_serializing_if = "Option::is_none"
     )]
     pub cancelled_at: Option<i64>,
-    /// T079：所属项目；None = 个人。
+    /// 所属项目；None = 个人。
     #[serde(default, rename = "projectId", skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
     /// 创建任务时冻结的模型（只给显示名，切换模型不影响它）。
@@ -759,7 +759,7 @@ pub struct WorkResponse {
     pub graphs: Vec<crate::work::WorkGraphFact>,
 }
 
-/// T079：项目视图。code（首字）和颜色由页面按列表顺序算，不进协议/库。
+/// 项目视图。code（首字）和颜色由页面按列表顺序算，不进协议/库。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectView {

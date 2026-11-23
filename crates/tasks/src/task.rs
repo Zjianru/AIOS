@@ -352,7 +352,7 @@ pub struct Task {
     /// T052：任务图里这个子任务的总任务；单派任务和总任务为 None。旧任务行按 None 读。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<TaskId>,
-    /// T079：所属项目；空 = 个人。旧任务行按 None 读。
+    /// 所属项目；空 = 个人。旧任务行按 None 读。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
     /// T052：这个子任务等哪些兄弟子任务（开跑时把交接解析进每项）。旧任务行按空读。

@@ -13,11 +13,11 @@ writeScope?: string | null,
  */
 bash: boolean,
 /**
- * T077：任务取消时间；None = 没取消。
+ * 任务取消时间；None = 没取消。
  */
 cancelledAt?: number | null,
 /**
- * T079：所属项目；None = 个人。
+ * 所属项目；None = 个人。
  */
 projectId?: string | null,
 /**
