@@ -9,6 +9,17 @@ use tasks::{TaskError, TaskId};
 use super::{ActionEnv, ActionFuture, ActionKind, ActionOutcome, CardFact};
 use crate::root_lifecycle::RootHost;
 
+fn stage_zh(stage: tasks::Stage) -> &'static str {
+    match stage {
+        tasks::Stage::NeedsConditions => "缺条件",
+        tasks::Stage::Pending => "排队中",
+        tasks::Stage::Running => "在做",
+        tasks::Stage::ReadyForReview => "等你核",
+        tasks::Stage::RequirementMet => "已判",
+        tasks::Stage::Closed => "已关闭",
+    }
+}
+
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -98,7 +109,7 @@ impl ActionKind for CancelTasksAction {
             if stage == tasks::Stage::Closed {
                 facts.push(CardFact {
                     name: task.title.clone(),
-                    value: "已关闭；不会连带".to_owned(),
+                    value: "已关闭；不会取消".to_owned(),
                 });
                 continue;
             }
@@ -114,7 +125,7 @@ impl ActionKind for CancelTasksAction {
                 name: task.title.clone(),
                 value: format!(
                     "阶段：{}；连带下游：{}",
-                    stage.key(),
+                    stage_zh(stage),
                     if cascaded.is_empty() {
                         "无".to_owned()
                     } else {

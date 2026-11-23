@@ -1087,46 +1087,66 @@ impl Store {
         Ok(cancelled)
     }
 
-    /// T077.5：只读预览取消范围（目标 + 未关闭下游 + 把关这些任务的门），不写库。
-    pub fn cancel_scope(&self, id: &TaskId) -> Result<Vec<Task>, TaskError> {
-        let conn = self.lock()?;
-        let all = load_all_tasks(&conn)?;
+    /// T077.5：取消范围（目标 + 未关闭下游 + 把关这些任务的门）只算一次；
+    /// 预览和执行共用，每条带 from，执行时原样写进取消记录。
+    fn cancellation_scope(
+        connection: &Connection,
+        id: &TaskId,
+        root_from: Option<TaskId>,
+    ) -> Result<Vec<(Task, Option<TaskId>)>, TaskError> {
+        let all = load_all_tasks(connection)?;
         let by_id: HashMap<&str, &Task> = all.iter().map(|task| (task.id.as_str(), task)).collect();
         let target = by_id
             .get(id.as_str())
             .ok_or_else(|| TaskError::TaskNotFound(id.to_string()))?;
-        if target.cancelled.is_none() && stage_with_graph(&conn, target)? == Stage::Closed {
+        if target.cancelled.is_none() && stage_with_graph(connection, target)? == Stage::Closed {
             return Err(TaskError::AlreadyClosed);
         }
-        let mut order: Vec<TaskId> = vec![id.clone()];
+        let mut order: Vec<(TaskId, Option<TaskId>)> = vec![(id.clone(), root_from)];
         let mut seen: HashSet<String> = HashSet::from([id.as_str().to_owned()]);
         let mut index = 0;
         while index < order.len() {
-            let current = order[index].clone();
+            let (current, _) = order[index].clone();
             index += 1;
             for candidate in &all {
-                if seen.contains(candidate.id.as_str()) || candidate.cancelled.is_some() {
+                if candidate.cancelled.is_some() || seen.contains(candidate.id.as_str()) {
                     continue;
                 }
-                if !(candidate.needs.iter().any(|need| need.from == current)
+                let needs_current = candidate
+                    .needs
+                    .iter()
+                    .any(|need| need.from.as_str() == current.as_str())
                     || candidate.is_gate()
                         && candidate
                             .needs
                             .first()
-                            .is_some_and(|need| need.from == current))
-                {
+                            .is_some_and(|need| need.from.as_str() == current.as_str());
+                if !needs_current {
                     continue;
                 }
-                if stage_with_graph(&conn, candidate).ok() == Some(Stage::Closed) {
+                if stage_with_graph(connection, candidate).ok() == Some(Stage::Closed) {
                     continue;
                 }
                 seen.insert(candidate.id.as_str().to_owned());
-                order.push(candidate.id.clone());
+                order.push((candidate.id.clone(), Some(current.clone())));
             }
         }
         Ok(order
             .into_iter()
-            .filter_map(|task_id| by_id.get(task_id.as_str()).map(|task| (*task).clone()))
+            .filter_map(|(task_id, from)| {
+                by_id
+                    .get(task_id.as_str())
+                    .map(|task| ((*task).clone(), from))
+            })
+            .collect())
+    }
+
+    /// T077.5：只读预览取消范围（目标 + 未关闭下游 + 把关这些任务的门），不写库。
+    pub fn cancel_scope(&self, id: &TaskId) -> Result<Vec<Task>, TaskError> {
+        let conn = self.lock()?;
+        Ok(Self::cancellation_scope(&conn, id, None)?
+            .into_iter()
+            .map(|(task, _)| task)
             .collect())
     }
 
@@ -1141,63 +1161,15 @@ impl Store {
     ) -> Result<Vec<(TaskId, TaskCancellation)>, TaskError> {
         let mut conn = self.lock()?;
         let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let all = load_all_tasks(&transaction)?;
-        let by_id: HashMap<&str, &Task> = all.iter().map(|task| (task.id.as_str(), task)).collect();
-        let target = by_id
-            .get(id.as_str())
-            .ok_or_else(|| TaskError::TaskNotFound(id.to_string()))?;
-        if target.cancelled.is_none() && stage_with_graph(&transaction, target)? == Stage::Closed {
-            return Err(TaskError::AlreadyClosed);
-        }
-        let mut order: Vec<(TaskId, Option<TaskId>)> = vec![(id.clone(), from)];
-        let mut seen: HashSet<String> = HashSet::from([id.as_str().to_owned()]);
-        let mut index = 0;
-        while index < order.len() {
-            let (current, _) = order[index].clone();
-            index += 1;
-            let mut push = |candidate: &Task, from: &TaskId| {
-                if candidate.cancelled.is_some()
-                    || seen.contains(candidate.id.as_str())
-                    || candidate.id == *from && false
-                {
-                    return;
-                }
-                if stage_with_graph(&transaction, candidate).ok() == Some(Stage::Closed) {
-                    return;
-                }
-                seen.insert(candidate.id.as_str().to_owned());
-                order.push((candidate.id.clone(), Some(from.clone())));
-            };
-            for candidate in &all {
-                // 下游：需要当前结果的后续任务。
-                if candidate
-                    .needs
-                    .iter()
-                    .any(|need| need.from.as_str() == current.as_str())
-                {
-                    push(candidate, &current);
-                }
-                // 门/里程碑：把关当前任务的独立门任务。
-                if candidate.is_gate()
-                    && candidate
-                        .needs
-                        .first()
-                        .is_some_and(|need| need.from.as_str() == current.as_str())
-                {
-                    push(candidate, &current);
-                }
-            }
-        }
+        let scope = Self::cancellation_scope(&transaction, id, from)?;
         let mut cancellations = Vec::new();
-        for (task_id, from) in order {
-            let Some(task) = by_id.get(task_id.as_str()) else {
-                continue;
-            };
-            let mut task = (*task).clone();
+        for (mut task, from) in scope {
             if task.cancelled.is_some() {
                 continue;
             }
-            if task_id != *id && stage_with_graph(&transaction, &task).ok() == Some(Stage::Closed) {
+            if task.id != *id
+                && stage_with_graph(&transaction, &task).ok() == Some(Stage::Closed)
+            {
                 continue;
             }
             let cancellation = self.mark_cancelled(&transaction, &mut task, source, from, now)?;
