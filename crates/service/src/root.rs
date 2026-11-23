@@ -162,7 +162,7 @@ impl RootSession {
 ///
 /// 写、改、跑命令和三件后台任务不在里面；这些活派给 ThinAgent。任务工具看
 /// `task_runtime` 有没有装配，由 `kind_tool_policy` 追加。
-pub(crate) const KIND_TOOLS: [&str; 20] = [
+pub(crate) const KIND_TOOLS: [&str; 22] = [
     "read",
     "glob",
     "grep",
@@ -183,6 +183,8 @@ pub(crate) const KIND_TOOLS: [&str; 20] = [
     "memory_dream_now",
     "memory_undo_dream",
     "memory_delete_note",
+    "kind_react",
+    "kind_say",
 ];
 
 /// Kind 根会话的派任务说明（D20、D63）：照 DSH superagent 协调者的几条，按 AIOS 改名。
@@ -261,6 +263,10 @@ pub async fn open_root_session_with(
     // `web_search`/`web_fetch` 联网（要 Exa 的 key 且加载过 `web`），任务工具
     // `task_accept`/`task_status` 派只读调查。CLI 的对话不装它们。
     let mut extra_tools = vec![
+        std::sync::Arc::new(crate::kind_output::KindReactTool::new())
+            as std::sync::Arc<dyn tools::Tool>,
+        std::sync::Arc::new(crate::kind_output::KindSayTool::new())
+            as std::sync::Arc<dyn tools::Tool>,
         std::sync::Arc::new(
             crate::aios_query::QueryTool::new(options.data_dir.clone(), options.identity.clone())
                 .with_tool_names(kind_tool_names(options.task_runtime.is_some())),

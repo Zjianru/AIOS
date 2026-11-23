@@ -20,6 +20,7 @@ mod inbox_and_cancel;
 mod inbox_durable;
 mod instructions;
 mod jobs;
+mod kind_say_stop;
 mod manual_compact_no_injection;
 mod max_tokens;
 mod memory_context;

@@ -1,0 +1,9 @@
+{
+  "routes": [
+    {
+      "contains": "只回个表情",
+      "file": "t078-kind-react.jsonl",
+      "paceMs": 60
+    }
+  ]
+}
