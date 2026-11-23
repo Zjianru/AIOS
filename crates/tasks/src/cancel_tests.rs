@@ -164,5 +164,8 @@ fn group_accept_refuses_a_cancelled_task_without_accepting_others_silently() {
         .accept_many(&[(task.id.clone(), report)], T0 + 20)
         .unwrap();
     assert_eq!(batch.outcomes.len(), 1);
-    assert_eq!(batch.outcomes[0].refused.as_deref(), Some(CANCELLED_MESSAGE));
+    assert_eq!(
+        batch.outcomes[0].refused.as_deref(),
+        Some(CANCELLED_MESSAGE)
+    );
 }

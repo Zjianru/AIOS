@@ -1085,6 +1085,11 @@ impl Store {
         };
         task.cancelled = Some(cancelled.clone());
         save_task(Some(self), &transaction, &task)?;
+        // 取消后不再起跑：把还没被领走的 launch 一起收掉，避免效果泵反复试一个已取消任务。
+        transaction.execute(
+            "DELETE FROM effect WHERE kind = ?1 AND key = ?2",
+            params![EffectKind::Launch.as_str(), id.as_str()],
+        )?;
         self.enqueue_effect_in(
             &transaction,
             &EffectPayload::Cancel {
