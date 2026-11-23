@@ -7,10 +7,14 @@
 //!
 //! 挂在 skill `aios-settings` 后面：本会话加载过它以后，下一步才开出这个工具。
 
+use chrono::{Datelike, Local, TimeZone};
 use std::path::PathBuf;
 
 use serde_json::{Value, json};
 use tools::{Tool, ToolCall, ToolCondition, ToolContext, ToolFailure, ToolFuture, ToolResult};
+
+use crate::protocol::WorkResponse;
+use crate::work::{TaskFact, WaitItem};
 
 /// 查询的六个主题。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,6 +25,7 @@ enum Topic {
     Usage,
     Product,
     Calendar,
+    Work,
 }
 
 impl Topic {
@@ -32,6 +37,7 @@ impl Topic {
             "usage" => Some(Self::Usage),
             "product" => Some(Self::Product),
             "calendar" => Some(Self::Calendar),
+            "work" => Some(Self::Work),
             _ => None,
         }
     }
@@ -55,8 +61,8 @@ impl QueryTool {
                 "properties": {
                     "topic": {
                         "type": "string",
-                        "enum": ["settings", "connections", "models", "usage", "product", "calendar"],
-                        "description": "settings: this conversation's model and effort, the selection new conversations use, and the currency. connections: connections already stored, with whether a key is saved and the last verification result. models: the models each connection can pick, with masking rules. usage: this conversation's turns, steps, tokens and cost. product: what AIOS can and cannot do. calendar: appointments, their triggers/bindings/watch/cycle, and recent runs."
+                        "enum": ["settings", "connections", "models", "usage", "product", "calendar", "work"],
+                        "description": "settings: this conversation's model and effort, the selection new conversations use, and the currency. connections: connections already stored, with whether a key is saved and the last verification result. models: the models each connection can pick, with masking rules. usage: this conversation's turns, steps, tokens and cost. product: what AIOS can and cannot do. calendar: appointments, their triggers/bindings/watch/cycle, and recent runs. work: the same work snapshot the work page reads, projected into facts and actions (no graph edges)."
                     }
                 },
                 "required": ["topic"]
@@ -72,6 +78,7 @@ impl QueryTool {
             Topic::Usage => self.usage(context),
             Topic::Product => Ok(product()),
             Topic::Calendar => self.calendar(),
+            Topic::Work => self.work(context),
         }
     }
 
@@ -135,6 +142,28 @@ impl QueryTool {
             }));
         }
         Ok(json!({ "appointments": rows }))
+    }
+
+    fn work(&self, context: &ToolContext) -> Result<Value, ToolFailure> {
+        let store = tasks::Store::open(self.data_dir.join(crate::TASKS_DB_FILE))
+            .map_err(|error| ToolFailure::plain(format!("任务库读不出来：{error}")))?;
+        let events = context.session_events();
+        let pending = crate::work::pending_questions(&events);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| i64::try_from(duration.as_millis()).unwrap_or(i64::MAX))
+            .unwrap_or_default();
+        let mut response = crate::work::snapshot(&store, &events, &pending, now)
+            .map_err(|error| ToolFailure::plain(format!("工作快照读不出来：{error}")))?;
+        // 页面 work_snapshot 还会合并日历暂停的等你项；这里必须走同一个合并，否则件数对不上。
+        let calendar_path = self.data_dir.join("calendar.sqlite");
+        if calendar_path.exists()
+            && let Ok(calendar) = calendar::CalendarStore::open(&calendar_path)
+            && let Ok(waits) = crate::work::calendar_pause_waits(&calendar)
+        {
+            crate::work::merge_waits(&mut response, waits);
+        }
+        Ok(project_work(&response, now))
     }
 
     fn keyring(&self) -> Result<credentials::Keyring, ToolFailure> {
@@ -248,23 +277,186 @@ impl QueryTool {
 }
 
 /// 产品信息和能力边界（A04）：编进二进制的常数，不读磁盘。
+fn wait_action(kind: &str) -> (&'static str, &'static str) {
+    match kind {
+        "resume" | "confirm" => ("去看", "你"),
+        "answer" => ("去答", "你"),
+        "judge" => ("去判", "你"),
+        "accept" => ("看交付记录", "你"),
+        _ => ("查看", "你"),
+    }
+}
+
+fn task_action(task: &TaskFact, group: &str) -> (&'static str, &'static str) {
+    if group == "problems" {
+        return ("让 Kind 补条件", "Kind");
+    }
+    if group == "advancing" {
+        return ("ThinAgent 推进", "ThinAgent");
+    }
+    if task.after_waiting {
+        ("等前置完成", "ThinAgent")
+    } else if task.stage == "needs_conditions" {
+        ("等 Kind 补条件", "Kind")
+    } else {
+        ("等排程", "排程")
+    }
+}
+
+fn task_reason(task: &TaskFact) -> String {
+    task.latest
+        .as_ref()
+        .and_then(|latest| {
+            latest
+                .question
+                .clone()
+                .or_else(|| Some(latest.summary.clone()))
+        })
+        .filter(|text| !text.trim().is_empty())
+        .or_else(|| task.after_waiting.then(|| "等前置完成".to_owned()))
+        .unwrap_or_else(|| task.stage.clone())
+}
+
+fn project_task(task: &TaskFact, group: &str) -> Value {
+    let (action, owner) = task_action(task, group);
+    json!({
+        "id": task.id,
+        "title": task.title,
+        "stage": task.stage,
+        "reason": task_reason(task),
+        "also": [],
+        "action": action,
+        "actionOwner": owner,
+    })
+}
+
+fn project_wait(item: &WaitItem) -> Value {
+    let (action, owner) = wait_action(&item.kind);
+    let id = item
+        .task_id
+        .clone()
+        .unwrap_or_else(|| format!("{}:{}:{}", item.kind, item.title, item.at));
+    json!({
+        "id": id,
+        "taskId": item.task_id,
+        "appointmentId": item.appointment_id,
+        "title": item.title,
+        "stage": item.stage,
+        "reason": item.body,
+        "need": item.need,
+        "also": item.also,
+        "action": action,
+        "actionOwner": owner,
+    })
+}
+
+fn week_start_ms(now_ms: i64) -> i64 {
+    let Some(now) = Local.timestamp_millis_opt(now_ms).single() else {
+        return now_ms;
+    };
+    let date = now.date_naive();
+    let monday = date - chrono::Duration::days(i64::from(date.weekday().num_days_from_monday()));
+    Local
+        .from_local_datetime(&monday.and_hms_opt(0, 0, 0).expect("midnight is valid"))
+        .single()
+        .map(|at| at.timestamp_millis())
+        .unwrap_or(now_ms)
+}
+
+fn project_work(response: &WorkResponse, now_ms: i64) -> Value {
+    let wait_ids: std::collections::HashSet<&str> = response
+        .wait
+        .iter()
+        .filter_map(|item| item.task_id.as_deref())
+        .collect();
+    let mut problems = Vec::new();
+    let mut advancing = Vec::new();
+    let mut queue = Vec::new();
+    let week_start = week_start_ms(now_ms);
+    for task in &response.tasks {
+        if task.stage == "closed" {
+            continue;
+        }
+        if task.stage == "needs_conditions"
+            && !task.after_waiting
+            && !wait_ids.contains(task.id.as_str())
+        {
+            problems.push(project_task(task, "problems"));
+        } else if task.stage == "running" || task.stage == "ready_for_review" {
+            advancing.push(project_task(task, "advancing"));
+        } else if task.stage == "needs_conditions" || task.stage == "pending" {
+            queue.push(project_task(task, "queue"));
+        }
+    }
+    let done: Vec<&TaskFact> = response
+        .tasks
+        .iter()
+        .filter(|task| {
+            task.stage == "closed"
+                && !task.gate
+                && task.closed_at.is_some_and(|at| at >= week_start)
+        })
+        .collect();
+    json!({
+        "generatedAt": response.generated_at,
+        "counts": {
+            "wait": response.wait.len(),
+            "problems": problems.len(),
+            "advancing": advancing.len(),
+            "queue": queue.len(),
+            "doneThisWeek": done.len(),
+        },
+        "wait": response.wait.iter().map(project_wait).collect::<Vec<_>>(),
+        "problems": problems,
+        "advancing": advancing,
+        "queue": queue,
+        "doneThisWeek": {
+            "count": done.len(),
+            "titles": done.iter().map(|task| task.title.clone()).collect::<Vec<_>>(),
+        },
+    })
+}
+
+fn tool_can(tool: &str) -> &'static str {
+    match tool {
+        "read" => "读文件内容。",
+        "glob" => "按路径模式找文件。",
+        "grep" => "按内容搜文件。",
+        "skill" => "加载技能说明再照做。",
+        "todo_write" => "给这一轮列待办。",
+        "ask_user_question" => "问你问题。",
+        "canvas" => "把代码/文档/网页画成可看的画布。",
+        "aios_query" => "读 AIOS 自己的设置、连接、模型、用量、工作页和日历。",
+        "propose_action" => "出确认卡；改设置、派任务图都等你在卡上点。",
+        "web_search" => "搜网页（要你在设置页存 Exa key）。",
+        "web_fetch" => "读网页链接（要你在设置页存 Exa key）。",
+        "memory_remember" => "在你明确说了以后，记一条长期记忆。",
+        "memory_note" => "记一条自己的笔记。",
+        "memory_about_draft" => "起草「关于你」的更新，等你确认。",
+        "memory_search" => "搜记忆、日记和 Kind 对话。",
+        "memory_read" => "读一条记忆或日记。",
+        "memory_diary" => "追加一行日记。",
+        "memory_dream_now" => "整理一次记忆（做梦）。",
+        "memory_undo_dream" => "撤销上一次整理。",
+        "memory_delete_note" => "用户明确说删时删一条笔记。",
+        _ => "做这件事。",
+    }
+}
+
 fn product() -> Value {
+    // 「能做」跟着 Kind 的实际工具面走；工具表变了这里必须跟着变，不能再写静态清单。
+    let can: Vec<String> = crate::root::KIND_TOOLS
+        .iter()
+        .map(|tool| format!("{tool}：{}", tool_can(tool)))
+        .collect();
     json!({
         "product": "AIOS",
         "about": "面向个人的桌面智能体工作台：把模型、工具和个人上下文组织成可执行的任务流。",
-        "can": [
-            "用你选的模型连接和你填的 key 对话；要换模型、换强度，我出确认卡，你点了才生效。",
-            "读这条对话现在用的模型、推理强度、币种，以及一共花了多少。",
-            "读你已经存下的连接、每个连接能选的模型、屏蔽了哪些模型。",
-            "用文件读写、搜索、命令、后台任务、画布这些工具干活。",
-            "在设置页填、换、删 Exa 的 key 以后搜网页、读网页（本机地址和内网地址会被拒）。"
-        ],
+        "can": can,
         "cannot": [
-            "自己建连接、填 key 或换 key：这些只在设置页做。",
+            "自己建连接、填 key 或换 key：这些只在设置页做，要你亲手点。",
             "现拉厂商的模型列表、现测连接：那是设置页上的按钮。",
-            "从环境变量里找 key。",
-            "碰任务、项目、日历这些还没做的域。",
-            "绕过确认卡直接改设置：要改就得你在卡上点。"
+            "绕过确认卡直接改设置或派任务：要改就得你在卡上点。"
         ]
     })
 }
@@ -320,4 +512,137 @@ fn parse_topic(arguments: &str) -> Result<Topic, ToolFailure> {
             "invalid topic {name:?}: expected settings, connections, models, usage, product or calendar"
         ))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::work::WaitItem;
+
+    #[test]
+    fn product_can_has_exactly_one_line_per_kind_tool() {
+        let body = product();
+        let can = body["can"].as_array().expect("can 数组");
+        let names: Vec<&str> = can
+            .iter()
+            .filter_map(Value::as_str)
+            .map(|line| line.split('：').next().unwrap_or(""))
+            .collect();
+        assert_eq!(
+            names.len(),
+            crate::root::KIND_TOOLS.len(),
+            "每个 Kind 工具一行"
+        );
+        for tool in crate::root::KIND_TOOLS {
+            assert!(names.contains(&tool), "工具面漏了 {tool}");
+            assert!(
+                can.iter().any(|line| {
+                    line.as_str()
+                        .is_some_and(|text| text.starts_with(&(tool.to_owned() + "：")))
+                }),
+                "工具面缺一行 {tool}"
+            );
+        }
+        for name in names {
+            assert!(crate::root::KIND_TOOLS.contains(&name), "名单外工具 {name}");
+        }
+        let cannot = body["cannot"].as_array().expect("cannot 数组");
+        assert_eq!(cannot.len(), 3, "不能只留永远成立的三条");
+        let text = serde_json::to_string(cannot).unwrap();
+        assert!(text.contains("建连接"));
+        assert!(text.contains("填 key"));
+        assert!(text.contains("绕过确认卡"));
+    }
+
+    fn wait(kind: &str, task: &str, title: &str) -> WaitItem {
+        WaitItem {
+            kind: kind.to_owned(),
+            task_id: Some(task.to_owned()),
+            title: title.to_owned(),
+            stage: Some("ready_for_review".to_owned()),
+            need: "要你".to_owned(),
+            body: "原因原文".to_owned(),
+            at: 1_700_000_000_000,
+            turn: None,
+            also: Vec::new(),
+            pick: None,
+            write: None,
+            version: None,
+            appointment_id: None,
+        }
+    }
+
+    #[test]
+    fn work_topic_merges_calendar_pause_wait_like_page_snapshot() {
+        use std::sync::Arc;
+
+        let data = tempfile::tempdir().unwrap();
+        let now = 1_700_000_000_000_i64;
+        let calendar = calendar::CalendarStore::open(data.path().join("calendar.sqlite")).unwrap();
+        let appointment = calendar
+            .create_appointment(calendar::NewAppointment {
+                title: "循环约定".to_owned(),
+                condition: "列给我".to_owned(),
+                schedule: calendar::Schedule {
+                    rule: "FREQ=DAILY".to_owned(),
+                    timezone: "Asia/Shanghai".to_owned(),
+                    start_at: now,
+                },
+                binding: calendar::Binding::Task("task-cycle".to_owned()),
+                watch: None,
+                cycle: Some(calendar::CycleSpec {
+                    task_id: "task-cycle".to_owned(),
+                    max_rounds: None,
+                }),
+                duration_minutes: None,
+            })
+            .unwrap();
+        let paused = calendar
+            .pause_with_reason(&appointment.id, "等你确认下一轮")
+            .unwrap();
+        let store = tasks::Store::open(data.path().join("tasks.sqlite")).unwrap();
+        let mut page = crate::work::snapshot(&store, &[], &[], now).unwrap();
+        crate::work::merge_waits(
+            &mut page,
+            crate::work::calendar_pause_waits(&calendar).unwrap(),
+        );
+        assert_eq!(page.wait.len(), 1, "页面会合并日历暂停项");
+
+        let tool = QueryTool::new(data.path(), None);
+        let context = ToolContext::with_session(
+            data.path(),
+            Arc::new(tools::ToolSessionState::new(data.path(), "test")),
+        );
+        let projected = tool.work(&context).unwrap();
+        assert_eq!(projected["counts"]["wait"], page.wait.len());
+        assert_eq!(projected["wait"][0]["appointmentId"], paused.id);
+        assert!(
+            projected["wait"][0]["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("等你确认下一轮"))
+        );
+    }
+
+    #[test]
+    fn work_projection_keeps_page_wait_count_and_no_cancel_or_graph_edges() {
+        let response = WorkResponse {
+            generated_at: 1_700_000_000_000,
+            tasks: Vec::new(),
+            wait: vec![
+                wait("accept", "task-a", "任务甲"),
+                wait("confirm", "task-b", "任务乙"),
+            ],
+            graphs: Vec::new(),
+        };
+        let projected = project_work(&response, response.generated_at);
+        assert_eq!(projected["counts"]["wait"], 2);
+        assert_eq!(projected["wait"].as_array().unwrap().len(), 2);
+        let text = projected.to_string();
+        assert!(!text.contains("cancel"));
+        assert!(!text.contains("edges"));
+        assert!(!text.contains("payload"));
+        assert!(text.contains("任务甲"));
+        assert!(text.contains("原因原文"));
+        assert!(text.contains("actionOwner"));
+    }
 }

@@ -599,6 +599,41 @@ fn project_graphs(all: &[Task], by_id: &HashMap<String, Task>) -> Vec<WorkGraphF
     graphs
 }
 
+/// 从会话日志折出还没回答/取消的问题；aios_query work 和页面共用同一判断。
+pub(crate) fn pending_questions(events: &[session::Event]) -> Vec<agent::Question> {
+    let mut pending: Vec<agent::Question> = Vec::new();
+    for event in events {
+        match &event.kind {
+            session::EventKind::QuestionAsked {
+                question_id,
+                question,
+                header,
+                options,
+                multi_select,
+                ..
+            } => pending.push(agent::Question {
+                id: question_id.clone(),
+                question: question.clone(),
+                header: header.clone(),
+                options: options
+                    .iter()
+                    .map(|label| agent::QuestionOption {
+                        label: label.clone(),
+                        description: None,
+                    })
+                    .collect(),
+                multi_select: *multi_select,
+            }),
+            session::EventKind::QuestionAnswered { question_id, .. }
+            | session::EventKind::QuestionCancelled { question_id, .. } => {
+                pending.retain(|item| item.id != *question_id);
+            }
+            _ => {}
+        }
+    }
+    pending
+}
+
 /// 组装一份工作快照。
 pub(crate) fn snapshot(
     store: &Store,
@@ -879,6 +914,48 @@ fn now_millis() -> i64 {
 }
 
 /// 把日历等额外的「等你」项并进工作快照，按同一种排序。
+pub(crate) fn calendar_pause_waits(
+    store: &calendar::CalendarStore,
+) -> Result<Vec<WaitItem>, String> {
+    let appointments = store
+        .list_appointments()
+        .map_err(|error| error.to_string())?;
+    let mut waits = Vec::new();
+    for appointment in appointments {
+        if appointment.status != calendar::AppointmentStatus::Paused {
+            continue;
+        }
+        let Some(cycle) = &appointment.cycle else {
+            continue;
+        };
+        let Some(reason) = store
+            .latest_version_reason(&appointment.id)
+            .map_err(|error| error.to_string())?
+        else {
+            continue;
+        };
+        let Some(reason) = reason.strip_prefix("循环约定暂停：") else {
+            continue;
+        };
+        waits.push(WaitItem {
+            kind: "answer".to_owned(),
+            task_id: Some(cycle.task_id.clone()),
+            title: appointment.title.clone(),
+            stage: None,
+            need: format!("循环约定暂停了：{reason}"),
+            body: reason.to_owned(),
+            at: appointment.updated_at,
+            turn: None,
+            also: Vec::new(),
+            pick: None,
+            write: None,
+            version: Some(appointment.version),
+            appointment_id: Some(appointment.id.clone()),
+        });
+    }
+    Ok(waits)
+}
+
 pub(crate) fn merge_waits(response: &mut WorkResponse, mut extra: Vec<WaitItem>) {
     if extra.is_empty() {
         return;
