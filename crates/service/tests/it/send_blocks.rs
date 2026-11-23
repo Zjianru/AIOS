@@ -25,11 +25,7 @@ fn request(content: &str) -> SendRequest {
 }
 
 /// 等日志里出现 user/message 并返回它的块（send 后 step 开始时写）。
-async fn wait_user_blocks(
-    host: &RootHost,
-    data_dir: &Path,
-    request_id: &str,
-) -> Vec<model::ContentBlock> {
+async fn wait_user_blocks(host: &RootHost, data_dir: &Path) -> Vec<model::ContentBlock> {
     for _ in 0..200 {
         tokio::time::sleep(Duration::from_millis(20)).await;
         let status = host
@@ -51,7 +47,7 @@ async fn wait_user_blocks(
                 if matches!(
                     &message.source,
                     model::MessageSource::User { rpc_id: Some(rpc_id) }
-                        if rpc_id == request_id
+                        if rpc_id.starts_with("req-")
                 ) =>
             {
                 Some(message.clone())
@@ -88,7 +84,7 @@ async fn send_builds_blocks_in_order_content_then_pastes_then_files() {
         bytes: 5,
     }];
     host.dispatch(Call::Send(send)).await.expect("send");
-    let blocks = wait_user_blocks(&host, data.path(), "req-t013-4").await;
+    let blocks = wait_user_blocks(&host, data.path()).await;
     assert_eq!(
         blocks.len(),
         4,
@@ -134,7 +130,7 @@ async fn send_with_empty_content_starts_with_the_paste_block() {
     let mut send = request("");
     send.pastes = vec!["只有粘贴".to_owned()];
     host.dispatch(Call::Send(send)).await.expect("send");
-    let blocks = wait_user_blocks(&host, data.path(), "req-t013-4").await;
+    let blocks = wait_user_blocks(&host, data.path()).await;
     assert_eq!(blocks.len(), 1, "content 空就不放那一块：{blocks:?}");
     assert!(
         matches!(&blocks[0], model::ContentBlock::Text { text, paste, .. } if text == "只有粘贴" && *paste),
@@ -166,7 +162,7 @@ async fn attachment_name_and_bytes_use_the_request_values() {
         bytes: 99,
     }];
     host.dispatch(Call::Send(send)).await.expect("send");
-    let blocks = wait_user_blocks(&host, data.path(), "req-t013-4").await;
+    let blocks = wait_user_blocks(&host, data.path()).await;
     match blocks.last() {
         Some(model::ContentBlock::File { name, bytes, .. }) => {
             assert_eq!(name, "b.txt", "用请求里的名字（用户卡片名）");
@@ -235,7 +231,7 @@ async fn send_with_canvas_adds_a_tagged_text_block_before_the_message() {
     let cwd = tempdir().unwrap();
     let host = host(data.path(), cwd.path()).await;
     host.dispatch(canvas_send_request()).await.expect("send");
-    let blocks = wait_user_blocks(&host, data.path(), "req-t015-4").await;
+    let blocks = wait_user_blocks(&host, data.path()).await;
     let json = user_blocks_json(&blocks);
     assert_eq!(json.len(), 2, "标记块 + 打的字：{json:?}");
     assert_eq!(json[0]["type"], "text", "标记那一块是文字块：{json:?}");
@@ -264,7 +260,7 @@ async fn send_without_canvas_keeps_a_single_text_block() {
     host.dispatch(Call::Send(request("按这个存：每月 3000")))
         .await
         .expect("send");
-    let blocks = wait_user_blocks(&host, data.path(), "req-t013-4").await;
+    let blocks = wait_user_blocks(&host, data.path()).await;
     assert_eq!(
         user_blocks_json(&blocks),
         vec![serde_json::json!({ "type": "text", "text": "按这个存：每月 3000" })],

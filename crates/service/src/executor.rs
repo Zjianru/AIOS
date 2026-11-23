@@ -3876,7 +3876,7 @@ impl TaskRuntime {
             .collect())
     }
 
-    /// T077.5：任务页/Kind 卡共用；沿用运行时的任务库与变化通知。
+    /// 任务页/Kind 卡共用；沿用运行时的任务库与变化通知。
     pub(crate) fn cancel_with_downstream(
         &self,
         task_id: &TaskId,
