@@ -183,6 +183,9 @@ impl TaskRuntime {
             .task(gate_id)
             .map_err(|error| error.to_string())?
             .ok_or_else(|| format!("找不到这个任务：{gate_id}"))?;
+        if let Some(reason) = task.cancelled_message() {
+            return Err(reason.to_owned());
+        }
         if !task.is_gate() {
             return Err("这不是门任务".to_owned());
         }

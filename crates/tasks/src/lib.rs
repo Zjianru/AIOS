@@ -6,6 +6,10 @@
 #[cfg(test)]
 mod origin_tests;
 
+#[cfg(test)]
+#[path = "cancel_tests.rs"]
+mod cancel_tests;
+
 mod effect;
 mod error;
 mod id;
@@ -26,10 +30,11 @@ pub use stage::Stage;
 pub use store::{BootScan, GateJudgeOutcome, SCHEMA_VERSION, StopAttempt, Store};
 pub use task::{
     AcceptBatch, AcceptOutcome, Acceptance, AppointmentOrigin, AppointmentRole, Arrangement,
-    Attempt, AttemptEnd, AttemptTrigger, Cancellation, CancellationReason, Confirmation,
-    ContinueCause, GateCandidate, GateCheck, GateCheckOutcome, GateCommand, GateConclusion,
-    GateVerdict, Handoff, Input, InputAttachment, InputSource, MilestoneGate, MissingItem,
-    ModelChoice, Need, NewGraph, NewInput, NewReport, NewSubtask, NewTask, ProgramGateOutcome,
-    Report, ReportOrigin, ReportState, RequirementVersion, RoundEnd, Run, SayOutcome, Task,
-    TaskPolicy, VerdictSource, VersionSource, Worktree, validate_gate_commands,
+    Attempt, AttemptEnd, AttemptTrigger, CANCELLED_MESSAGE, Cancellation, CancellationReason,
+    CancellationSource, Confirmation, ContinueCause, GateCandidate, GateCheck, GateCheckOutcome,
+    GateCommand, GateConclusion, GateVerdict, Handoff, Input, InputAttachment, InputSource,
+    MilestoneGate, MissingItem, ModelChoice, Need, NewGraph, NewInput, NewReport, NewSubtask,
+    NewTask, ProgramGateOutcome, Report, ReportOrigin, ReportState, RequirementVersion, RoundEnd,
+    Run, SayOutcome, Task, TaskCancellation, TaskPolicy, VerdictSource, VersionSource, Worktree,
+    validate_gate_commands,
 };

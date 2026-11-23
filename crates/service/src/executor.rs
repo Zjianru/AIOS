@@ -456,6 +456,9 @@ impl TaskRuntime {
             )
             .map_err(|error| match error {
                 TaskError::EmptyInput => ServiceError::MessageEmpty,
+                TaskError::Cancelled => {
+                    ServiceError::TaskUnavailable(tasks::CANCELLED_MESSAGE.to_owned())
+                }
                 other => ServiceError::TaskUnavailable(format!("这句话没记进任务库：{other}")),
             })?;
         self.wake();
@@ -497,6 +500,9 @@ impl TaskRuntime {
             .task(&task_id)
             .map_err(|error| error.to_string())?
             .ok_or_else(|| format!("找不到这个任务：{}", request.task_id))?;
+        if let Some(reason) = task.cancelled_message() {
+            return Err(reason.to_owned());
+        }
         if let Some(reason) = Self::trigger_task_rejection(&task) {
             return Err(reason);
         }
@@ -1673,6 +1679,21 @@ impl TaskRuntime {
                     return;
                 }
                 let mut worked = false;
+                // 取消停效果优先于 relay：取消后立即掐断在跑的宿主，不等 Kind 投递。
+                match self
+                    .store
+                    .claim_effect_ordered(EffectKind::Cancel, Self::now())
+                {
+                    Ok(Some(claim)) => {
+                        worked = true;
+                        self.deliver_cancel(claim).await;
+                    }
+                    Ok(None) => {}
+                    Err(error) => eprintln!("任务取消领取失败：{error}"),
+                }
+                if self.shutting_down.load(Ordering::SeqCst) {
+                    return;
+                }
                 match self
                     .store
                     .claim_effect_ordered(EffectKind::Relay, Self::now())
@@ -1946,6 +1967,10 @@ impl TaskRuntime {
         attempt: &Attempt,
         mode: ResumeMode,
     ) -> Option<OpenedResume> {
+        if task.cancelled_message().is_some() {
+            self.finish_or_fail(claim, Ok(()));
+            return None;
+        }
         let (trigger, slot) = match mode {
             ResumeMode::Say => (AttemptTrigger::UserMessage, SlotKind::Person),
             ResumeMode::Interrupted => (AttemptTrigger::Resume, SlotKind::Wake),
@@ -1984,6 +2009,9 @@ impl TaskRuntime {
         else {
             return Err(format!("找不到这个任务：{task_id}"));
         };
+        if let Some(reason) = task.cancelled_message() {
+            return Err(reason.to_owned());
+        }
         if task.is_program_gate() {
             return Err(
                 "程序门没有会话可接续；要重跑用 gate_check_again，要换命令回 Kind 对话说"
@@ -3414,6 +3442,9 @@ impl TaskRuntime {
             .task(&id)
             .map_err(|error| ToolFailure::plain(error.to_string()))?
             .ok_or_else(|| ToolFailure::plain(format!("任务不存在：{task_id}")))?;
+        if let Some(reason) = task.cancelled_message() {
+            return Err(ToolFailure::plain(reason));
+        }
         if let Some(reason) = Self::trigger_task_rejection(&task) {
             return Err(ToolFailure::plain(reason));
         }

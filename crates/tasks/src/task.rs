@@ -216,6 +216,27 @@ pub struct Cancellation {
     pub reason: CancellationReason,
 }
 
+/// T077：任务被取消的事实。取消只落这一条，不改事件日志。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskCancellation {
+    /// 取消时间（Unix 毫秒）。
+    pub at: i64,
+    /// 谁取消的：任务页菜单 / Kind 确认卡。
+    pub source: CancellationSource,
+    /// 连带自哪个任务（.3 单项还没用；.4 下游连带填）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<TaskId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CancellationSource {
+    /// 任务页菜单。
+    User,
+    /// Kind 的确认卡。
+    Kind,
+}
+
 /// T052：总任务上的安排记录：图版本与本票唯一一次确认。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Arrangement {
@@ -325,6 +346,9 @@ pub struct Task {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub acceptances: Vec<Acceptance>,
+    /// T077：取消事实；阶段派生最先看它，不进事件日志。旧任务行按 None 读。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancelled: Option<TaskCancellation>,
     /// T052：任务图里这个子任务的总任务；单派任务和总任务为 None。旧任务行按 None 读。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<TaskId>,
@@ -784,7 +808,14 @@ impl NewReport {
     }
 }
 
+/// T077：已取消任务的统一拒绝原话（任务页/输入框/所有守卫共用）。
+pub const CANCELLED_MESSAGE: &str = "这个任务已经取消了；要再做，让 Kind 新派一个。";
+
 impl Task {
+    pub fn cancelled_message(&self) -> Option<&'static str> {
+        self.cancelled.as_ref().map(|_| CANCELLED_MESSAGE)
+    }
+
     /// 当前要求版本号（1 起）；旧任务行没有版本记录时为 0。
     pub fn requirement_version(&self) -> u32 {
         u32::try_from(self.versions.len()).unwrap_or(u32::MAX)

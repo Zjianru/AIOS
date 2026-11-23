@@ -20,6 +20,8 @@ pub enum EffectKind {
     AppointmentWake,
     /// ThinAgent 等后台的 30 分钟到点；key 是 Attempt，换一轮/结束就作废。
     BackgroundLimit,
+    /// T077：取消后立即掐断在跑的宿主；key 是任务 id。
+    Cancel,
 }
 
 impl EffectKind {
@@ -32,6 +34,7 @@ impl EffectKind {
             Self::Restart => "restart",
             Self::AppointmentWake => "appointment-wake",
             Self::BackgroundLimit => "background-limit",
+            Self::Cancel => "cancel",
         }
     }
 
@@ -45,7 +48,8 @@ impl EffectKind {
             | Self::Notice
             | Self::Restart
             | Self::AppointmentWake
-            | Self::BackgroundLimit => (2_000, 60_000),
+            | Self::BackgroundLimit
+            | Self::Cancel => (2_000, 60_000),
         }
     }
 
@@ -121,6 +125,10 @@ pub enum EffectPayload {
         attempt_id: AttemptId,
         turn: u64,
     },
+    /// T077：取消事实落库后，效果泵立即掐断这个任务还活着的宿主。
+    Cancel {
+        task_id: TaskId,
+    },
 }
 
 impl EffectPayload {
@@ -136,6 +144,7 @@ impl EffectPayload {
             Self::Restart { .. } => EffectKind::Restart,
             Self::AppointmentWake { .. } => EffectKind::AppointmentWake,
             Self::BackgroundLimit { .. } => EffectKind::BackgroundLimit,
+            Self::Cancel { .. } => EffectKind::Cancel,
         }
     }
 
@@ -159,6 +168,7 @@ impl EffectPayload {
             Self::Notice { input_id, .. } => format!("cc:{input_id}"),
             Self::Restart { boot_id, .. } => boot_id.to_string(),
             Self::AppointmentWake { run_id, .. } => run_id.to_string(),
+            Self::Cancel { task_id } => task_id.to_string(),
         }
     }
 }

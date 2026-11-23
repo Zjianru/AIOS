@@ -50,6 +50,10 @@ impl Stage {
 impl Task {
     /// 按 spec 的表序派生阶段。launch 是否排队由调用方从效果表查出来传进来。
     pub fn stage(&self, launch_queued: bool) -> Stage {
+        // T077：取消最先判，排在接受/门之前。
+        if self.cancelled.is_some() {
+            return Stage::Closed;
+        }
         if !self.missing.is_empty() {
             return Stage::NeedsConditions;
         }

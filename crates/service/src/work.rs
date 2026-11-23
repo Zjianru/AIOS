@@ -151,6 +151,9 @@ pub struct TaskFact {
     pub accepted_at: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closed_at: Option<i64>,
+    /// T077：任务被取消的时间；页面完成列写「取消于」，本周完成排除。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancelled_at: Option<i64>,
 }
 
 /// 任务最近一份报告（页面判断「等你 / 完成」用；正文只放摘要和问题原文）。
@@ -757,6 +760,7 @@ pub(crate) fn snapshot(
             }),
             accepted_at,
             closed_at,
+            cancelled_at: task.cancelled.as_ref().map(|cancelled| cancelled.at),
         });
     }
 
@@ -778,6 +782,7 @@ pub(crate) fn snapshot(
         let body = proposal.meta.brief.clone();
         if let Some(task_id) = task_id.as_deref()
             && let Some(task) = by_id.get(task_id)
+            && task.cancelled.is_none()
         {
             // 绑任务的确认卡归同一个任务桶（绑总任务也显示，但总任务不上板）。
             let stage = stage_keys.get(task_id).cloned();

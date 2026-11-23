@@ -1280,3 +1280,30 @@ fn work_facts_carry_changed_count_and_running_since() {
     );
     assert!(fact.running);
 }
+
+#[test]
+fn cancelled_task_leaves_wait_and_keeps_cancelled_at_on_fact() {
+    let (_directory, store) = open_store();
+    let task = store
+        .create_task(draft(Path::new("/tmp/work-cancel"), "取消任务"), T0)
+        .unwrap();
+    store
+        .cancel(&task.id, tasks::CancellationSource::User, None, T0 + 10)
+        .unwrap();
+    let response = snapshot(&store, &[], &[], T0 + 20).unwrap();
+    let fact = response
+        .tasks
+        .iter()
+        .find(|fact| fact.id == task.id.as_str())
+        .expect("任务仍在事实里");
+    assert_eq!(fact.stage, "closed");
+    assert_eq!(fact.cancelled_at, Some(T0 + 10));
+    assert_eq!(fact.closed_at, Some(T0 + 10));
+    assert!(
+        !response
+            .wait
+            .iter()
+            .any(|item| item.task_id.as_deref() == Some(task.id.as_str())),
+        "取消后等你项要离开"
+    );
+}

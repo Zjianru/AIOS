@@ -94,6 +94,10 @@ impl TaskRuntime {
             self.shutting_down.store(true, Ordering::SeqCst);
             return;
         }
+        if task.cancelled_message().is_some() {
+            best_effort("取消任务不投 relay", self.store.complete_effect(&claim));
+            return;
+        }
         let target = task.conversation.as_str();
         let Some(inner) = self.inner.upgrade() else {
             self.later(&claim);
@@ -125,6 +129,60 @@ impl TaskRuntime {
         }
     }
 
+    /// T077：取消效果泵到的最后一步——立即掐断这个任务还活着的宿主，不等资源收束。
+    pub(crate) async fn deliver_cancel(self: &Arc<Self>, claim: EffectClaim) {
+        let EffectPayload::Cancel { task_id } = &claim.payload else {
+            best_effort("取消载荷不对", self.store.complete_effect(&claim));
+            return;
+        };
+        let task_id = task_id.clone();
+        let task = match self.store.task(&task_id) {
+            Ok(Some(task)) => task,
+            Ok(None) => {
+                best_effort("取消任务不在了", self.store.complete_effect(&claim));
+                return;
+            }
+            Err(error) => {
+                best_effort(
+                    "取消任务读不出来",
+                    self.store
+                        .fail_effect(&claim, &error.to_string(), Self::now()),
+                );
+                return;
+            }
+        };
+        if task.cancelled.is_none() {
+            best_effort("取消事实没了", self.store.complete_effect(&claim));
+            return;
+        }
+        let hosts = {
+            let running = self.running.lock().expect("thinagent 表锁被毒化");
+            running
+                .iter()
+                .filter(|(_, entry)| entry.task_id == task_id)
+                .map(|(conversation, entry)| {
+                    (
+                        conversation.clone(),
+                        Arc::clone(&entry.host),
+                        entry.attempt_id,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        for (conversation, host, attempt_id) in hosts {
+            host.agent().cancel_with(session::AbortCause::User);
+            host.agent().stop_background_jobs(STOPPED_JOB_REASON).await;
+            self.cancel_background_limit(attempt_id);
+            self.forget_running(&conversation);
+            self.release_seat(task_id.as_str());
+        }
+        self.notify_changed(&task_id);
+        best_effort(
+            "取消效果完成没写进任务库",
+            self.store.complete_effect(&claim),
+        );
+    }
+
     /// 拼一条 relay 的正文和 request id；报告和停止共用 task_report 的形状。
     ///
     /// 返回 Ok(None)：载荷指向的任务已经不在了，效果行直接收掉。
@@ -141,7 +199,8 @@ impl TaskRuntime {
             | EffectPayload::Notice { .. }
             | EffectPayload::Restart { .. }
             | EffectPayload::AppointmentWake { .. }
-            | EffectPayload::BackgroundLimit { .. } => {
+            | EffectPayload::BackgroundLimit { .. }
+            | EffectPayload::Cancel { .. } => {
                 return Err("relay 载荷不是 relay".to_owned());
             }
         };
@@ -347,7 +406,8 @@ impl TaskRuntime {
             | EffectPayload::Notice { .. }
             | EffectPayload::Restart { .. }
             | EffectPayload::AppointmentWake { .. }
-            | EffectPayload::BackgroundLimit { .. } => Err("relay 载荷不是 relay".to_owned()),
+            | EffectPayload::BackgroundLimit { .. }
+            | EffectPayload::Cancel { .. } => Err("relay 载荷不是 relay".to_owned()),
         }
     }
 

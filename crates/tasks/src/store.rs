@@ -17,11 +17,11 @@ use crate::id::{AttemptId, BootId, ConversationId, InputId, ReportId, TaskId};
 use crate::ledger::{LedgerNote, LedgerNoteCounts, LedgerNoteKind, NewLedgerNote};
 use crate::task::{
     AcceptBatch, AcceptOutcome, Acceptance, Arrangement, Attempt, AttemptEnd, AttemptTrigger,
-    Cancellation, CancellationReason, Confirmation, FrozenPolicy, GateCandidate, GateConclusion,
-    GateVerdict, Handoff, Input, InputAttachment, InputSource, MilestoneGate, MissingItem, Need,
-    NewGraph, NewInput, NewReport, NewSubtask, NewTask, Report, ReportOrigin, ReportState,
-    RequirementVersion, Run, SayOutcome, Task, TaskPolicy, VerdictSource, VersionSource, Worktree,
-    resolve_write_scope,
+    Cancellation, CancellationReason, CancellationSource, Confirmation, FrozenPolicy,
+    GateCandidate, GateConclusion, GateVerdict, Handoff, Input, InputAttachment, InputSource,
+    MilestoneGate, MissingItem, Need, NewGraph, NewInput, NewReport, NewSubtask, NewTask, Report,
+    ReportOrigin, ReportState, RequirementVersion, Run, SayOutcome, Task, TaskCancellation,
+    TaskPolicy, VerdictSource, VersionSource, Worktree, resolve_write_scope,
 };
 
 /// 任务库 schema 版本；比这新的库拒绝打开。
@@ -783,6 +783,7 @@ impl Store {
         let mut conn = self.lock()?;
         let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut gate = load_task_required(&transaction, gate_id)?;
+        ensure_not_cancelled(&gate)?;
         if !gate.is_gate() {
             return Err(TaskError::NotMilestoneGate);
         }
@@ -919,6 +920,7 @@ impl Store {
         let mut conn = self.lock()?;
         let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut gate = load_task_required(&transaction, gate_id)?;
+        ensure_not_cancelled(&gate)?;
         if !gate.is_gate() {
             return Err(TaskError::NotMilestoneGate);
         }
@@ -1059,6 +1061,39 @@ impl Store {
         let conn = self.lock()?;
         let task = load_task_required(&conn, id)?;
         stage_with_graph(&conn, &task)
+    }
+
+    /// T077：取消一项。取消记录和立即停效果在同一个事务里；不改事件日志，不等资源收束。
+    pub fn cancel(
+        &self,
+        id: &TaskId,
+        source: CancellationSource,
+        from: Option<TaskId>,
+        now: i64,
+    ) -> Result<TaskCancellation, TaskError> {
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut task = load_task_required(&transaction, id)?;
+        if let Some(existing) = &task.cancelled {
+            transaction.commit()?;
+            return Ok(existing.clone());
+        }
+        let cancelled = TaskCancellation {
+            at: now,
+            source,
+            from,
+        };
+        task.cancelled = Some(cancelled.clone());
+        save_task(Some(self), &transaction, &task)?;
+        self.enqueue_effect_in(
+            &transaction,
+            &EffectPayload::Cancel {
+                task_id: id.clone(),
+            },
+            now,
+        )?;
+        transaction.commit()?;
+        Ok(cancelled)
     }
 
     /// 按受理幂等键建任务：同一个键再来返回同一个任务，不建第二行、不重排效果。
@@ -1403,6 +1438,7 @@ impl Store {
         let mut conn = self.lock()?;
         let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut task = load_task_required(&transaction, id)?;
+        ensure_not_cancelled(&task)?;
         // T052：总任务没有执行承载，任何路径都不能给它开 Attempt。
         if task.is_graph_root() {
             return Err(TaskError::GraphRootCannotRun);
@@ -1492,6 +1528,7 @@ impl Store {
         let mut conn = self.lock()?;
         let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut task = load_task_required(&transaction, id)?;
+        ensure_not_cancelled(&task)?;
         let input_id = InputId::from(generate_id(&transaction)?);
         task.inputs.push(Input {
             id: input_id.clone(),
@@ -1556,6 +1593,7 @@ impl Store {
         let mut conn = self.lock()?;
         let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut task = load_task_required(&transaction, id)?;
+        ensure_not_cancelled(&task)?;
         let Some(attempt_id) = begin_followup_attempt(&mut task, trigger, handoffs, now) else {
             transaction.commit()?;
             return Ok(None);
@@ -2038,6 +2076,7 @@ impl Store {
         let mut conn = self.lock()?;
         let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut task = load_task_required(&transaction, id)?;
+        ensure_not_cancelled(&task)?;
         let Some(scope) = resolve_write_scope(&task.cwd, Some(write_scope))? else {
             return Err(TaskError::EmptyWriteScope);
         };
@@ -2101,6 +2140,7 @@ impl Store {
         let mut conn = self.lock()?;
         let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut task = load_task_required(&transaction, id)?;
+        ensure_not_cancelled(&task)?;
         if effect_pending_in(&transaction, EffectKind::Launch, id.as_str())? {
             return Err(TaskError::RequirementWhileQueued);
         }
@@ -2357,6 +2397,7 @@ fn task_row(
         inputs: Vec::new(),
         versions,
         acceptances: Vec::new(),
+        cancelled: None,
         parent,
         needs,
         arrangement,
@@ -2590,6 +2631,7 @@ fn accept_task(
     report_id: &ReportId,
     now: i64,
 ) -> Result<Acceptance, TaskError> {
+    ensure_not_cancelled(task)?;
     // 同一报告同版本幂等：重复点返回已有接受，不改时间。
     if let Some(existing) = task.acceptance_for(report_id) {
         return Ok(existing.clone());
@@ -2654,6 +2696,10 @@ fn gate_for_guarded(connection: &Connection, task: &Task) -> Result<Option<Task>
 
 /// T052：阶段派生（含图）：总任务按子任务汇总；子任务图没确认/上游没结果 = 待补足条件。
 fn stage_with_graph(connection: &Connection, task: &Task) -> Result<Stage, TaskError> {
+    // T077：取消事实最先判；图/门/接受都盖不过它。
+    if task.cancelled.is_some() {
+        return Ok(Stage::Closed);
+    }
     if task.is_graph_root() {
         let children = children_in(connection, &task.id)?;
         let mut aggregate: Option<Stage> = None;
@@ -2776,6 +2822,9 @@ fn closed_in(connection: &Connection, task: &Task) -> Result<bool, TaskError> {
 /// T055：关闭时间的派生（阶段 Closed 的那条 acceptance 的 at；门任务跟被把关任务）。
 fn closed_at_in(connection: &Connection, id: &TaskId) -> Result<Option<i64>, TaskError> {
     let task = load_task_required(connection, id)?;
+    if let Some(cancelled) = &task.cancelled {
+        return Ok(Some(cancelled.at));
+    }
     if task.is_graph_root() {
         return Ok(None);
     }
@@ -2927,6 +2976,13 @@ fn load_task(connection: &Connection, id: &TaskId) -> Result<Option<Task>, TaskE
 
 fn load_task_required(connection: &Connection, id: &TaskId) -> Result<Task, TaskError> {
     load_task(connection, id)?.ok_or_else(|| TaskError::TaskNotFound(id.to_string()))
+}
+
+fn ensure_not_cancelled(task: &Task) -> Result<(), TaskError> {
+    if task.cancelled.is_some() {
+        return Err(TaskError::Cancelled);
+    }
+    Ok(())
 }
 
 fn save_task(store: Option<&Store>, connection: &Connection, task: &Task) -> Result<(), TaskError> {

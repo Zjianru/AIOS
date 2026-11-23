@@ -101,7 +101,7 @@ export function wordOf(task: TaskFact, column: BoardColumn, waitKind: string | u
     case 'wait':
       return waitKind ? (WAIT_LABEL[waitKind] ?? '等你') : '等你';
     case 'done':
-      return task.closedAt ? '关闭于 ' + formatAt(task.closedAt) : '已关闭';
+      return task.cancelledAt ? '取消于 ' + formatAt(task.cancelledAt) : task.closedAt ? '关闭于 ' + formatAt(task.closedAt) : '已关闭';
   }
 }
 
@@ -227,7 +227,7 @@ export function weekDone(tasks: TaskFact[], now: number): { count: number; names
   const weekday = (date.getDay() + 6) % 7; // 周一 = 0
   const monday = new Date(date.getFullYear(), date.getMonth(), date.getDate() - weekday).getTime();
   const done = tasks
-    .filter((task) => task.stage === 'closed' && !task.gate && (task.closedAt ?? 0) >= monday)
+    .filter((task) => task.stage === 'closed' && !task.gate && !task.cancelledAt && (task.closedAt ?? 0) >= monday)
     .sort((left, right) => (right.closedAt ?? 0) - (left.closedAt ?? 0));
   return { count: done.length, names: done.slice(0, 4).map((task) => task.title) };
 }
