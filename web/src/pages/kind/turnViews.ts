@@ -14,7 +14,7 @@ import { contextPercent, contextTokens, emptyUsage, mergeUsage, modelLabel, reas
 
 import type { CanvasViewDoc } from './canvas.ts';
 import { gateVerdictOf, upstreamChangedOf, userRpcIdOf } from './relay.ts';
-import { isProgramRpc } from '@/data/programMessages';
+import { isProgramRpc } from '../../data/programMessages.ts';
 import type { CompactionView, InterimSay, MemoCardInfo, ToolStep, TurnLabels, TurnUserView, TurnViewData } from './viewTypes.ts';
 
 import type { QuestionView } from './viewTypes.ts';
@@ -84,6 +84,8 @@ export function deriveTurnViews(
     taskResults: TaskResultFact[];
     says: InterimSay[];
     answer: string | null;
+    sayParts: string[];
+    reaction: string | null;
     status: TurnStatus;
     tools: ToolStep[];
     usage: UsageTotals;
@@ -173,6 +175,8 @@ export function deriveTurnViews(
         taskResults: [],
         says: [],
         answer: null,
+        sayParts: [],
+        reaction: null,
         status: 'inProgress',
         tools: [],
         usage: emptyUsage(),
@@ -531,6 +535,18 @@ export function deriveTurnViews(
           const body = textOf(data.message) || textOfToolResult(data.message);
           step.output = body || String((data.error as { code?: string } | undefined)?.code ?? '');
           step.meta = (data.meta as Record<string, unknown> | undefined) ?? null;
+          if (step.name === 'kind_react' && !failed) {
+            const reaction = step.meta?.kind_react as { emoji_id?: unknown } | undefined;
+            if (typeof reaction?.emoji_id === 'string') raw.reaction = reaction.emoji_id;
+          }
+          if (step.name === 'kind_say' && !failed) {
+            const say = step.meta?.kind_say as { parts?: unknown } | undefined;
+            if (Array.isArray(say?.parts)) {
+              raw.sayParts = say.parts.filter(
+                (part): part is string => typeof part === 'string' && part.trim() !== '',
+              );
+            }
+          }
           // T015.1：画布全文只从日志的 meta 来；回放和实时同一条路。
           raw.canvas = canvasOf(step.meta) ?? raw.canvas;
           const status = parseExitStatus(step.output);
@@ -735,6 +751,8 @@ export function deriveTurnViews(
         raw.reasoningParts.length > 0 ? { full: raw.reasoningParts.join('\n\n') } : null,
       tools: raw.tools,
       answer: raw.answer ? { text: raw.answer, elements: [] } : null,
+      sayParts: raw.sayParts,
+      reaction: raw.reaction,
       thinkingSeconds: thinkingSecondsOf(raw.reasoningMs),
       tokens: {
         input: raw.usage.input,
@@ -790,7 +808,9 @@ export function processStepsOf(view: TurnViewData): ProcessStep[] {
   // D89：工具前说明和工具步按日志 seq 排先后；没有 seq 的旧数据排在最后，
   // 保持工具之间的原顺序。
   const ordered: { seq: number; step: ProcessStep }[] = [
-    ...view.tools.map((tool) => ({
+    ...view.tools
+      .filter((tool) => tool.name !== 'kind_say' && tool.name !== 'kind_react')
+      .map((tool) => ({
       seq: tool.seq ?? Number.MAX_SAFE_INTEGER,
       step: {
         kind: 'tool' as const,

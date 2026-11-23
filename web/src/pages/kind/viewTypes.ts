@@ -124,6 +124,10 @@ export interface TurnViewData {
   reasoning: { full: string } | null;
   tools: ToolStep[];
   answer: { text: string; elements: TextElement[] } | null;
+  /** T078.2：kind_say 分条；页面一块一条，不走 answer。 */
+  sayParts?: string[];
+  /** T078.2：kind_react 的表情 id；贴用户气泡左下。 */
+  reaction?: string | null;
   thinkingSeconds: number;
   tokens: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
  /** ：这一轮最后一条 assistant/message 的模型显示名（日志里没有就退回 id）。 */

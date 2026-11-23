@@ -7,8 +7,17 @@ import type { AvailableModelRow } from '@/data/service';
 export const catalogCache = new Map<string, AvailableModelRow[]>();
 
 /** 流式文本单独放一个 store：只有最后一条在重绘，别的消息不跟着重建。 */
-export const useStreamStore = create<{ turnId: string | null; itemId: string | null; text: string }>(() => ({
+export const useStreamStore = create<{
+  turnId: string | null;
+  itemId: string | null;
+  text: string;
+  /** T078.2：正在流的 kind_say parts / kind_react emoji。 */
+  sayParts: string[];
+  reaction: string | null;
+}>(() => ({
   turnId: null,
   itemId: null,
   text: '',
+  sayParts: [],
+  reaction: null,
 }));
