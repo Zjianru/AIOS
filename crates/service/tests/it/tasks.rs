@@ -35,6 +35,7 @@ use store_helpers::*;
 
 mod accept_tests;
 mod background_turn_tests;
+mod cancel_entry_tests;
 mod dialog_tests;
 mod misc_tests;
 mod pause_tests;
