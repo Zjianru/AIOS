@@ -13,6 +13,7 @@ import { elapsedSeconds } from './diagnoseTime';
 import { TraceTimeline } from './TraceTimeline';
 import { cn } from '@/lib/utils';
 import { useMonitorStore } from './monitorStore';
+import { useProjectName } from '@/pages/project/projectStore';
 import { Card, Kpi, Missing, StackBar, fmtClock, fmtTime, useTick } from './monitorParts';
 
 function redact(value: unknown, key = ''): unknown {
@@ -105,6 +106,7 @@ export function Diagnose({ taskId }: { taskId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<ServiceEvent | null>(null);
   const [traceRange, setTraceRange] = useState<{ from: number; to: number } | null>(null);
+  const projectName = useProjectName(detail?.task.projectId);
 
   useEffect(() => {
     let cancelled = false;
@@ -160,7 +162,9 @@ export function Diagnose({ taskId }: { taskId: string }) {
           <div className="mt-1 flex items-center gap-2">
             {detail?.task.running || summary?.running ? <span className="size-2 shrink-0 animate-pulse rounded-full bg-run" /> : null}
             <h1 className="min-w-0 truncate text-5 font-semibold text-ink">{detail?.task.title ?? summary?.title ?? taskId}</h1>
-            <span className="rounded-badge border border-line px-1.5 text-1 leading-4 text-ink-2">未归项目</span>
+            <span data-kind="diagnose-project" className="rounded-badge border border-line px-1.5 text-1 leading-4 text-ink-2">
+              {projectName}
+            </span>
             <span className="hidden truncate text-1 text-ink-3 md:inline">ThinAgent · {detail?.task.model ?? summary?.model ?? '模型没采到'}</span>
           </div>
           <nav className="mt-2 flex gap-4">

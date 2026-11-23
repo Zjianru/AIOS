@@ -61,6 +61,25 @@ export interface BoardModel {
   waitTaskIds: Set<string>;
 }
 
+/**
+ * 工作页/项目页/监控共用的项目筛法。
+ * projectRef 是 URL 的 p：空 = 全部，personal = 项目为空，其他 = 项目 id。
+ */
+export function filterWorkForProject(
+  tasks: TaskFact[],
+  wait: WaitItem[],
+  projectRef: string | null | undefined,
+): { tasks: TaskFact[]; wait: WaitItem[] } {
+  if (!projectRef) return { tasks, wait };
+  const wanted = projectRef === 'personal' ? null : projectRef;
+  const visibleTasks = tasks.filter((task) => (task.projectId ?? null) === wanted);
+  const visibleIds = new Set(visibleTasks.map((task) => task.id));
+  return {
+    tasks: visibleTasks,
+    wait: wait.filter((item) => (item.taskId ? visibleIds.has(item.taskId) : false)),
+  };
+}
+
 export function formatAt(ms: number | null | undefined): string {
   if (!ms) return '';
   const date = new Date(ms);

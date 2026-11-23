@@ -1,13 +1,15 @@
 /**
  * 监控 · 消耗：范围、大数字、每天柱、钱/时间两个环、模型/工具/命令排行、任务卡。
- * Kind 只进合计，不产任务卡、不做诊断；项目只有「全部」，任务按未归项目显示。
+ * Kind 只进合计，不产任务卡、不做诊断；任务卡按项目筛，没归属的显示「个人」。
  */
 
 import { ArrowUpRight, Sparkles } from 'lucide-react';
 import { go } from '@/app/navigate';
 import { formatTokens } from '@/lib/numbers';
 import { cn } from '@/lib/utils';
+import { useRouteStore } from '@/app/routeStore';
 import { useMonitorStore } from './monitorStore';
+import { matchesProject, useProjectName } from '@/pages/project/projectStore';
 import type { MonitorDay, MonitorTaskSummary, MonitorUsageRow } from '@/data/service';
 import { Card, Donut, Kpi, Missing, RankRow, Segmented, fmtClock } from './monitorParts';
 
@@ -96,6 +98,7 @@ function rankMax(rows: MonitorUsageRow[]): number {
 }
 
 function TaskCard({ task }: { task: MonitorTaskSummary }) {
+  const projectName = useProjectName(task.projectId);
   const usedPercent = task.contextWindow ? Math.round((task.contextUsed / task.contextWindow) * 100) : null;
   return (
     <button
@@ -106,7 +109,9 @@ function TaskCard({ task }: { task: MonitorTaskSummary }) {
     >
       <span className="flex items-center gap-1.5 text-1 text-ink-3">
         <span className={cn(task.running ? 'text-run' : 'text-ink-3')}>{stateLabel(task.state)}</span>
-        <span className="rounded-badge bg-hover px-1.5 py-[1px]">未归项目</span>
+        <span data-kind="task-project" className="rounded-badge bg-hover px-1.5 py-[1px]">
+          {projectName}
+        </span>
         <span className="ml-auto brand-type">{task.attemptId ? '第 ' + task.attemptId + ' 次' : ''}</span>
       </span>
       <span className="mt-1 block truncate text-2 font-medium text-ink">{task.title}</span>
@@ -128,11 +133,15 @@ function TaskCard({ task }: { task: MonitorTaskSummary }) {
 
 export function CostTab() {
   const snapshot = useMonitorStore((state) => state.snapshot);
+  const route = useRouteStore((state) => state.route);
+  const projectFilter = route.query.get('p');
   const error = useMonitorStore((state) => state.snapshotError);
   const loading = useMonitorStore((state) => state.loading);
   const range = useMonitorStore((state) => state.range);
   const setRange = useMonitorStore((state) => state.setRange);
-  const tasks = snapshot?.tasks ?? [];
+  const tasks = (snapshot?.tasks ?? []).filter((task) =>
+    matchesProject(task.projectId, projectFilter),
+  );
   const models = snapshot?.models ?? [];
   const tools = snapshot?.tools ?? [];
   const commands = snapshot?.commands ?? [];
@@ -249,14 +258,21 @@ export function CostTab() {
           {sortedTasks.map((task) => (
             <TaskCard key={task.taskId} task={task} />
           ))}
-          <div className="flex min-w-0 flex-col rounded-card border border-dashed border-line p-3" data-kind="kind-card">
-            <div className="flex items-center gap-2 text-2 text-ink">
-              <Sparkles className="size-[18px] text-ink-3" />
-              Kind 对话
+          {!projectFilter ? (
+            <div className="flex min-w-0 flex-col rounded-card border border-dashed border-line p-3" data-kind="kind-card">
+              <div className="flex items-center gap-2 text-2 text-ink">
+                <Sparkles className="size-[18px] text-ink-3" />
+                Kind 对话
+              </div>
+              <div className="mt-2 text-2 text-ink-2">已并入上面的合计和环</div>
+              <div className="text-1 text-ink-3">不分项目，不做诊断</div>
             </div>
-            <div className="mt-2 text-2 text-ink-2">已并入上面的合计和环</div>
-            <div className="text-1 text-ink-3">不分项目，不做诊断</div>
-          </div>
+          ) : null}
+          {projectFilter && tasks.length === 0 ? (
+            <p className="text-2 text-ink-3" data-kind="project-empty">
+              这个项目还没有任务。
+            </p>
+          ) : null}
         </div>
         {tasks.length === 0 ? (
           <p className="mt-3 text-2 text-ink-3"><Missing what="还没有任务" /></p>

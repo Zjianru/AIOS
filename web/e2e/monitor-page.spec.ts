@@ -39,9 +39,10 @@ test('监控：消耗、在跑、诊断三块走服务端快照，只读', async
     await expect(page.locator('[data-tab-key="live"]')).toBeVisible();
     await expect(page.locator('[data-kind="cost-daily"]')).toBeVisible();
     await expect(page.locator('[data-kind="kpis"]')).toBeVisible();
-    // 项目只有「全部」：没有可点的项目筛选，也不出现项目项。
+    // 项目筛：没建项目时仍有「全部项目 / 个人」；任务归属显示「个人」。
     await expect(page.locator('[data-kind="project-filter"]')).toContainText('全部项目');
-    await expect(page.locator('[data-kind="project-filter"]')).toContainText('未归项目');
+    await expect(page.locator('[data-kind="project-filter"]')).toBeVisible();
+    await expect(page.locator('[data-kind="task-project"]').first()).toContainText('个人');
     // 缺数据画斜线，不拿 0 顶。
     await expect(page.locator('[data-kind="missing"]').first()).toBeVisible();
     // 监控 WS 已连；打开后不在固定间隔里拉快照。

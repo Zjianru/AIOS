@@ -3,7 +3,8 @@
  * 用 shadcn 的 Sidebar（collapsible="icon"），只改样式 token 与宽度变量，行为不动。
  */
 
-import { Activity, Brain, Clock3, FolderKanban, Moon, Settings, Sparkles, Sun } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Activity, Brain, Clock3, FolderKanban, Moon, Plus, Settings, Sparkles, Sun } from 'lucide-react';
 import {
   Sidebar as ShadcnSidebar,
   SidebarContent,
@@ -17,6 +18,8 @@ import {
 } from '@/components/ui/sidebar';
 import { useAppStore } from '@/app/store';
 import { go } from '@/app/navigate';
+import { useProjectStore, projectCode, projectColor } from '@/pages/project/projectStore';
+import { NewProjectDialog } from '@/pages/project/NewProjectDialog';
 import type { ParsedRoute } from '@/app/route';
 import { navOf } from '@/app/route';
 import { cn } from '@/lib/utils';
@@ -78,9 +81,16 @@ function SidebarInner({ route }: { route: ParsedRoute }) {
   const active = navOf(route);
   const theme = useAppStore((s) => s.theme);
   const toggleTheme = useAppStore((s) => s.toggleTheme);
+  const projects = useProjectStore((state) => state.projects);
+  const refreshProjects = useProjectStore((state) => state.refresh);
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
   // T059 F3：现在 / Kind / 工作都有入口；设置仍在左下角。
   const mainNav = MAIN_NAV.filter((item) => item.id !== 'settings');
   const settingsItem = MAIN_NAV.find((item) => item.id === 'settings')!;
+
+  useEffect(() => {
+    if (projects === null) void refreshProjects();
+  }, [projects, refreshProjects]);
 
   return (
     <ShadcnSidebar
@@ -101,7 +111,54 @@ function SidebarInner({ route }: { route: ParsedRoute }) {
           </SidebarMenu>
         </SidebarGroup>
 
-        
+        <SidebarGroup className="mt-1 border-t border-line/70 px-1 pt-2" data-kind="sidebar-projects">
+          <div className="flex h-6 items-center px-1.5">
+            <span className="text-1 text-ink-3 group-data-[collapsible=icon]:hidden">项目</span>
+            <button
+              type="button"
+              data-kind="new-project"
+              title="新建项目"
+              onClick={() => setNewProjectOpen(true)}
+              className="ml-auto grid size-5 place-items-center rounded-btn text-ink-3 transition-colors hover:bg-hover hover:text-ink-2"
+            >
+              <Plus className="size-3.5" />
+            </button>
+          </div>
+          <SidebarMenu>
+            {(projects ?? []).map((project, index) => {
+              const isActive = route.kind === 'project' && route.id === project.id;
+              return (
+                <SidebarMenuItem key={project.id}>
+                  <SidebarMenuButton
+                    isActive={isActive}
+                    tooltip={project.name}
+                    onClick={() => go('project:' + project.id)}
+                    data-kind="sidebar-project"
+                    data-project-id={project.id}
+                    className={cn(
+                      'h-7 gap-2 rounded-btn px-1.5 text-2 text-ink-2 transition-colors',
+                      isActive && 'bg-active text-ink',
+                      'hover:bg-hover hover:text-ink',
+                    )}
+                  >
+                    <span
+                      className="grid size-4 shrink-0 place-items-center rounded-[4px] text-[9px] font-semibold text-white"
+                      style={{ backgroundColor: projectColor(index) }}
+                    >
+                      {projectCode(project.name)}
+                    </span>
+                    <span className="truncate group-data-[collapsible=icon]:hidden">{project.name}</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              );
+            })}
+            {projects && projects.length === 0 ? (
+              <p className="px-2 py-1 text-1 text-ink-3 group-data-[collapsible=icon]:hidden">
+                还没有项目
+              </p>
+            ) : null}
+          </SidebarMenu>
+        </SidebarGroup>
       </SidebarContent>
 
       <SidebarFooter className="gap-0.5 px-2 pb-3" data-kind="sidebar-footer">
@@ -120,6 +177,7 @@ function SidebarInner({ route }: { route: ParsedRoute }) {
         </SidebarMenu>
       </SidebarFooter>
       <SidebarRail />
+      <NewProjectDialog open={newProjectOpen} onOpenChange={setNewProjectOpen} />
     </ShadcnSidebar>
   );
 }

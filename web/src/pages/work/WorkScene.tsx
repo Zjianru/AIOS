@@ -3,7 +3,7 @@
  *
  * T055：数据只来自 Work 快照（workStore，两页共用，两秒轻轮询）；列由任务事实派生，
  * 「等你」优先；完成列默认近 7 天，筛选记在 localStorage，只管显示。
- * 项目筛选、样例看板已去掉；「交给 Kind 一件事」保留。
+ * 项目筛选走 ?p=<id|personal>；「交给 Kind 一件事」保留。
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -24,8 +24,16 @@ import { CalendarPage } from '@/pages/calendar/CalendarPane';
 import { GraphPane } from './GraphPane';
 import { StartThingDialog } from './StartThingDialog';
 import { WaitList, openWaitItem } from './WaitList';
-import { DONE_RANGES, DONE_RANGE_KEY, type DoneRange, boardOf, filterDone } from './workModel';
+import {
+  DONE_RANGES,
+  DONE_RANGE_KEY,
+  type DoneRange,
+  boardOf,
+  filterDone,
+  filterWorkForProject,
+} from './workModel';
 import { useWorkPolling, useWorkStore } from './workStore';
+import { useProjectStore } from '@/pages/project/projectStore';
 
 const WAIT_WORD: Record<string, string> = {
   resume: '接续',
@@ -142,8 +150,25 @@ function BoardPane() {
     }
   }, [doneRange]);
 
-  const board = useMemo(() => boardOf(work?.tasks ?? [], work?.wait ?? []), [work]);
+  const projectFilter = route.query.get('p');
+  const projects = useProjectStore((state) => state.projects);
+  const refreshProjects = useProjectStore((state) => state.refresh);
+  const filtered = useMemo(
+    () => filterWorkForProject(work?.tasks ?? [], work?.wait ?? [], projectFilter),
+    [work, projectFilter],
+  );
+  const board = useMemo(() => boardOf(filtered.tasks, filtered.wait), [filtered]);
   const done = useMemo(() => filterDone(board.done, doneRange, now), [board.done, doneRange, now]);
+  const projectLabel =
+    projectFilter === 'personal'
+      ? '个人'
+      : projectFilter
+        ? (projects?.find((project) => project.id === projectFilter)?.name ?? projectFilter)
+        : null;
+
+  useEffect(() => {
+    if (projects === null) void refreshProjects();
+  }, [projects, refreshProjects]);
   const rangeLabel = DONE_RANGES.find((range) => range.key === doneRange)?.label ?? '近 7 天';
 
   if (!work) {
@@ -165,6 +190,22 @@ function BoardPane() {
     <div className="flex h-full min-h-0 flex-col bg-content" data-scene-page="work">
       <header className="flex h-11 shrink-0 items-center gap-1.5 border-b border-line px-3 text-3">
         <span className="text-ink">工作</span>
+        {projectFilter ? (
+          <span
+            data-kind="work-project-filter"
+            className="flex items-center gap-1 rounded-full border border-line bg-hover px-2 py-0.5 text-1 text-ink-2"
+          >
+            {projectLabel}
+            <button
+              type="button"
+              title="清除项目筛选"
+              onClick={() => go('work')}
+              className="text-ink-3 hover:text-ink-2"
+            >
+              ×
+            </button>
+          </span>
+        ) : null}
         <span className="ml-auto" />
         <div className="flex items-center rounded-btn border border-line p-[2px]">
           {(['board', 'graph', 'cal'] as const).map((key) => (
@@ -273,17 +314,22 @@ function BoardPane() {
 function WaitingPane() {
   // 轮询由 WorkScene 根挂一次（workStore 引用计数只留一个 interval）；这里只读同一份 store。
   const work = useWorkStore((state) => state.work);
+  const route = useRouteStore((state) => state.route);
+  const filtered = useMemo(
+    () => filterWorkForProject(work?.tasks ?? [], work?.wait ?? [], route.query.get('p')),
+    [work, route.query],
+  );
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-content" data-pane="waiting">
       <header className="shrink-0 border-b border-line px-4 pb-2 pt-3">
         <div className="flex items-baseline gap-2">
           <h3 className="text-3 font-medium text-ink">等你</h3>
-          <span className="brand-type text-1 text-ink-3">{work ? work.wait.length : 0}</span>
+          <span className="brand-type text-1 text-ink-3">{work ? filtered.wait.length : 0}</span>
           <span className="ml-auto text-1 text-ink-3">只放需要你的</span>
         </div>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
-        {!work ? <div className="text-2 text-ink-3">正在取…</div> : <WaitList items={work.wait} />}
+        {!work ? <div className="text-2 text-ink-3">正在取…</div> : <WaitList items={filtered.wait} />}
       </div>
     </div>
   );

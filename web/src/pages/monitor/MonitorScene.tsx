@@ -4,6 +4,7 @@
  */
 
 import { useEffect, useMemo } from 'react';
+import { ChevronDown } from 'lucide-react';
 import { useRouteStore } from '@/app/routeStore';
 import { go } from '@/app/navigate';
 import { cn } from '@/lib/utils';
@@ -11,6 +12,14 @@ import { useMonitorLive, useMonitorStore } from './monitorStore';
 import { CostTab } from './CostTab';
 import { LiveTab } from './LiveTab';
 import { Diagnose } from './Diagnose';
+import { useProjectStore } from '@/pages/project/projectStore';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 
 function targetOf(route: { kind: string; id: string }): { tab: 'cost' | 'live'; taskId: string | null } {
   if (route.kind === 'usage') {
@@ -28,13 +37,33 @@ export function MonitorScene() {
   useMonitorLive();
   const loadSnapshot = useMonitorStore((state) => state.loadSnapshot);
   const snapshot = useMonitorStore((state) => state.snapshot);
+  const projects = useProjectStore((state) => state.projects);
+  const refreshProjects = useProjectStore((state) => state.refresh);
   const tab: 'cost' | 'live' = route.query.get('tab') === 'live' ? 'live' : 'cost';
+  const projectFilter = route.query.get('p');
   const runningCount = snapshot?.running.running ?? 0;
+  const projectFilterLabel =
+    projectFilter === 'personal'
+      ? '个人'
+      : projectFilter
+        ? (projects?.find((project) => project.id === projectFilter)?.name ?? projectFilter)
+        : '全部项目';
 
   useEffect(() => {
     if (!snapshot) void loadSnapshot();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (projects === null) void refreshProjects();
+  }, [projects, refreshProjects]);
+
+  function switchProjectFilter(value: string) {
+    const params = new URLSearchParams();
+    params.set('tab', tab);
+    if (value !== 'all') params.set('p', value);
+    go('monitor?' + params.toString());
+  }
 
   const tabs = useMemo(
     () =>
@@ -79,13 +108,41 @@ export function MonitorScene() {
           </div>
           <span className="flex-1" />
           <div className="mb-2 flex flex-wrap items-center gap-1" data-kind="project-filter">
-            <button
-              type="button"
-              className="flex items-center gap-1.5 rounded-full border border-line-2 bg-active px-2.5 py-0.5 text-1 text-ink"
-            >
-              全部项目
-            </button>
-            <span className="px-1 text-1 text-ink-3">项目归属未接入，任务都算「未归项目」</span>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  data-kind="monitor-project-trigger"
+                  className="flex items-center gap-1.5 rounded-full border border-line-2 bg-active px-2.5 py-0.5 text-1 text-ink"
+                >
+                  {projectFilterLabel}
+                  <ChevronDown className="size-3 text-ink-3" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-44">
+                <DropdownMenuRadioGroup
+                  value={projectFilter ?? 'all'}
+                  onValueChange={switchProjectFilter}
+                >
+                  <DropdownMenuRadioItem value="all">全部项目</DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem value="personal">个人</DropdownMenuRadioItem>
+                  {(projects ?? []).map((project) => (
+                    <DropdownMenuRadioItem key={project.id} value={project.id}>
+                      {project.name}
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            {projectFilter ? (
+              <button
+                type="button"
+                onClick={() => switchProjectFilter('all')}
+                className="text-1 text-ink-3 hover:text-ink-2"
+              >
+                清除
+              </button>
+            ) : null}
           </div>
         </div>
       </div>

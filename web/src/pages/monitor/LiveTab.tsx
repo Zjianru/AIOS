@@ -7,8 +7,10 @@
 import { useEffect } from 'react';
 import { AlertCircle, ChevronRight, Sparkles, Terminal, Wrench } from 'lucide-react';
 import { go } from '@/app/navigate';
+import { useRouteStore } from '@/app/routeStore';
 import { formatPercent, formatTokens } from '@/lib/numbers';
 import { cn } from '@/lib/utils';
+import { matchesProject, useProjectName } from '@/pages/project/projectStore';
 import { useMonitorStore } from './monitorStore';
 import type { MonitorTaskSummary, ServiceEvent } from '@/data/service';
 import { Card, Kpi, Missing, StackBar, fmtClock, useTick } from './monitorParts';
@@ -75,6 +77,7 @@ function CtxBar({ used, window, parts }: { used: number; window: number; parts?:
 }
 
 function LiveCard({ task }: { task: MonitorTaskSummary }) {
+  const projectName = useProjectName(task.projectId);
   const tick = useTick();
   const detail = useMonitorStore((state) => state.details[task.taskId]);
   const error = useMonitorStore((state) => state.detailErrors[task.taskId]);
@@ -105,7 +108,7 @@ function LiveCard({ task }: { task: MonitorTaskSummary }) {
             <span className="min-w-0 truncate text-3 font-semibold text-ink">{task.title}</span>
           </div>
           <div className="truncate text-1 text-ink-3">
-            未归项目 · {task.model}
+            {projectName} · {task.model}
             {task.attemptId ? ' · 第 ' + task.attemptId + ' 次尝试' : ''}
           </div>
         </div>
@@ -171,9 +174,11 @@ function LiveCard({ task }: { task: MonitorTaskSummary }) {
 }
 
 function SimpleTaskRow({ task, state }: { task: MonitorTaskSummary; state: string }) {
+  const projectName = useProjectName(task.projectId);
   return (
     <button type="button" data-kind="live-row" onClick={() => go('monitor:task:' + task.taskId)} className="flex w-full items-center gap-2 border-b border-line py-2 text-left last:border-0">
       <span className="min-w-0 flex-1 truncate text-2 text-ink">{task.title}</span>
+      <span className="shrink-0 text-1 text-ink-3">{projectName}</span>
       <span className="shrink-0 text-1 text-ink-3">{state}</span>
       <span className="shrink-0 text-1 text-ink-3">{task.attemptId ? '第 ' + task.attemptId + ' 次' : '没开跑'}</span>
     </button>
@@ -182,12 +187,17 @@ function SimpleTaskRow({ task, state }: { task: MonitorTaskSummary; state: strin
 
 export function LiveTab() {
   const snapshot = useMonitorStore((state) => state.snapshot);
+  const route = useRouteStore((state) => state.route);
+  const projectFilter = route.query.get('p');
   if (!snapshot) {
     return <div className="grid h-40 place-items-center text-2 text-ink-3">正在取在跑快照…</div>;
   }
-  const running = snapshot.running.tasks ?? [];
-  const queue = snapshot.queue;
+  const running = (snapshot.running.tasks ?? []).filter((task) =>
+    matchesProject(task.projectId, projectFilter),
+  );
+  const queue = snapshot.queue.filter((task) => matchesProject(task.projectId, projectFilter));
   const finished = snapshot.tasks
+    .filter((task) => matchesProject(task.projectId, projectFilter))
     .filter((task) => !task.running && (task.state === 'closed' || task.state === 'requirement_met' || task.endedAt))
     .sort((left, right) => (right.endedAt ?? 0) - (left.endedAt ?? 0))
     .slice(0, 8);
@@ -197,8 +207,8 @@ export function LiveTab() {
     <div data-tab="live" className="space-y-4 pt-4">
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4" data-kind="kpis">
         <Kpi label="席位" value={snapshot.running.seats + ' 个'} sub="满了新任务排队" />
-        <Kpi label="在跑" value={snapshot.running.running} tone="run" sub="ThinAgent" />
-        <Kpi label="排队" value={snapshot.running.queue} sub="席位空出来按顺序开" />
+        <Kpi label="在跑" value={running.length} tone="run" sub="ThinAgent" />
+        <Kpi label="排队" value={queue.length} sub="席位空出来按顺序开" />
         <Kpi label="值得看一眼" value={anomalous} tone={anomalous ? 'wait' : undefined} sub={anomalous ? '下面写了是什么' : '没有异常事实'} />
       </div>
 

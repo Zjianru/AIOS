@@ -36,10 +36,7 @@ export const SCENES: Record<string, SceneDef> = {
   },
   project: {
     key: 'project',
-    panes: [
-      { id: 'main', title: '项目', minWidth: 520, defaultWidth: 760 },
-      { id: 'chat', title: '对话', minWidth: 300, defaultWidth: 340 },
-    ],
+    panes: [{ id: 'main', title: '项目', minWidth: 520 }],
   },
   task: { key: 'task', panes: [{ id: 'main', title: '任务', minWidth: 520 }] },
   taskchat: { key: 'taskchat', panes: [{ id: 'main', title: '任务对话', minWidth: 520 }] },

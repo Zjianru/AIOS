@@ -204,7 +204,7 @@ impl Agg {
             title: task.title.clone(),
             state: "pending".to_owned(),
             model: task.model.model.clone(),
-            project_id: None,
+            project_id: task.project_id.clone(),
             attempt_id: task.latest_attempt().map(|attempt| attempt.id.0),
             running: running.unwrap_or(false),
             started_at: task.latest_attempt().map(|attempt| attempt.started_at),
@@ -540,7 +540,7 @@ pub(crate) fn task(
                 .map(stage_name)
                 .unwrap_or_else(|_| "pending".to_owned()),
             model: selection.model,
-            project_id: None,
+            project_id: task.project_id.clone(),
             running,
             write_scope: task
                 .write_scope

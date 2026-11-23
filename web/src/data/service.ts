@@ -28,6 +28,12 @@ import type { ModelSettingsResponse } from './generated/ModelSettingsResponse';
 import type { MonitorRange } from './generated/MonitorRange';
 import type { MonitorSnapshotResponse } from './generated/MonitorSnapshotResponse';
 import type { MonitorTaskResponse } from './generated/MonitorTaskResponse';
+import type { ProjectCreateRequest } from './generated/ProjectCreateRequest';
+import type { ProjectCreateResponse } from './generated/ProjectCreateResponse';
+import type { ProjectListResponse } from './generated/ProjectListResponse';
+import type { ProjectUpdateRequest } from './generated/ProjectUpdateRequest';
+import type { ProjectUpdateResponse } from './generated/ProjectUpdateResponse';
+import type { TaskSetProjectResponse } from './generated/TaskSetProjectResponse';
 import type { Response } from './generated/Response';
 import type { RootState } from './generated/RootState';
 import type { ServiceAnswer } from './generated/ServiceAnswer';
@@ -538,6 +544,28 @@ export async function monitorTask(
 
 export async function getWork(): Promise<WorkResponse> {
   return post({ method: 'work' });
+}
+
+/** 项目清单（页面和侧栏共用）。 */
+export async function projectList(): Promise<ProjectListResponse> {
+  return post({ method: 'project_list' });
+}
+
+/** 建项目；创建/更新共用服务端校验。 */
+export async function projectCreate(input: ProjectCreateRequest): Promise<ProjectCreateResponse> {
+  return post({ method: 'project_create', ...input });
+}
+
+export async function projectUpdate(input: ProjectUpdateRequest): Promise<ProjectUpdateResponse> {
+  return post({ method: 'project_update', ...input });
+}
+
+/** 任务归属；projectId 为空 = 个人。任务图整张一起改由服务端做。 */
+export async function taskSetProject(
+  taskId: string,
+  projectId: string | null,
+): Promise<TaskSetProjectResponse> {
+  return post({ method: 'task_set_project', taskId, projectId });
 }
 
 /// T055.2：组接受（每项带勾选那一刻看到的报告与版本）。

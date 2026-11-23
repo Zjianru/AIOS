@@ -2050,7 +2050,7 @@ pub struct MonitorUsageRow {
     pub unpriced: bool,
 }
 
-/// 任务卡/在跑卡共用的一条任务摘要；项目归属先留 Option（None=未归项目）。
+/// 任务卡/在跑卡共用的一条任务摘要；项目归属先留 Option（None=个人）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct MonitorTaskSummary {
     #[serde(rename = "taskId")]
