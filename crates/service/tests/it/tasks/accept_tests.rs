@@ -241,6 +241,8 @@ async fn the_kind_system_prompt_is_neutral_with_only_routing() {
         "call task_accept immediately with that exact raw path as write_scope",
         "Never use ask_user_question in place of that card",
         "load skill aios-tasks",
+        "On a greeting or simple opener, do not enumerate your capabilities",
+        "do not proactively mention projects, the project list, ThinAgent, or file paths",
     ] {
         assert!(
             system.contains(kept),

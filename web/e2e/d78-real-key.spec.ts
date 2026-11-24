@@ -92,9 +92,10 @@ test('D78 写周报：出写到哪卡，不派任务', async ({ page }) => {
   try {
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind');
     await send(page, '帮我写一份周报草稿');
-    const card = page.locator('[data-kind="card-generic"]').filter({ hasText: '写到哪' }).last();
+    const card = page.locator('[data-kind="confirm-card"]').filter({ hasText: '写到哪' }).last();
     await expect(card).toBeVisible({ timeout: 180_000 });
     await expect(card).toContainText('写到哪');
+    await expect(card).toContainText('/');
     await expect(page.locator('[data-kind="task-result"]')).toHaveCount(0);
     // 写文件没给路径时，直接是「写到哪」卡；不能先用提问卡追问素材/读者/交付。
     await expect(page.locator('[data-kind="question"]')).toHaveCount(0);
@@ -109,7 +110,7 @@ test('D78 写进 ~/Desktop/t082.md：原样核过直接派，不出写到哪卡'
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind');
     await send(page, '把这段写进 ~/Desktop/t082.md');
     await expect(page.getByText('已派出', { exact: false }).last()).toBeVisible({ timeout: 180_000 });
-    await expect(page.locator('[data-kind="card-generic"]').filter({ hasText: '写到哪' })).toHaveCount(0);
+    await expect(page.locator('[data-kind="confirm-card"]').filter({ hasText: '写到哪' })).toHaveCount(0);
   } finally {
     await fixture.close();
   }
