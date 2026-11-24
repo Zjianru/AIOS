@@ -394,6 +394,11 @@ fn compaction_fixed_block_carries_current_assignment_and_ledger_even_when_empty(
         block.text
     );
     assert!(block.text.contains("有结果"), "带 dod：{}", block.text);
+    assert!(
+        block.text.contains("user_quotes") && block.text.contains("账本注入原话"),
+        "压缩重铺带按版本原话：{}",
+        block.text
+    );
     assert!(block.text.contains("ledger"), "空账本也发：{}", block.text);
     assert!(
         block.text.contains("不是新任务"),
@@ -444,13 +449,20 @@ fn assignment_puts_user_quotes_first_then_kind_material_then_constraints() {
     let understanding_at = assignment.find("requirement").expect("理解段");
     let dod_at = assignment.find("\"dod\"").expect("DoD 段");
     let note_at = assignment.find("kind_note").expect("补充段");
-    let constraints_at = assignment.find("constraints").expect("约束段");
     let id_at = assignment.find("task_id").expect("任务 id");
     assert!(quote_at < understanding_at, "{assignment}");
     assert!(understanding_at < dod_at, "{assignment}");
     assert!(dod_at < note_at, "{assignment}");
-    assert!(note_at < constraints_at, "{assignment}");
-    assert!(constraints_at < id_at, "{assignment}");
+    assert!(note_at < id_at, "{assignment}");
+    let package: serde_json::Value = serde_json::from_str(&assignment).expect("assignment JSON");
+    assert!(
+        package.get("constraints").is_none(),
+        "constraints 只留账本：{assignment}"
+    );
+    assert!(
+        assignment.contains("账本注入原话"),
+        "约束在账本里：{assignment}"
+    );
     assert!(assignment.contains("用户原话"), "{assignment}");
     assert!(
         assignment.contains("Kind 的理解，不是用户原话"),
@@ -509,4 +521,154 @@ fn find_user_words_returns_the_latest_matching_user_message() {
     assert_eq!(text, "第二句 target");
     assert_eq!(seq, second);
     assert!(second > first);
+}
+
+#[test]
+fn requirement_change_note_lists_every_version_quote_first() {
+    let (directory, runtime) = open_runtime();
+    let mut task = runtime_store_task(directory.path(), Vec::new(), false);
+    let mut second = task.versions[0].clone();
+    second.at += 1;
+    second.requirement = Some("第二版要求".to_owned());
+    second.dod = Some("第二版 DoD".to_owned());
+    second.quote = Some("第二次原话".to_owned());
+    task.versions.push(second);
+    task.requirement = "第二版要求".to_owned();
+    task.dod = "第二版 DoD".to_owned();
+    let note = runtime.requirement_change_note(&task, "第二版要求", 2);
+    assert!(
+        note.starts_with(
+            "用户原话：账本注入原话
+第 2 版：第二次原话"
+        ),
+        "{note}"
+    );
+    assert!(
+        note.contains("Kind 的理解") || note.contains("第二版要求"),
+        "{note}"
+    );
+}
+
+#[test]
+fn continue_package_lists_every_version_quote_first() {
+    let (directory, runtime) = open_runtime();
+    let mut task = runtime_store_task(directory.path(), Vec::new(), false);
+    let mut second = task.versions[0].clone();
+    second.at += 1;
+    second.requirement = Some("第二版要求".to_owned());
+    second.quote = Some("第二次原话".to_owned());
+    second.quote_source = Some(tasks::QuoteSource::UserMessage {
+        conversation: "kind-1".to_owned(),
+        seq: 2,
+    });
+    second.kind_note = Some("Kind 的补充".to_owned());
+    task.versions.push(second);
+    assert_eq!(
+        runtime.version_quote_lines(&task),
+        vec![
+            "用户原话：账本注入原话".to_owned(),
+            "第 2 版：第二次原话".to_owned()
+        ]
+    );
+    let package = runtime
+        .continue_package(
+            &task,
+            &tasks::ContinueCause::AfterReport {
+                report: tasks::ReportId::from("report-1"),
+            },
+            None,
+        )
+        .unwrap();
+    assert!(
+        package.starts_with("用户原话：账本注入原话\n第 2 版：第二次原话"),
+        "{package}"
+    );
+}
+
+#[test]
+fn old_task_continue_package_keeps_plain_requirement_label() {
+    let (directory, runtime) = open_runtime();
+    let mut task = runtime_store_task(directory.path(), Vec::new(), false);
+    for version in &mut task.versions {
+        version.quote = None;
+        version.kind_note = None;
+    }
+    let package = runtime
+        .continue_package(
+            &task,
+            &tasks::ContinueCause::UpstreamChanged {
+                upstream_report: tasks::ReportId::from("upstream-old"),
+            },
+            None,
+        )
+        .unwrap();
+    assert!(package.contains("原要求不变："), "{package}");
+    assert!(!package.contains("Kind 的理解"), "{package}");
+    let package = runtime
+        .continue_package(
+            &task,
+            &tasks::ContinueCause::CycleDue {
+                appointment_id: "appointment-old".to_owned(),
+                run_id: 1,
+            },
+            None,
+        )
+        .unwrap();
+    assert!(package.contains("原要求不变："), "{package}");
+    assert!(!package.contains("Kind 的理解"), "{package}");
+}
+
+#[test]
+fn latest_kind_note_scans_back_for_the_most_recent_note() {
+    let (directory, runtime) = open_runtime();
+    let mut task = runtime_store_task(directory.path(), Vec::new(), false);
+    task.versions[0].kind_note = Some("一版的补充".to_owned());
+    let mut second = task.versions[0].clone();
+    second.at += 1;
+    second.quote = Some("第二次原话".to_owned());
+    second.kind_note = None;
+    task.versions.push(second);
+    assert_eq!(runtime.latest_kind_note(&task), Some("一版的补充"));
+    let assignment = runtime.assignment_text(&task, false);
+    assert!(assignment.contains("一版的补充"), "{assignment}");
+    assert_eq!(assignment.matches("一版的补充").count(), 1, "{assignment}");
+    let package = runtime
+        .continue_package(
+            &task,
+            &tasks::ContinueCause::UpstreamChanged {
+                upstream_report: tasks::ReportId::from("upstream-1"),
+            },
+            None,
+        )
+        .unwrap();
+    assert!(
+        package.contains("Kind 的补充（不算用户要求）：一版的补充"),
+        "{package}"
+    );
+    let note = runtime.requirement_change_note(&task, "第二版要求", 2);
+    assert!(
+        note.contains("Kind 的补充（不算用户要求）：一版的补充"),
+        "{note}"
+    );
+}
+
+#[test]
+fn task_tool_required_keys_are_declared_in_properties() {
+    let (_, runtime) = open_runtime();
+    let tools: Vec<Box<dyn Tool>> = vec![
+        Box::new(TaskAcceptTool::new(runtime.clone())),
+        Box::new(TaskGraphProposeTool::new(runtime)),
+    ];
+    for tool in tools {
+        let schema = tool.parameters();
+        let properties = schema["properties"].as_object().expect("properties 对象");
+        for required in schema["required"].as_array().expect("required 数组") {
+            let key = required.as_str().expect("required 项是字符串");
+            assert!(
+                properties.contains_key(key),
+                "{} required 的 {key} 没在 properties 里：{schema}",
+                tool.name()
+            );
+        }
+    }
 }

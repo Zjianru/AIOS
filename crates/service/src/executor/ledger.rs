@@ -3,6 +3,31 @@
 use super::*;
 
 impl TaskRuntime {
+    /// 按版本列用户原话：第一版「用户原话」，之后「第 N 版」。没有原话的旧任务为空。
+    pub(crate) fn version_quote_lines(&self, task: &Task) -> Vec<String> {
+        task.versions
+            .iter()
+            .enumerate()
+            .filter_map(|(index, version)| {
+                version.quote.as_ref().map(|quote| {
+                    if index == 0 {
+                        format!("用户原话：{quote}")
+                    } else {
+                        format!("第 {} 版：{quote}", index + 1)
+                    }
+                })
+            })
+            .collect()
+    }
+
+    /// 最近一版里有 Kind 补充的那条；没有就 None。包/continue 共用同一取法。
+    pub(crate) fn latest_kind_note<'a>(&self, task: &'a Task) -> Option<&'a str> {
+        task.versions
+            .iter()
+            .rev()
+            .find_map(|version| version.kind_note.as_deref())
+    }
+
     /// 一次 Attempt 的任务书 JSON；launch 和压缩固定块共用同一段构造。
     pub(crate) fn assignment_value(
         &self,
@@ -25,7 +50,11 @@ impl TaskRuntime {
                 version.quote.as_ref().map(|quote| {
                     serde_json::json!({
                         "version": index + 1,
-                        "label": "用户原话",
+                        "label": if index == 0 {
+                            "用户原话".to_owned()
+                        } else {
+                            format!("第 {} 版", index + 1)
+                        },
                         "quote": quote,
                         "inherited_from": inherited_from,
                     })
@@ -45,20 +74,12 @@ impl TaskRuntime {
                 "requirement_label".to_owned(),
                 serde_json::json!("Kind 的理解，不是用户原话"),
             );
-            if let Some(note) = task
-                .versions
-                .last()
-                .and_then(|version| version.kind_note.as_deref())
-            {
+            if let Some(note) = self.latest_kind_note(task) {
                 assignment.insert("kind_note".to_owned(), serde_json::json!(note));
                 assignment.insert(
                     "kind_note_label".to_owned(),
                     serde_json::json!("Kind 的补充，不算用户要求"),
                 );
-            }
-            let constraints = task.current_constraints();
-            if !constraints.is_empty() {
-                assignment.insert("constraints".to_owned(), serde_json::json!(constraints));
             }
         }
         assignment.insert("task_id".to_owned(), serde_json::json!(task.id.as_str()));
@@ -105,7 +126,6 @@ impl TaskRuntime {
                 "requirement_label",
                 "kind_note",
                 "kind_note_label",
-                "constraints",
                 "task_id",
                 "title",
                 "cwd",

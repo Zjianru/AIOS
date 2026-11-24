@@ -206,7 +206,7 @@ async fn the_kind_system_prompt_ends_with_the_task_policy() {
     for fixed in [
         "You are AIOS's coordinator",
         "call task_accept to dispatch a task",
-        "requirement in the user's own words",
+        "Kind's understanding of what the user asked",
         "If one message contains several unrelated things",
         "Results arrive as task_report",
         "call task_status once",
@@ -739,6 +739,7 @@ async fn a_closed_task_can_change_requirement_again_and_keeps_old_acceptance() {
             "call-update-skill-2".to_owned(),
             "call-update-card-2".to_owned(),
             "再按域名归并一次".to_owned(),
+            "再改一点：按域名归并".to_owned(),
         )],
     );
     let (_relay_id, _) = ready_relay(&fixture).await;

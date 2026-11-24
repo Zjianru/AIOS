@@ -504,6 +504,31 @@ impl RootHost {
         *self.session_id.lock().expect("session id 锁被毒化") = Some(session_id);
     }
 
+    /// 测试钩子：往根会话追加一条用户打字的消息（日历条件校验等用例用）。
+    #[doc(hidden)]
+    pub async fn append_user_message_for_test(&self, text: &str) -> Result<(), String> {
+        let guard = self.inner.lock().await;
+        let host = guard.as_ref().ok_or_else(|| "根会话没开".to_owned())?;
+        let before = host.agent().last_seq();
+        host.agent()
+            .append_event(session::EventKind::UserMessage {
+                turn: 1,
+                step: 0,
+                message: model::UserMessage::text_with_request_id(
+                    text,
+                    "33333333-3333-4333-8333-333333333333",
+                )
+                .into_message(),
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+        let after = host.agent().last_seq();
+        if after <= before {
+            return Err(format!("追加用户消息没有落日志：{before} -> {after}"));
+        }
+        Ok(())
+    }
+
     /// 宿主信息（ready/status 用）：协议版本 + 根状态 + 上下文占用。
     pub fn info(&self) -> HostInfo {
         let context = *self.context.lock().expect("context 锁被毒化");

@@ -191,7 +191,7 @@ impl Capability for MemoryCapability {
                                 };
                                 if !already && !recall.ids.is_empty() {
                                     let message = model::Message::memory_context(
-                                        recall.text,
+                                        crate::instructions::frame_system_reminder(&recall.text),
                                         format!("flashback:{}", recall.ids.join(",")),
                                     );
                                     let seqs = host
@@ -297,7 +297,10 @@ impl Capability for MemoryCapability {
                             context.text
                         )
                     };
-                    let message = model::Message::memory_context(text, context.identity);
+                    let message = model::Message::memory_context(
+                        crate::instructions::frame_system_reminder(&text),
+                        context.identity,
+                    );
                     let seqs = host
                         .append_with_seqs(&[session::EventKind::UserMessage {
                             turn: *turn,

@@ -3,7 +3,7 @@
 use crate::common::{
     FINAL_TEXT_SSE, SequenceResponder, isolated_config, model_config, sse, test_credential,
 };
-use agent::{Agent, Delivery, Deps};
+use agent::{Agent, Delivery, Deps, MemoryContext};
 use model::UserMessage;
 use session::SessionStore;
 use wiremock::matchers::{method, path};
@@ -198,7 +198,7 @@ async fn now_message_follows_this_turns_user_message_in_the_model_request() {
 
 #[tokio::test]
 async fn first_round_only_user_words_are_outside_system_reminder() {
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
@@ -228,6 +228,13 @@ async fn first_round_only_user_words_are_outside_system_reminder() {
             text: "项目清单正文".to_owned(),
         })
     }));
+    config.memory_context = Some(Arc::new(|| {
+        Ok(Some(MemoryContext {
+            identity: "first-turn-memory".to_owned(),
+            text: "记忆正文".to_owned(),
+            ids: Vec::new(),
+        }))
+    }));
     let agent = Agent::create(config, deps()).await.unwrap();
     agent
         .send(UserMessage::text("建个项目：框外原话"), Delivery::FollowUp)
@@ -254,6 +261,19 @@ async fn first_round_only_user_words_are_outside_system_reminder() {
         !after[..next_open].contains("</system-reminder>"),
         "用户原话和下一块之间不能有框结束符：{after}"
     );
+    let memory_at = body.find("记忆正文").expect("记忆也要进第一轮请求");
+    let memory_open = body[..memory_at]
+        .rfind("<system-reminder>")
+        .expect("记忆在框内");
+    let memory_close = body[memory_at..]
+        .find("</system-reminder>")
+        .map(|offset| memory_at + offset)
+        .expect("记忆框闭合");
+    assert!(
+        !body[memory_open..memory_at].contains("</system-reminder>"),
+        "记忆必须在同一个框内：{body}"
+    );
+    assert!(memory_close > memory_at, "{body}");
 }
 
 #[tokio::test]

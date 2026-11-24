@@ -29,6 +29,16 @@ impl UpdateTaskRequirementAction {
             .ok_or_else(|| "details.task_id 必须是非空的任务 id".to_owned())
     }
 
+    fn quote(&self, raw: &Value) -> Result<String, String> {
+        raw.as_object()
+            .and_then(|object| object.get("quote"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|quote| !quote.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| "details.quote 必须是非空的用户原话".to_owned())
+    }
+
     fn requirement(&self, raw: &Value) -> Result<String, String> {
         raw.as_object()
             .and_then(|object| object.get("requirement"))
@@ -84,11 +94,13 @@ impl UpdateTaskRequirementAction {
     fn describe_task(
         &self,
         task_id: &str,
+        quote: &str,
         requirement: &str,
         dod: Option<&str>,
         constraints: Option<&[String]>,
     ) -> Result<Vec<CardFact>, String> {
         let task = self.task(task_id)?;
+        crate::ledger::verify_task_quote(&self.data_dir, task.conversation.as_str(), quote)?;
         if let Some(constraints) = constraints {
             crate::ledger::verify_user_words(
                 &self.data_dir,
@@ -117,21 +129,28 @@ impl UpdateTaskRequirementAction {
             return Err("要求和 DoD 都没变，不用改".to_owned());
         }
         let current = task.requirement_version();
-        let mut facts = vec![CardFact {
-            name: "要求".to_owned(),
-            value: format!("{} → {requirement}", task.requirement),
-        }];
+        let mut understanding = format!("{} → {requirement}", task.requirement);
         if let Some(dod) = dod {
-            facts.push(CardFact {
-                name: "DoD".to_owned(),
-                value: format!("{} → {dod}", task.dod),
-            });
+            understanding.push_str(&format!(
+                "
+DoD：{} → {dod}",
+                task.dod
+            ));
         }
-        facts.push(CardFact {
-            name: "版本".to_owned(),
-            value: format!("第 {current} 版 → 第 {} 版，同一个任务接着做", current + 1),
-        });
-        Ok(facts)
+        Ok(vec![
+            CardFact {
+                name: "你这次说的".to_owned(),
+                value: quote.to_owned(),
+            },
+            CardFact {
+                name: "要求（Kind 的理解）".to_owned(),
+                value: understanding,
+            },
+            CardFact {
+                name: "版本".to_owned(),
+                value: format!("第 {current} 版 → 第 {} 版，同一个任务接着做", current + 1),
+            },
+        ])
     }
 }
 
@@ -147,6 +166,7 @@ impl ActionKind for UpdateTaskRequirementAction {
     fn details(&self, raw: &Value) -> Result<Value, String> {
         Ok(json!({
             "task_id": self.task_id(raw)?,
+            "quote": self.quote(raw)?,
             "requirement": self.requirement(raw)?,
             "dod": self.dod(raw)?,
             "constraints": self.constraints(raw)?,
@@ -155,11 +175,13 @@ impl ActionKind for UpdateTaskRequirementAction {
 
     fn describe(&self, details: &Value, _env: &ActionEnv<'_>) -> Result<Vec<CardFact>, String> {
         let task_id = self.task_id(details)?;
+        let quote = self.quote(details)?;
         let requirement = self.requirement(details)?;
         let dod = self.dod(details)?;
         let constraints = self.constraints(details)?;
         self.describe_task(
             &task_id,
+            &quote,
             &requirement,
             dod.as_deref(),
             constraints.as_deref(),
@@ -173,11 +195,13 @@ impl ActionKind for UpdateTaskRequirementAction {
         _env: &ActionEnv<'_>,
     ) -> Result<(), String> {
         let task_id = self.task_id(details)?;
+        let quote = self.quote(details)?;
         let requirement = self.requirement(details)?;
         let dod = self.dod(details)?;
         let constraints = self.constraints(details)?;
         match self.describe_task(
             &task_id,
+            &quote,
             &requirement,
             dod.as_deref(),
             constraints.as_deref(),
@@ -194,19 +218,13 @@ impl ActionKind for UpdateTaskRequirementAction {
     ) -> ActionFuture<'a, Result<ActionOutcome, String>> {
         Box::pin(async move {
             let task_id = self.task_id(details)?;
+            let quote = self.quote(details)?;
             let requirement = self.requirement(details)?;
             let dod = self.dod(details)?;
             let constraints = self.constraints(details)?;
             // 先查再写（顺序/原因照 task_update）：任务在排队、这一轮还在跑、或从没开跑
             // 都不碰任务库，避免「版本先加一版、会话却开不出来」。
             let task = self.task(&task_id)?;
-            if let Some(constraints) = constraints.as_deref() {
-                crate::ledger::verify_user_words(
-                    &self.data_dir,
-                    task.conversation.as_str(),
-                    constraints,
-                )?;
-            }
             let store = tasks::Store::open(self.data_dir.join(crate::TASKS_DB_FILE))
                 .map_err(|error| format!("任务库读不出来：{error}"))?;
             if store
@@ -224,11 +242,31 @@ impl ActionKind for UpdateTaskRequirementAction {
             if task.latest_attempt().is_none() {
                 return Err("这个任务还没开跑，没有可接着做的会话；请重新派任务".to_owned());
             }
+            let quote_source = crate::ledger::verify_task_quote(
+                &self.data_dir,
+                task.conversation.as_str(),
+                &quote,
+            )?;
+            if let Some(constraints) = constraints.as_deref() {
+                crate::ledger::verify_user_words(
+                    &self.data_dir,
+                    task.conversation.as_str(),
+                    constraints,
+                )?;
+            }
             let runtime = host
                 .task_runtime()
                 .ok_or_else(|| "任务执行者没起来，改不了要求".to_owned())?;
             let summary = runtime
-                .update_requirement(&task_id, requirement.clone(), dod, constraints)
+                .update_requirement(
+                    &task_id,
+                    requirement.clone(),
+                    dod,
+                    constraints,
+                    Some(quote),
+                    Some(quote_source),
+                    None,
+                )
                 .await?;
             Ok(ActionOutcome {
                 summary,

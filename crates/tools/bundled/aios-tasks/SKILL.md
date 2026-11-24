@@ -67,7 +67,7 @@ When a notice says an upstream task has a new result and names a downstream task
 
 When the user's message carries a result card and asks for a change, call `propose_action` once with one option:
 
-- `update_task_requirement`: `details` is `{ "task_id": "<the card's task id>", "requirement": "<the whole new requirement>", "dod": "<optional new dod>" }`. Write the user's own words into the new requirement and keep the rest of the original requirement; change nothing else. Load `aios-tasks` first.
+- `update_task_requirement`: `details` is `{ "task_id": "<the card's task id>", "quote": "<the user's words for this change, verbatim>", "requirement": "<Kind's understanding of the whole new requirement>", "dod": "<optional new dod>" }`. `quote` is required and is checked against the user's typed messages just like dispatch; `requirement` is Kind's understanding, not a copy of the user's words. Keep the rest of the original requirement; change nothing else. Load `aios-tasks` first.
 - Label the option "改任务要求". The card fills in the before → after and version lines; do not write those yourself.
 - After the user confirms, the same task starts a new Attempt (version N+1); the old acceptance stays in history.
 - If the message only asks a question about the result, answer it directly and do not show a card.

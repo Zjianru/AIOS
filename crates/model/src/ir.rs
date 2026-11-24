@@ -260,7 +260,7 @@ impl ContentBlock {
     /// T054.2：结果卡块投给模型的那一行文字（照 spec 原文）。
     pub fn result_card_text(task_id: &str, title: &str, version: u32) -> String {
         format!(
-            "[用户要求修改这张结果卡：任务 {task_id}「{title}」，第 {version} 版要求的结果]\n结果卡不是程序消息。用户要求改时，只把用户原话放进 propose_action action update_task_requirement 的 requirement，其他不动；要扩大写入范围走 task_update。如果用户只是在问这张卡的结果，直接回答，不再出卡。结果只能由用户在卡上接受，不要替用户接受或宣布已接受。"
+            "[用户要求修改这张结果卡：任务 {task_id}「{title}」，第 {version} 版要求的结果]\n结果卡不是程序消息。用户要求改时，把用户这次说的原话放进 propose_action action update_task_requirement 的 quote；Kind 的理解放进 requirement，不是用户原话；其他不动。要扩大写入范围走 task_update。如果用户只是在问这张卡的结果，直接回答，不再出卡。结果只能由用户在卡上接受，不要替用户接受或宣布已接受。"
         )
     }
 

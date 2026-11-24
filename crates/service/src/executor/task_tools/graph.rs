@@ -20,6 +20,8 @@ impl TaskGraphProposeTool {
                 "type": "object",
                 "properties": {
                     "title": {"type": "string", "description": TASK_ACCEPT_TITLE_DESCRIPTION},
+                    "quote": {"type": "string", "description": "The user's request, copied verbatim from a user message. Required. The whole call is rejected if this is not a contiguous substring of a user message; on rejection, copy the exact words again or ask the user, never invent or paraphrase."},
+                    "kind_note": {"type": "string", "description": "Optional note from Kind: assumptions or additions that are not the user's own words. Keep it out of quote and requirement."},
                     "requirement": {"type": "string", "description": "Kind's understanding of what the whole graph must achieve, not a copy of the user's words."},
                     "dod": {"type": "string", "description": "How the whole graph will be judged complete."},
                     "cwd": {"type": "string", "description": "Directory to work in; omit to use the project's default directory, then this conversation's directory. A path you pass must already exist."},

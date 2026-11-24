@@ -8,6 +8,12 @@ use serde_json::{Value, json};
 use service::{ActionEnv, ActionRegistry, Call, Response};
 use tools::{Tool, ToolCall, ToolContext, ToolSessionState};
 
+async fn record_user_words(host: &service::RootHost, text: &str) {
+    host.append_user_message_for_test(text)
+        .await
+        .expect("写入用户原话");
+}
+
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -103,6 +109,7 @@ async fn propose_create_and_update_facts_and_stale_version_refusal() {
             .iter()
             .any(|fact| fact.name == "原话" && fact.value.contains("喝水"))
     );
+    record_user_words(&host, "每天九点提醒我喝水").await;
     let outcome = create.act(&normalized, &host).await.unwrap();
     let appointment_id = outcome.data["appointmentId"].as_str().unwrap().to_owned();
     let store = calendar::CalendarStore::open(data.join("calendar.sqlite")).unwrap();
@@ -390,6 +397,7 @@ async fn create_card_accepts_number_string_start_delay_and_binding_objects() {
             .iter()
             .any(|fact| fact.name == "绑定" && fact.value.contains("Kind"))
     );
+    record_user_words(&host, "一分钟后提醒我喝水").await;
     let outcome = create.act(&normalized, &host).await.expect("按卡建约定");
     let appointment_id = outcome.data["appointmentId"].as_str().unwrap().to_owned();
     let store = calendar::CalendarStore::open(data.join("calendar.sqlite")).unwrap();
@@ -516,10 +524,40 @@ async fn card_act_records_the_kind_turn_that_proposed_it() {
             "binding": "kind"
         }))
         .unwrap();
+    record_user_words(&host, "明天九点提醒我").await;
     let outcome = create.act(&details, &host).await.expect("按卡建约定");
     let appointment_id = outcome.data["appointmentId"].as_str().unwrap().to_owned();
     let store = calendar::CalendarStore::open(data.join("calendar.sqlite")).unwrap();
     let created = store.appointment(&appointment_id).unwrap().unwrap();
     assert_eq!(created.source_turn, Some(1), "确认卡 act 要写发起轮");
+    host.shutdown().await;
+}
+
+#[tokio::test]
+async fn create_appointment_rejects_a_condition_the_user_never_said() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path();
+    let mut options = crate::common::options(data);
+    options.actions = Arc::new(ActionRegistry::settings(data.to_path_buf(), None));
+    let host = crate::common::open(options).await;
+    let registry = ActionRegistry::settings(data.to_path_buf(), None);
+    let create = registry.get("create_appointment").expect("create 动作");
+    let details = create
+        .details(&json!({
+            "title": "伪造约定",
+            "condition": "用户没说过这句",
+            "rule": "FREQ=DAILY",
+            "timezone": "Asia/Shanghai",
+            "delaySeconds": 60,
+            "binding": "kind"
+        }))
+        .unwrap();
+    let error = create
+        .act(&details, &host)
+        .await
+        .expect_err("非用户原话要拒");
+    assert!(error.contains("约束要用用户原话"), "{error}");
+    let store = calendar::CalendarStore::open(data.join("calendar.sqlite")).unwrap();
+    assert!(store.list_appointments().unwrap().is_empty());
     host.shutdown().await;
 }

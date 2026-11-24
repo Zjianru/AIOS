@@ -15,6 +15,7 @@ pub(super) struct UpdateProposal {
     pub(super) skill_call: String,
     pub(super) card_call: String,
     pub(super) requirement: String,
+    pub(super) quote: String,
     pub(super) skill_emitted: bool,
     pub(super) card_emitted: bool,
 }
@@ -93,20 +94,21 @@ impl Router {
         *self.state.two_graph_kind.lock().unwrap() = Some(10);
     }
 
-    /// 改要求 Kind 的动态脚本（trigger, skill_call, card_call, requirement）。
+    /// 改要求 Kind 的动态脚本（trigger, skill_call, card_call, requirement, quote）。
     pub(super) fn enable_update_kind(
         &self,
         task_id: &str,
-        proposals: Vec<(String, String, String, String)>,
+        proposals: Vec<(String, String, String, String, String)>,
     ) {
         let proposals = proposals
             .into_iter()
             .map(
-                |(trigger, skill_call, card_call, requirement)| UpdateProposal {
+                |(trigger, skill_call, card_call, requirement, quote)| UpdateProposal {
                     trigger,
                     skill_call,
                     card_call,
                     requirement,
+                    quote,
                     skill_emitted: false,
                     card_emitted: false,
                 },
@@ -144,6 +146,7 @@ impl Router {
                         "label": "改任务要求",
                         "details": {
                             "task_id": update.task_id,
+                            "quote": proposal.quote,
                             "requirement": proposal.requirement,
                         }
                     }]

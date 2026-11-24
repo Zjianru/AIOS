@@ -2314,10 +2314,27 @@ impl Store {
         constraints: Option<Vec<String>>,
         now: i64,
     ) -> Result<Task, TaskError> {
+        self.update_requirement_with_quote(id, requirement, dod, constraints, None, None, None, now)
+    }
+
+    /// 改要求并追加版本；quote 只属于这一版，kind_note 是 Kind 的补充。
+    pub fn update_requirement_with_quote(
+        &self,
+        id: &TaskId,
+        requirement: &str,
+        dod: Option<&str>,
+        constraints: Option<Vec<String>>,
+        quote: Option<&str>,
+        quote_source: Option<crate::QuoteSource>,
+        kind_note: Option<&str>,
+        now: i64,
+    ) -> Result<Task, TaskError> {
         let requirement = requirement.trim();
         if requirement.is_empty() {
             return Err(TaskError::EmptyRequirement);
         }
+        let quote = quote.map(str::trim).filter(|quote| !quote.is_empty());
+        let kind_note = kind_note.map(str::trim).filter(|note| !note.is_empty());
         let mut conn = self.lock()?;
         let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut task = load_task_required(&transaction, id)?;
@@ -2346,9 +2363,9 @@ impl Store {
             write_scope,
             at: now,
             source: VersionSource::UserAgreed,
-            quote: None,
-            quote_source: None,
-            kind_note: None,
+            quote: quote.map(str::to_owned),
+            quote_source,
+            kind_note: kind_note.map(str::to_owned),
             requirement: Some(requirement.to_owned()),
             dod: Some(next_dod.clone()),
             constraints,

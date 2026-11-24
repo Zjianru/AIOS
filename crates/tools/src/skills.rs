@@ -704,6 +704,26 @@ mod tests {
     }
 
     #[test]
+    fn aios_tasks_skill_uses_quote_for_requirement_updates() {
+        let skill = bundled_skills()
+            .iter()
+            .find(|skill| skill.name == "aios-tasks")
+            .expect("aios-tasks 自带 skill");
+        assert!(
+            skill.raw.contains("update_task_requirement"),
+            "{}",
+            skill.raw
+        );
+        assert!(skill.raw.contains("\"quote\""), "{}", skill.raw);
+        assert!(
+            !skill
+                .raw
+                .contains("Write the user's own words into the new requirement"),
+            "不再教 Kind 把原话写进 requirement"
+        );
+    }
+
+    #[test]
     fn invalid_frontmatter_is_rejected() {
         for raw in [
             "no frontmatter",

@@ -753,6 +753,14 @@ async fn flashback_is_injected_once_with_ids_and_not_repeated() {
         1,
         "同一段回忆不重复送：{second}"
     );
+    let flash_at = first.find("<memory_flashback>").expect("回忆段");
+    let flash_open = first[..flash_at]
+        .rfind("<system-reminder>")
+        .expect("回忆在框内");
+    assert!(
+        !first[flash_open..flash_at].contains("</system-reminder>"),
+        "回忆必须在同一个框内：{first}"
+    );
     assert!(
         delivered
             .lock()

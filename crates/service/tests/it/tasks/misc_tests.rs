@@ -461,6 +461,7 @@ async fn update_task_requirement_card_round_trip_opens_a_new_attempt() {
             "call-update-skill".to_owned(),
             "call-update-card".to_owned(),
             requirement.to_owned(),
+            "空标题也别丢，用域名加路径当键".to_owned(),
         )],
     );
     let (_relay_id, body) = ready_relay(&fixture).await;
@@ -564,6 +565,14 @@ async fn update_task_requirement_card_round_trip_opens_a_new_attempt() {
     let updated = store.task(&task.id).unwrap().unwrap();
     assert_eq!(updated.requirement_version(), 2);
     assert_eq!(updated.requirement, requirement);
+    assert_eq!(
+        updated.versions[1].quote.as_deref(),
+        Some("空标题也别丢，用域名加路径当键")
+    );
+    assert!(matches!(
+        updated.versions[1].quote_source,
+        Some(tasks::QuoteSource::UserMessage { .. })
+    ));
     match &updated.latest_attempt().expect("新 Attempt").trigger {
         tasks::AttemptTrigger::RequirementChanged => {}
         other => panic!("trigger 是 {other:?}"),
@@ -585,7 +594,6 @@ async fn update_task_requirement_card_round_trip_opens_a_new_attempt() {
         .find(|(_, body)| body["requirement_version"] == 2)
         .expect("第 2 版 relay");
     assert_eq!(v2_body["task"]["id"], task.id.as_str());
-
     // 接受第 2 版 → 已关闭；旧接受历史里没有第 1 版（这一轮才第一次接受）。
     let accepted = accept_result_card(&fixture.host, &v2_relay).await;
     assert_eq!(accepted["phase"], "confirmed", "{accepted}");
@@ -609,7 +617,7 @@ async fn update_task_requirement_action_rejects_queued_running_and_unchanged() {
         events: &events,
     };
     let queued = action.describe(
-        &serde_json::json!({"task_id": task.id.as_str(), "requirement": "新要求"}),
+        &serde_json::json!({"task_id": task.id.as_str(), "quote": "改一下", "requirement": "新要求"}),
         &env,
     );
     assert!(
@@ -642,7 +650,7 @@ async fn update_task_requirement_action_rejects_queued_running_and_unchanged() {
         events: &events,
     };
     let running = action.describe(
-        &serde_json::json!({"task_id": task.id.as_str(), "requirement": "新要求"}),
+        &serde_json::json!({"task_id": task.id.as_str(), "quote": "改一下", "requirement": "新要求"}),
         &env,
     );
     assert!(
@@ -677,17 +685,43 @@ async fn update_task_requirement_reconcile_refuses_after_a_change() {
 
     let details = serde_json::json!({
         "task_id": task_id,
+        "quote": "改一下",
         "requirement": "第一版之外的第二个要求",
+        "dod": "新 DoD",
     });
-    let facts = action.describe(&details, &env).expect("能出卡");
+    let bad_quote = action.describe(
+        &serde_json::json!({
+            "task_id": task_id,
+            "quote": "用户没说过这句",
+            "requirement": "第一版之外的第二个要求",
+        }),
+        &env,
+    );
     assert!(
-        facts[1].value.contains("第 1 版 → 第 2 版"),
+        bad_quote
+            .as_ref()
+            .err()
+            .is_some_and(|reason| reason.contains("派任务要用用户原话")),
+        "{bad_quote:?}"
+    );
+    let facts = action.describe(&details, &env).expect("能出卡");
+    assert_eq!(facts.len(), 3, "三行：你这次说的、Kind 的理解、版本");
+    assert_eq!(facts[0].name, "你这次说的");
+    assert_eq!(facts[0].value, "改一下");
+    assert_eq!(facts[1].name, "要求（Kind 的理解）");
+    assert!(
+        facts[1].value.contains("第一版之外的第二个要求"),
         "{}",
         facts[1].value
     );
+    assert!(
+        facts[2].value.contains("第 1 版 → 第 2 版"),
+        "{}",
+        facts[2].value
+    );
     // 要求和 DoD 都没变：describe 拒绝。
     let unchanged = action.describe(
-        &serde_json::json!({"task_id": task_id, "requirement": "找答案"}),
+        &serde_json::json!({"task_id": task_id, "quote": "改一下", "requirement": "找答案"}),
         &env,
     );
     assert!(
@@ -751,7 +785,7 @@ async fn update_task_requirement_act_rejects_a_never_started_task_without_writin
     let action = registry.get("update_task_requirement").expect("动作登记");
     let refused = service::ActionKind::act(
         action.as_ref(),
-        &serde_json::json!({"task_id": task.id.as_str(), "requirement": "新要求"}),
+        &serde_json::json!({"task_id": task.id.as_str(), "quote": "改一下", "requirement": "新要求"}),
         &fixture.host,
     )
     .await
@@ -811,6 +845,7 @@ async fn update_requirement_constraints_must_be_user_words_and_land_on_the_new_v
         action.as_ref(),
         &serde_json::json!({
             "task_id": task.id.as_str(),
+            "quote": "改一下",
             "requirement": "新要求",
             "constraints": ["用户没说过这句"],
         }),
@@ -834,6 +869,7 @@ async fn update_requirement_constraints_must_be_user_words_and_land_on_the_new_v
         action.as_ref(),
         &serde_json::json!({
             "task_id": task.id.as_str(),
+            "quote": "改一下",
             "requirement": "按用户原话改的新要求",
             "constraints": ["改一下"],
         }),
@@ -849,6 +885,7 @@ async fn update_requirement_constraints_must_be_user_words_and_land_on_the_new_v
         before.requirement_version() + 1
     );
     assert_eq!(updated.current_constraints(), ["改一下"]);
+    assert_eq!(updated.versions[1].quote.as_deref(), Some("改一下"));
 }
 
 ///.2：改要求不传 constraints 时沿用上一版。
@@ -901,6 +938,7 @@ async fn update_requirement_without_constraints_keeps_the_previous_version() {
         action.as_ref(),
         &serde_json::json!({
             "task_id": task.id.as_str(),
+            "quote": "改一下",
             "requirement": "只改要求文字，不传约束",
         }),
         &fixture.host,

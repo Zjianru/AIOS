@@ -304,3 +304,12 @@ fn skill_invocation_source_serializes_dsh_shape() {
         serde_json::json!({"kind": "skill-invocation", "name": "pdf-tools", "form": "instructions"})
     );
 }
+
+#[test]
+fn result_card_text_asks_for_quote_not_requirement() {
+    let text = ContentBlock::result_card_text("task-1", "查一下", 3);
+    assert!(text.contains("update_task_requirement"), "{text}");
+    assert!(text.contains("quote"), "{text}");
+    assert!(text.contains("Kind 的理解"), "{text}");
+    assert!(!text.contains("只把用户原话"), "{text}");
+}

@@ -669,11 +669,23 @@ impl TaskRuntime {
         cause: &ContinueCause,
         note: Option<&str>,
     ) -> Result<String, String> {
-        let mut lines = Vec::new();
+        let mut lines = self.version_quote_lines(task);
+        let has_quotes = !lines.is_empty();
+        if has_quotes {
+            lines.push(String::new());
+        }
+        let requirement_label = if has_quotes {
+            "Kind 的理解（不是用户原话）"
+        } else {
+            "原要求不变"
+        };
         match cause {
             ContinueCause::GateNeedsFix { gate_report, .. } => {
                 lines.push("你要按这个改。".to_owned());
-                lines.push(format!("原要求不变：{}", task.requirement));
+                lines.push(format!("{requirement_label}：{}", task.requirement));
+                if let Some(note) = self.latest_kind_note(task) {
+                    lines.push(format!("Kind 的补充（不算用户要求）：{note}"));
+                }
                 if let Some(note) = note.filter(|note| !note.trim().is_empty()) {
                     lines.push(format!("用户原话：{note}"));
                 }
@@ -695,7 +707,10 @@ impl TaskRuntime {
             }
             ContinueCause::UpstreamChanged { upstream_report } => {
                 lines.push("上游有新结果，按新结果核对。".to_owned());
-                lines.push(format!("原要求不变：{}", task.requirement));
+                lines.push(format!("{requirement_label}：{}", task.requirement));
+                if let Some(note) = self.latest_kind_note(task) {
+                    lines.push(format!("Kind 的补充（不算用户要求）：{note}"));
+                }
                 for need in &task.needs {
                     let Ok(Some(upstream)) = self.store.task(&need.from) else {
                         continue;
@@ -719,7 +734,10 @@ impl TaskRuntime {
             }
             ContinueCause::CycleDue { appointment_id, .. } => {
                 lines.push("循环约定到点：这一轮报回是约定叫的，接着做下一轮。".to_owned());
-                lines.push(format!("原要求不变：{}", task.requirement));
+                lines.push(format!("{requirement_label}：{}", task.requirement));
+                if let Some(note) = self.latest_kind_note(task) {
+                    lines.push(format!("Kind 的补充（不算用户要求）：{note}"));
+                }
                 if let Some(note) = note.filter(|note| !note.trim().is_empty()) {
                     lines.push(format!("用户原话：{note}"));
                 }
@@ -1594,7 +1612,7 @@ impl TaskRuntime {
         dod: Option<String>,
         constraints: Option<Vec<String>>,
     ) -> Result<String, String> {
-        self.update_requirement(task_id, requirement, dod, constraints)
+        self.update_requirement(task_id, requirement, dod, constraints, None, None, None)
             .await
     }
 
@@ -3698,6 +3716,34 @@ impl TaskRuntime {
         ))
     }
 
+    /// 改要求后送进新 Attempt 的说明：原话按版本全列在最前，再接 Kind 的理解。
+    pub(crate) fn requirement_change_note(
+        &self,
+        task: &Task,
+        requirement: &str,
+        version: u32,
+    ) -> String {
+        let mut note = self.version_quote_lines(task).join("\n");
+        if !note.is_empty() {
+            note.push_str("\n\n");
+        }
+        note.push_str(&format!(
+            "AIOS：用户在 Kind 对话里把任务要求改成第 {version} 版：\nKind 的理解（不是用户原话）：{requirement}\nDoD：{}\n写集不变；先按新要求在原来的范围里继续；要改写入范围仍走 task_update。",
+            task.dod
+        ));
+        if let Some(note_text) = self.latest_kind_note(task) {
+            note.push_str(&format!(
+                "
+Kind 的补充（不算用户要求）：{note_text}"
+            ));
+        }
+        note.push_str(
+            "
+写集不变；先按新要求在原来的范围里继续；要改写入范围仍走 task_update。",
+        );
+        note
+    }
+
     /// T054.2：Kind 确认改要求后：同一事务改要求并追加版本，然后在原会话开新 Attempt。
     pub(crate) async fn update_requirement(
         self: &Arc<Self>,
@@ -3705,15 +3751,21 @@ impl TaskRuntime {
         requirement: String,
         dod: Option<String>,
         constraints: Option<Vec<String>>,
+        quote: Option<String>,
+        quote_source: Option<tasks::QuoteSource>,
+        kind_note: Option<String>,
     ) -> Result<String, String> {
         let id = TaskId::from(task_id);
         let updated = self
             .store
-            .update_requirement_with_constraints(
+            .update_requirement_with_quote(
                 &id,
                 &requirement,
                 dod.as_deref(),
                 constraints,
+                quote.as_deref(),
+                quote_source,
+                kind_note.as_deref(),
                 Self::now(),
             )
             .map_err(|error| error.to_string())?;
@@ -3757,10 +3809,7 @@ impl TaskRuntime {
                 ));
             }
         };
-        let note = format!(
-            "AIOS：用户在 Kind 对话里把任务要求改成第 {version} 版：\n{requirement}\nDoD：{}\n写集不变；先按新要求在原来的范围里继续；要改写入范围仍走 task_update。",
-            updated.dod
-        );
+        let note = self.requirement_change_note(&updated, &requirement, version);
         let request_id = format!("task-requirement:{id}:{}", opened.attempt_id);
         if let Err(error) = opened
             .host
