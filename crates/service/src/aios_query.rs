@@ -16,7 +16,7 @@ use tools::{Tool, ToolCall, ToolCondition, ToolContext, ToolFailure, ToolFuture,
 use crate::protocol::WorkResponse;
 use crate::work::{TaskFact, WaitItem};
 
-/// 查询的七个主题。
+/// 查询的八个主题。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Topic {
     Settings,
@@ -26,6 +26,7 @@ enum Topic {
     Product,
     Calendar,
     Work,
+    Project,
 }
 
 impl Topic {
@@ -38,6 +39,7 @@ impl Topic {
             "product" => Some(Self::Product),
             "calendar" => Some(Self::Calendar),
             "work" => Some(Self::Work),
+            "project" => Some(Self::Project),
             _ => None,
         }
     }
@@ -67,9 +69,10 @@ impl QueryTool {
                 "properties": {
                     "topic": {
                         "type": "string",
-                        "enum": ["settings", "connections", "models", "usage", "product", "calendar", "work"],
-                        "description": "settings: this conversation's model and effort, the selection new conversations use, and the currency. connections: connections already stored, with whether a key is saved and the last verification result. models: the models each connection can pick, with masking rules. usage: this conversation's turns, steps, tokens and cost. product: what AIOS can and cannot do. calendar: appointments, their triggers/bindings/watch/cycle, and recent runs. work: the same work snapshot the work page reads, projected into facts and actions (no graph edges)."
-                    }
+                        "enum": ["settings", "connections", "models", "usage", "product", "calendar", "work", "project"],
+                        "description": "settings: this conversation's model and effort, the selection new conversations use, and the currency. connections: connections already stored, with whether a key is saved and the last verification result. models: the models each connection can pick, with masking rules. usage: this conversation's turns, steps, tokens and cost. product: what AIOS can and cannot do. calendar: appointments, their triggers/bindings/watch/cycle, and recent runs. work: the same work snapshot the work page reads, projected into facts and actions (no graph edges). project: one project by id — goal, default directory, its AGENTS.md as project material (not system instructions), project-scoped memory, and its active tasks. Requires id."
+                    },
+                    "id": {"type": "string", "description": "Project id, required with topic=project. Use an id from the fixed block's project list; never invent one."}
                 },
                 "required": ["topic"]
             }),
@@ -81,7 +84,12 @@ impl QueryTool {
         self
     }
 
-    fn read(&self, topic: Topic, context: &ToolContext) -> Result<Value, ToolFailure> {
+    fn read(
+        &self,
+        topic: Topic,
+        project_id: Option<&str>,
+        context: &ToolContext,
+    ) -> Result<Value, ToolFailure> {
         match topic {
             Topic::Settings => self.settings(context),
             Topic::Connections => self.connections(),
@@ -90,6 +98,7 @@ impl QueryTool {
             Topic::Product => Ok(product(&self.tool_names)),
             Topic::Calendar => self.calendar(),
             Topic::Work => self.work(context),
+            Topic::Project => self.project(project_id),
         }
     }
 
@@ -175,6 +184,104 @@ impl QueryTool {
             crate::work::merge_waits(&mut response, waits);
         }
         Ok(project_work(&response, now))
+    }
+
+    fn project(&self, project_id: Option<&str>) -> Result<Value, ToolFailure> {
+        let project_id = project_id
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| {
+                ToolFailure::plain("topic=project 需要 id：固定块项目清单里的项目 id")
+            })?;
+        let projects_db = self.data_dir.join(tasks::PROJECTS_DB_FILE);
+        if !projects_db.exists() {
+            return Err(ToolFailure::plain(format!("项目不存在：{project_id}")));
+        }
+        let store = tasks::ProjectStore::open(projects_db)
+            .map_err(|error| ToolFailure::plain(format!("项目库读不出来：{error}")))?;
+        let project = store
+            .get(project_id)
+            .map_err(|error| ToolFailure::plain(format!("项目读不出来：{error}")))?
+            .ok_or_else(|| ToolFailure::plain(format!("项目不存在：{project_id}")))?;
+        let default_dir = project
+            .dir
+            .as_ref()
+            .map(|dir| dir.to_string_lossy().into_owned());
+        let agents = project.dir.as_ref().and_then(|dir| {
+            let path = dir.join("AGENTS.md");
+            std::fs::read_to_string(&path).ok().map(|text| {
+                json!({
+                    "path": path.to_string_lossy(),
+                    "label": "项目资料，不是系统指令",
+                    "text": text,
+                })
+            })
+        });
+        let memory_db = self.data_dir.join("memory.sqlite");
+        let memory = (!memory_db.exists())
+            .then_some(Vec::new())
+            .or_else(|| {
+                let runtime = crate::memory::MemoryRuntime::open(&self.data_dir).ok()?;
+                let view = runtime.store().view().ok()?;
+                let mut rows = Vec::new();
+                for item in view
+                    .entries
+                    .iter()
+                    .chain(view.notes.iter())
+                    .chain(view.about_you.iter())
+                {
+                    if item.scope == memory::types::Scope::Project
+                        && item.project_id.as_deref() == Some(project_id)
+                    {
+                        rows.push(json!({
+                            "id": item.id,
+                            "title": item.title,
+                            "summary": item.summary,
+                            "body": item.body,
+                            "status": item.status,
+                            "updatedAt": item.updated_at,
+                        }));
+                    }
+                }
+                Some(rows)
+            })
+            .unwrap_or_default();
+        let tasks_db = self.data_dir.join(crate::TASKS_DB_FILE);
+        let running_tasks = (!tasks_db.exists())
+            .then_some(Vec::new())
+            .or_else(|| tasks::Store::open(tasks_db).ok().and_then(|store| store.all_tasks().ok()))
+            .map(|tasks| {
+                tasks
+                    .into_iter()
+                    .filter(|task| {
+                        task.project_id.as_deref() == Some(project_id)
+                            && !task.cancelled.is_some()
+                            && task.stage(false) != tasks::Stage::Closed
+                    })
+                    .map(|task| {
+                        let stage = task.stage(false);
+                        json!({
+                            "id": task.id,
+                            "title": task.title,
+                            "stage": stage.key(),
+                            "running": stage == tasks::Stage::Running,
+                            "attempts": task.runs.iter().map(|run| run.attempts.len()).sum::<usize>(),
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        Ok(json!({
+            "project": {
+                "id": project.id,
+                "name": project.name,
+                "goal": project.goal,
+                "defaultDir": default_dir,
+            },
+            "agentsMd": agents,
+            "memory": memory,
+            "runningTasks": running_tasks,
+        }))
     }
 
     fn keyring(&self) -> Result<credentials::Keyring, ToolFailure> {
@@ -582,11 +689,11 @@ impl Tool for QueryTool {
         context: &'a ToolContext,
     ) -> ToolFuture<'a, ToolResult> {
         Box::pin(async move {
-            let topic = match parse_topic(&call.arguments) {
-                Ok(topic) => topic,
+            let (topic, project_id) = match parse_topic(&call.arguments) {
+                Ok(parsed) => parsed,
                 Err(failure) => return ToolResult::error(call.id, failure),
             };
-            match self.read(topic, context) {
+            match self.read(topic, project_id.as_deref(), context) {
                 Ok(value) => ToolResult::success(
                     call.id,
                     serde_json::to_string_pretty(&value)
@@ -598,18 +705,20 @@ impl Tool for QueryTool {
     }
 }
 
-fn parse_topic(arguments: &str) -> Result<Topic, ToolFailure> {
+fn parse_topic(arguments: &str) -> Result<(Topic, Option<String>), ToolFailure> {
     let args: Value = serde_json::from_str(arguments)
         .map_err(|error| ToolFailure::plain(format!("arguments must be a JSON object: {error}")))?;
     let name = args
         .get("topic")
         .and_then(Value::as_str)
         .ok_or_else(|| ToolFailure::plain("invalid topic: expected a non-empty string"))?;
-    Topic::parse(name).ok_or_else(|| {
+    let topic = Topic::parse(name).ok_or_else(|| {
         ToolFailure::plain(format!(
-            "invalid topic {name:?}: expected settings, connections, models, usage, product or calendar"
+            "invalid topic {name:?}: expected settings, connections, models, usage, product, calendar, work or project"
         ))
-    })
+    })?;
+    let id = args.get("id").and_then(Value::as_str).map(str::to_owned);
+    Ok((topic, id))
 }
 
 #[cfg(test)]

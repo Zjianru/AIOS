@@ -106,7 +106,8 @@ impl Fixture {
         let args = serde_json::json!({
             "title": "查一下",
             "requirement": "找答案",
-            "dod": "有答案"
+            "dod": "有答案",
+            "cwd": self.cwd.path().to_string_lossy()
         });
         self.accept_args(pause, args, spares).await
     }

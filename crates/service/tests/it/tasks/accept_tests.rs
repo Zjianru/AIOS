@@ -23,7 +23,8 @@ async fn accept_freezes_the_task_and_the_launch_uses_it() {
         "title": "查一下 Exa 怎么用",
         "quote": "查一下 Exa 怎么用",
         "requirement": "读官方文档，给出能操作的例子",
-        "dod": "给出例子和出处"
+        "dod": "给出例子和出处",
+        "cwd": cwd.path().to_string_lossy()
     })
     .to_string();
     router.push_kind(crate::common::tool_use_sse(
@@ -274,6 +275,22 @@ async fn the_kind_system_prompt_is_neutral_with_only_routing() {
         ),
         "task_accept 说明也要有进展查询落点：{accept}"
     );
+    let cwd_description = |name: &str| -> &str {
+        request["tools"]
+            .as_array()
+            .expect("tools 数组")
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .and_then(|tool| tool["input_schema"]["properties"]["cwd"]["description"].as_str())
+            .unwrap_or_else(|| panic!("{name} 的 cwd 说明"))
+    };
+    for name in ["task_accept", "task_graph_propose"] {
+        let cwd = cwd_description(name);
+        assert!(
+            cwd.contains("The starting path the user pointed at") && cwd.contains("then $HOME"),
+            "{name} 的 cwd 要写用户点的起点和只读 HOME 回落：{cwd}"
+        );
+    }
 }
 
 /// 没装任务执行者（CLI/老测试）：不给这段说明，它提到 Kind 没有的工具。

@@ -24,7 +24,7 @@ impl TaskAcceptTool {
                     "kind_note": {"type": "string", "description": "Optional note from Kind: assumptions or additions that are not the user's own words. Keep it out of quote and requirement."},
                     "requirement": {"type": "string", "description": "Kind's understanding of what the task must do, not a copy of the user's words."},
                     "dod": {"type": "string", "description": "How the result will be judged complete."},
-                    "cwd": {"type": "string", "description": "Directory to work in; omit to use the project's default directory, then this conversation's directory. A path you pass must already exist."},
+                    "cwd": {"type": "string", "description": "The starting path the user pointed at (a file or directory). Omit for a read-only task to use the project's default directory, then $HOME; write-task placement is settled by its write scope. A path you pass must already exist."},
                     "project": {"type": "string", "description": "Project id from the fixed block's project list that this task belongs to. Omit for personal tasks or when you are unsure; if unsure, ask the user (include the personal choice) before dispatching. Never infer a project from cwd."},
                     "write_scope": {"type": "string", "description": "One path this task may write: a file, or a directory and everything under it. Relative paths resolve against cwd. Omit for a read-only investigation."},
                     "worktree": {"type": "boolean", "description": "Run the task in a new git worktree under the data directory. Only when the user explicitly asks for a worktree. Defaults to false."},

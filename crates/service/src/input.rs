@@ -126,22 +126,46 @@ impl RootHost {
         ))
     }
 
-    /// 按会话工作目录列 @ 文件候选。
+    /// 列 @ 文件候选：项目默认目录 + 资料库的文字文件，返回绝对路径。
+    ///
+    /// Kind 没有工作目录；这里不再以进程/根会话 cwd 为根。项目默认目录不存在时跳过该项目。
     pub(crate) async fn file_references_list(
         &self,
         request: FileReferencesListRequest,
     ) -> Result<FileReferencesListResponse, ServiceError> {
-        let references = tools::file_references::list(&self.options.cwd, &request.query)
-            .map_err(|error| ServiceError::InvalidPath(error.to_string()))?;
-        Ok(FileReferencesListResponse {
-            references: references
-                .into_iter()
-                .map(|reference| FileReferenceEntry {
-                    path: reference.path,
-                    bytes: reference.bytes,
-                })
-                .collect(),
-        })
+        let mut roots = Vec::new();
+        if let Some(projects) = &self.options.projects {
+            let projects = projects
+                .list()
+                .map_err(|error| ServiceError::InvalidPath(error.to_string()))?;
+            for project in projects {
+                if let Some(dir) = project.dir {
+                    roots.push(dir);
+                }
+            }
+        }
+        // 资料库：现有资料/成果库目录；没有就只是没有候选。
+        let library = self.options.data_dir.join("library");
+        if library.is_dir() {
+            roots.push(library);
+        }
+        let mut references = Vec::new();
+        for root in roots {
+            let Ok(items) = tools::file_references::list(&root, &request.query) else {
+                continue;
+            };
+            for item in items {
+                references.push(FileReferenceEntry {
+                    path: root.join(item.path).to_string_lossy().into_owned(),
+                    bytes: item.bytes,
+                });
+            }
+        }
+        // 保留每个根自己的排序（同名/前缀/子序列），跨项目只按项目顺序拼接。
+        let mut seen = std::collections::BTreeSet::new();
+        references.retain(|entry| seen.insert(entry.path.clone()));
+        references.truncate(tools::file_references::DEFAULT_MAX_RESULTS);
+        Ok(FileReferencesListResponse { references })
     }
 
     /// 存一份文字附件（base64 → 只读副本，返回 id）。

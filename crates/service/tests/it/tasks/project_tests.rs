@@ -389,12 +389,13 @@ async fn project_list_is_in_the_dynamic_fixed_block_and_updates_at_the_tail() {
         "{first_text:?}"
     );
 
+    let project_dir = fixture.cwd.path().to_string_lossy().into_owned();
     let created = fixture
         .host
         .dispatch(Call::ProjectCreate(service::ProjectCreateRequest {
             name: "新项目".to_owned(),
             goal: "后面会出现".to_owned(),
-            dir: None,
+            dir: Some(project_dir.clone()),
         }))
         .await
         .unwrap();
@@ -434,6 +435,18 @@ async fn project_list_is_in_the_dynamic_fixed_block_and_updates_at_the_tail() {
     assert!(created_at > first_at, "变化的清单补在末尾");
     let first_text_after = &texts[first_at];
     assert!(!first_text_after.contains("新项目"), "旧消息前缀不被改写");
+    // 固定块只留 id/名字/一句目标；默认目录只在 aios_query project 里。
+    let created_text = &texts[created_at];
+    assert!(created_text.contains("新项目"), "{created_text}");
+    assert!(created_text.contains("后面会出现"), "{created_text}");
+    assert!(
+        !created_text.contains(&project_dir),
+        "固定块不能带默认目录：{created_text}"
+    );
+    assert!(
+        !created_text.contains("默认目录"),
+        "固定块不能带默认目录字样：{created_text}"
+    );
 }
 
 #[tokio::test]
@@ -505,4 +518,95 @@ async fn task_accept_directory_order_is_user_then_project_then_conversation() {
     assert_eq!(by_user.cwd, std::fs::canonicalize(user_dir.path()).unwrap());
     assert_eq!(by_user.cwd_source.as_deref(), Some("user"));
     assert_eq!(by_user.project_id.as_deref(), Some(project.id.as_str()));
+}
+
+#[tokio::test]
+async fn read_only_task_starts_from_home_when_no_path_or_project() {
+    let fixture = Fixture::new().await;
+    let task = fixture
+        .accept_args(
+            true,
+            serde_json::json!({
+                "title": "只读调查",
+                "quote": "改一下",
+                "requirement": "查一下现状",
+                "dod": "有结论"
+            }),
+            0,
+        )
+        .await;
+    let home = std::fs::canonicalize(std::env::var("HOME").unwrap()).unwrap();
+    assert_eq!(task.cwd, home, "只读任务不回落对话目录");
+    assert_eq!(task.cwd_source.as_deref(), Some("home"));
+    assert_ne!(task.cwd, std::fs::canonicalize(fixture.cwd.path()).unwrap());
+}
+
+#[tokio::test]
+async fn read_only_task_uses_the_user_path_file_parent() {
+    let fixture = Fixture::new().await;
+    let pointed = tempfile::tempdir().unwrap();
+    let file = pointed.path().join("README.md");
+    std::fs::write(&file, "readme").unwrap();
+    let task = fixture
+        .accept_args(
+            true,
+            serde_json::json!({
+                "title": "读文件",
+                "quote": "改一下",
+                "requirement": "读 README",
+                "dod": "有内容",
+                "cwd": file.to_string_lossy()
+            }),
+            0,
+        )
+        .await;
+    assert_eq!(task.cwd, std::fs::canonicalize(pointed.path()).unwrap());
+    assert_eq!(task.cwd_source.as_deref(), Some("user"));
+}
+
+#[tokio::test]
+async fn read_only_graph_starts_from_home_without_a_project() {
+    let fixture = Fixture::new().await;
+    fixture
+        .host
+        .task_runtime()
+        .expect("任务执行者")
+        .set_pump_paused(true);
+    fixture.router.push_kind(crate::common::tool_use_sse(
+        0,
+        "call-graph-home",
+        "task_graph_propose",
+        &serde_json::json!({
+            "title": "只读图",
+            "quote": "拆两步",
+            "requirement": "两步",
+            "dod": "都有结果",
+            "subtasks": [
+                {"title": "一", "requirement": "第一步", "dod": "有结果"},
+                {"title": "二", "requirement": "第二步", "dod": "有结果", "after": [0]}
+            ]
+        })
+        .to_string(),
+    ));
+    fixture.router.push_kind(crate::common::text_sse("已提议"));
+    fixture
+        .host
+        .dispatch(Call::Send(send(&fixture.host, "kind-graph-home", "拆两步")))
+        .await
+        .unwrap();
+    crate::common::wait_turns(&fixture.host, fixture.data(), 1).await;
+    let store = tasks_store(fixture.data());
+    let root = store
+        .all_tasks()
+        .unwrap()
+        .into_iter()
+        .find(tasks::Task::is_graph_root)
+        .expect("图");
+    let home = std::fs::canonicalize(std::env::var("HOME").unwrap()).unwrap();
+    assert_eq!(root.cwd, home);
+    assert_eq!(root.cwd_source.as_deref(), Some("home"));
+    for child in store.children(&root.id).unwrap() {
+        assert_eq!(child.cwd, home);
+        assert_eq!(child.cwd_source.as_deref(), Some("home"));
+    }
 }

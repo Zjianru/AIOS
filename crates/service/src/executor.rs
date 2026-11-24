@@ -3272,13 +3272,15 @@ impl TaskRuntime {
         });
     }
 
-    /// 任务归属与目录：项目 id、用户点名目录都先校验；项目默认目录不存在就报错，
-    /// 不偷偷退回对话目录。返回 (cwd, 项目 id, 目录来源)。
+    /// 任务归属与起点：项目 id、用户点名起点都先校验；项目默认目录不存在就报错，
+    /// 不偷偷退回对话目录。只读任务的起点按 用户路径（文件取父目录）→ 项目默认 → $HOME；
+    /// 写任务后续票前仍用项目默认 → 对话目录的旧回落。返回 (cwd, 项目 id, 来源)。
     fn resolve_placement(
         &self,
         context: &ToolContext,
         cwd: Option<String>,
         project: Option<String>,
+        read_only: bool,
     ) -> Result<(PathBuf, Option<String>, Option<String>), ToolFailure> {
         let project = match project {
             None => None,
@@ -3301,9 +3303,22 @@ impl TaskRuntime {
             } else {
                 context.cwd.join(path)
             };
+            if !path.exists() {
+                return Err(ToolFailure::plain(format!(
+                    "用户点的起点不存在：{}",
+                    path.display()
+                )));
+            }
+            let path = if read_only && path.is_file() {
+                path.parent()
+                    .map(std::path::Path::to_path_buf)
+                    .unwrap_or(path)
+            } else {
+                path
+            };
             if !path.is_dir() {
                 return Err(ToolFailure::plain(format!(
-                    "cwd 不是已存在的目录：{}",
+                    "用户点的起点不是目录：{}",
                     path.display()
                 )));
             }
@@ -3326,6 +3341,25 @@ impl TaskRuntime {
                 path,
                 project.as_ref().map(|project| project.id.clone()),
                 Some("project".to_owned()),
+            ));
+        }
+        if read_only {
+            // 只读调查没有目录也不问：用户没点、项目没默认目录，就从主目录起。
+            let home = std::env::var_os("HOME")
+                .filter(|home| !home.is_empty())
+                .map(PathBuf::from)
+                .filter(|home| home.is_absolute())
+                .ok_or_else(|| ToolFailure::plain("找不到主目录，不能给只读任务定起点"))?;
+            if !home.is_dir() {
+                return Err(ToolFailure::plain(format!(
+                    "主目录不存在：{}",
+                    home.display()
+                )));
+            }
+            return Ok((
+                home,
+                project.map(|project| project.id),
+                Some("home".to_owned()),
             ));
         }
         Ok((
@@ -3396,16 +3430,16 @@ impl TaskRuntime {
         let quote_source = self
             .verify_dispatch_quote(&conversation, &quote)
             .map_err(ToolFailure::plain)?;
-        let (cwd, project, cwd_source) = self.resolve_placement(context, cwd, project)?;
+        let writing = write_scope
+            .as_deref()
+            .is_some_and(|scope| !scope.trim().is_empty());
+        let (cwd, project, cwd_source) = self.resolve_placement(context, cwd, project, !writing)?;
         let selection = self
             .selection
             .lock()
             .expect("selection 锁被毒化")
             .clone()
             .ok_or_else(|| ToolFailure::plain("还没有可用的模型选择，不能派出任务"))?;
-        let writing = write_scope
-            .as_deref()
-            .is_some_and(|scope| !scope.trim().is_empty());
         // 只读任务不给写的手段，也不给 bash：开关只对写任务生效。
         let bash = writing && self.exec_bash.load(Ordering::SeqCst);
         let tools = match (writing, bash) {
@@ -3479,7 +3513,13 @@ impl TaskRuntime {
         let quote_source = self
             .verify_dispatch_quote(&conversation, &quote)
             .map_err(ToolFailure::plain)?;
-        let (cwd, project, cwd_source) = self.resolve_placement(context, cwd, project)?;
+        let read_only = subtasks.iter().all(|item| {
+            item.write_scope
+                .as_deref()
+                .is_none_or(|scope| scope.trim().is_empty())
+        });
+        let (cwd, project, cwd_source) =
+            self.resolve_placement(context, cwd, project, read_only)?;
         let selection = self
             .selection
             .lock()

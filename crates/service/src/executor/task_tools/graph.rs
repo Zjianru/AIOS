@@ -24,7 +24,7 @@ impl TaskGraphProposeTool {
                     "kind_note": {"type": "string", "description": "Optional note from Kind: assumptions or additions that are not the user's own words. Keep it out of quote and requirement."},
                     "requirement": {"type": "string", "description": "Kind's understanding of what the whole graph must achieve, not a copy of the user's words."},
                     "dod": {"type": "string", "description": "How the whole graph will be judged complete."},
-                    "cwd": {"type": "string", "description": "Directory to work in; omit to use the project's default directory, then this conversation's directory. A path you pass must already exist."},
+                    "cwd": {"type": "string", "description": "The starting path the user pointed at (a file or directory). Omit for a read-only task to use the project's default directory, then $HOME; write-task placement is settled by its write scope. A path you pass must already exist."},
                     "project": {"type": "string", "description": "Project id from the fixed block's project list for the whole graph. Omit for a personal graph or when unsure; ask the user if unsure. Never infer it from cwd."},
                     "constraints": {"type": "array", "items": {"type": "string"}, "description": "The user's hard requirements for the whole graph, each copied verbatim from a user message. Omit when none. Checked against the originating conversation; one non-verbatim string rejects the whole call."},
                     "subtasks": {

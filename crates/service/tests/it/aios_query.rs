@@ -276,3 +276,105 @@ async fn aios_query_topics_match_service_reads() {
         "要列不能做什么：{product}"
     );
 }
+
+#[tokio::test]
+async fn project_topic_returns_goal_dir_agents_memory_and_active_tasks() {
+    use memory::types::{MemoryWrite, WriteContext, WriteOp};
+    use tools::{Tool as _, ToolCall, ToolContext, ToolSessionState};
+
+    let data = tempdir().unwrap();
+    let project_dir = tempdir().unwrap();
+    let project_store =
+        tasks::ProjectStore::open(data.path().join(tasks::PROJECTS_DB_FILE)).unwrap();
+    let project = project_store
+        .create(
+            tasks::NewProject {
+                name: "清河县农技站".to_owned(),
+                goal: "记农事台账".to_owned(),
+                dir: Some(project_dir.path().to_path_buf()),
+            },
+            1_700_000_000_000,
+        )
+        .unwrap();
+    let agents = "AGENTS-项目资料-".repeat(4_000);
+    std::fs::write(project_dir.path().join("AGENTS.md"), &agents).unwrap();
+    let memory_store = memory::MemoryStore::open(data.path().join("memory.sqlite")).unwrap();
+    let mut write = MemoryWrite::new(WriteOp::Remember {
+        title: "联络人表".to_owned(),
+        summary: "只留姓名和电话".to_owned(),
+        body: "项目范围的记忆正文".to_owned(),
+        source_kind: "user".to_owned(),
+        source_ref: "u-project".to_owned(),
+    });
+    write.project_id = Some(project.id.clone());
+    memory_store
+        .write_with_relation(write, &WriteContext::user())
+        .unwrap();
+    drop(memory_store);
+    let task_store = tasks::Store::open(data.path().join(service::TASKS_DB_FILE)).unwrap();
+    let task = task_store
+        .create_task(
+            tasks::NewTask {
+                quote: None,
+                quote_source: None,
+                kind_note: None,
+                project_id: Some(project.id.clone()),
+                cwd_source: Some("project".to_owned()),
+                title: "查台账".to_owned(),
+                requirement: "查".to_owned(),
+                dod: "有结果".to_owned(),
+                cwd: project_dir.path().to_path_buf(),
+                conversation: tasks::ConversationId::new("kind-project"),
+                model: tasks::ModelChoice {
+                    connection: "deepseek".to_owned(),
+                    model: "deepseek-flash".to_owned(),
+                    effort_wanted: "high".to_owned(),
+                },
+                tools: vec!["read".to_owned()],
+            },
+            1_700_000_000_001,
+        )
+        .unwrap();
+    drop(task_store);
+
+    let tool = service::aios_query::QueryTool::new(data.path(), None);
+    let context = ToolContext::with_session(
+        data.path(),
+        std::sync::Arc::new(ToolSessionState::new(data.path(), "query-project")),
+    );
+    let result = tool
+        .execute(
+            ToolCall {
+                id: "call-project".to_owned(),
+                name: "aios_query".to_owned(),
+                arguments: serde_json::json!({"topic": "project", "id": project.id}).to_string(),
+            },
+            &context,
+        )
+        .await;
+    assert!(!result.is_error, "{}", result.content);
+    let body: Value = serde_json::from_str(&result.content).unwrap();
+    assert_eq!(body["project"]["id"], project.id);
+    assert_eq!(body["project"]["name"], "清河县农技站");
+    assert_eq!(body["project"]["goal"], "记农事台账");
+    assert_eq!(
+        body["project"]["defaultDir"],
+        project_dir.path().to_string_lossy().as_ref()
+    );
+    assert_eq!(body["agentsMd"]["label"], "项目资料，不是系统指令");
+    assert_eq!(body["agentsMd"]["text"], agents, "项目 AGENTS 不截断");
+    assert!(
+        body["memory"]
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|row| row["title"] == "联络人表")),
+        "{}",
+        body["memory"]
+    );
+    assert!(
+        body["runningTasks"]
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|row| row["id"] == task.id.as_str())),
+        "{}",
+        body["runningTasks"]
+    );
+}

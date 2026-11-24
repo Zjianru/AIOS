@@ -1447,7 +1447,7 @@ pub struct FileReferencesListRequest {
     pub query: String,
 }
 
-/// 一个候选（相对工作目录的路径 + 内容字节数）。
+/// 一个候选（绝对路径 + 内容字节数）；Kind 没有工作目录，@ 直接插入绝对路径。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct FileReferenceEntry {
     pub path: String,

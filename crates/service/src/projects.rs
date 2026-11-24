@@ -52,17 +52,12 @@ pub(crate) fn project_block_text(store: &tasks::ProjectStore) -> Option<String> 
     if projects.is_empty() {
         return Some("项目清单：还没有项目。".to_owned());
     }
-    let mut text = String::from("项目清单（id | 名字 | 目标 | 默认目录）：");
+    let mut text = String::from("项目清单（id | 名字 | 一句目标）：");
     for project in projects {
-        let dir = project
-            .dir
-            .as_ref()
-            .map(|dir| dir.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "无".to_owned());
         text.push_str(&format!(
             "
-- {}「{}」；目标：{}；默认目录：{}",
-            project.id, project.name, project.goal, dir
+- {}「{}」；目标：{}",
+            project.id, project.name, project.goal
         ));
     }
     Some(text)
