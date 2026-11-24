@@ -400,7 +400,7 @@ export async function startKernelFixture(
       JSON.stringify({ version: 1, sessionId: legacyId }),
     );
   }
-  const serveArgs = ['serve', '--data-dir', dataDir, '--identity', identityPath, '--cwd', dataDir, '--web-dist', path.join(repoRoot, 'web/dist')];
+  const serveArgs = ['serve', '--data-dir', dataDir, '--identity', identityPath, '--web-dist', path.join(repoRoot, 'web/dist')];
   if (options.routeModel) {
     serveArgs.push('--connection', 'deepseek', '--model', options.routeModel);
   }
@@ -419,9 +419,17 @@ export async function startKernelFixture(
     }
   }
   const serviceEnv = { ...process.env };
-  if (options.home) {
-    serviceEnv.HOME = options.home === 'dataDir' ? dataDir : options.home;
-  }
+  // serve 不再收 --cwd，根会话 cwd 固定 $HOME；假模型用例把 HOME 指到数据目录，
+  // 保持旧 e2e 的「根会话原目录就是 dataDir」前提；显式 options.home 优先。
+  serviceEnv.HOME = options.home
+    ? options.home === 'dataDir'
+      ? dataDir
+      : options.home
+    : dataDir;
+  // 旧假模型回放脚本里的 task_accept 还写相对 write_scope；只在这个 e2e 进程里兼容展开，
+  // 真 key 夹具和产品路径不设这个变量。
+  serviceEnv.AIOS_E2E_LEGACY_WRITE_SCOPE = '1';
+  serviceEnv.AIOS_E2E_LEGACY = '1';
   // 设置页「联网搜索」：本地假 Exa（只认 /search；key 以 bad 开头就 401，照原型约定）。
   let exaServer: Server | null = null;
   let exaBaseUrl: string | null = null;
@@ -589,7 +597,7 @@ export async function startKernelFixture(
   }
   let holder: ReturnType<typeof spawn> | null = null;
   if (options.busyRoot) {
-    holder = spawn(bin, ['serve', '--data-dir', dataDir, '--identity', identityPath, '--cwd', dataDir], {
+    holder = spawn(bin, ['serve', '--data-dir', dataDir, '--identity', identityPath], {
       env: serviceEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -863,7 +871,7 @@ export async function startRealKernelFixture(
   if (seed.status !== 0) throw new Error('seed keyring failed: ' + String(seed.stderr));
   const child = spawn(
     bin,
-    ['serve', '--data-dir', dataDir, '--identity', identityPath, '--cwd', workDir, '--web-dist', path.join(repoRoot, 'web/dist')],
+    ['serve', '--data-dir', dataDir, '--identity', identityPath, '--web-dist', path.join(repoRoot, 'web/dist')],
     { env: process.env, stdio: ['ignore', 'pipe', 'pipe'] },
   );
   let stderr = '';
@@ -928,7 +936,7 @@ export async function startRealDodFixture(): Promise<KernelFixture> {
   delete serveEnv.DEEPSEEK_BASE_URL;
   const child = spawn(
     bin,
-    ['serve', '--data-dir', dataDir, '--identity', identity, '--cwd', workDir, '--web-dist', path.join(repoRoot, 'web/dist')],
+    ['serve', '--data-dir', dataDir, '--identity', identity, '--web-dist', path.join(repoRoot, 'web/dist')],
     { env: serveEnv, stdio: ['ignore', 'pipe', 'pipe'] },
   );
   let output = '';
@@ -993,7 +1001,7 @@ export async function startT013KernelFixture(): Promise<KernelFixture> {
   if (seed.status !== 0) throw new Error('seed keyring failed: ' + String(seed.stderr));
   const child = spawn(
     bin,
-    ['serve', '--data-dir', dataDir, '--identity', identityPath, '--cwd', workDir, '--web-dist', path.join(repoRoot, 'web/dist')],
+    ['serve', '--data-dir', dataDir, '--identity', identityPath, '--web-dist', path.join(repoRoot, 'web/dist')],
     { env: process.env, stdio: ['ignore', 'pipe', 'pipe'] },
   );
   let stderr = '';
@@ -1049,7 +1057,7 @@ export async function startDodConnectFixture(root: string): Promise<KernelFixtur
   delete serveEnv.DEEPSEEK_API_KEY;
   const child = spawn(
     bin,
-    ['serve', '--data-dir', dataDir, '--identity', identity, '--cwd', workDir, '--web-dist', path.join(repoRoot, 'web/dist')],
+    ['serve', '--data-dir', dataDir, '--identity', identity, '--web-dist', path.join(repoRoot, 'web/dist')],
     { env: serveEnv, stdio: ['ignore', 'pipe', 'pipe'] },
   );
   let stderr = '';
@@ -1107,4 +1115,71 @@ export async function startT016DodFixture(caseName: string): Promise<KernelFixtu
 /** DoD2：真 key（MiniMax）卡片机制三步——/tmp/aios-t017-dod 下的数据目录 + 小项目工作目录。 */
 export async function startT017DodFixture(): Promise<KernelFixture> {
   return startDodConnectFixture(process.env.AIOS_T017_DOD_ROOT ?? '/tmp/aios-t017-dod');
+}
+
+/** D78：MiniMax 真 key，HOME 指到独立工作目录；从 git 仓库启动（根会话 cwd 仍是 $HOME）。 */
+export async function startD78KernelFixture(): Promise<KernelFixture> {
+  const apiKey = process.env.MINIMAX_API_KEY;
+  if (!apiKey) throw new Error('缺少 MINIMAX_API_KEY（D78）');
+  const root = process.env.AIOS_D78_DOD_ROOT ?? '/tmp/aios-d78';
+  const workDir = path.join(root, 'work');
+  const dataDir = path.join(root, 'data');
+  await rm(root, { recursive: true, force: true });
+  await mkdir(path.join(workDir, 'Desktop'), { recursive: true });
+  await mkdir(dataDir, { recursive: true });
+  await writeFile(path.join(workDir, 'README.md'), 'D78-README-OK' + String.fromCharCode(10));
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+  const bin = process.env.AIOS_BIN ?? path.join(repoRoot, 'target/debug/aios-dev');
+  const identityPath = path.join(dataDir, 'identity.txt');
+  const seed = spawnSync(
+    bin,
+    ['keyring', '--data-dir', dataDir, '--identity', identityPath, 'set', '--id', 'minimax-cn', '--name', 'MiniMax（国内站）', '--model', 'MiniMax-M3.1-Flash', '--endpoint', 'https://api.minimaxi.com/anthropic'],
+    { input: apiKey + String.fromCharCode(10), encoding: 'utf8' },
+  );
+  if (seed.status !== 0) throw new Error('seed keyring failed: ' + String(seed.stderr));
+  const child = spawn(
+    bin,
+    ['serve', '--data-dir', dataDir, '--identity', identityPath, '--web-dist', path.join(repoRoot, 'web/dist')],
+    {
+      env: { ...process.env, HOME: workDir },
+      cwd: workDir,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  );
+  let stderr = '';
+  child.stderr?.on('data', (chunk: Buffer) => {
+    stderr += chunk.toString();
+  });
+  let output = '';
+  const parsed = await new Promise<{ baseUrl: string; token: string }>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('D78 serve 启动超时: ' + output)), 60_000);
+    child.stdout.on('data', (chunk: Buffer) => {
+      output += chunk.toString();
+      const match = output.match(/http:\/\/127\.0\.0\.1:(\d+)\/?\?token=([0-9a-f-]+)/);
+      if (match) {
+        clearTimeout(timer);
+        resolve({ baseUrl: 'http://127.0.0.1:' + match[1], token: match[2] });
+      }
+    });
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      reject(new Error('D78 serve 退出: ' + String(code) + ' ' + output));
+    });
+  });
+  return {
+    ...parsed,
+    dataDir,
+    fakeEndpoint: '',
+    lastModel: async () => null,
+    lastRequest: async () => null,
+    stderr: () => stderr,
+    dropProxy: async () => {},
+    restoreProxy: async () => {},
+    close: async () => {
+      child.kill('SIGTERM');
+      if (process.env.AIOS_DOD_KEEP !== '1') {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  };
 }

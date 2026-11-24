@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { startKernelFixture, type KernelFixture } from './service-fixture';
+import { apiPost, startKernelFixture, type KernelFixture } from './service-fixture';
 
 // T015 安全修复：/local-file 的隔离 CSP（Claude 2026-11-07 定案，照 Jupyter 的
 // AuthenticatedFileHandler：frame-ancestors 'self'; sandbox allow-scripts）。
@@ -12,6 +12,20 @@ import { startKernelFixture, type KernelFixture } from './service-fixture';
 // - PDF 不能因为加了 CSP 变成下载（Chrome 内嵌查看器）；
 // - txt/md/png 照常显示。
 const CSP = "frame-ancestors 'self'; sandbox allow-scripts";
+
+async function kindSays(request: any, fixture: KernelFixture, paths: string[]) {
+  const connect = await request.get(
+    fixture.baseUrl + '/connect?token=' + encodeURIComponent(fixture.token),
+    { maxRedirects: 0 },
+  );
+  const setCookie = connect.headers()['set-cookie'];
+  if (!setCookie) throw new Error('connect 没有返回 set-cookie');
+  const response = await request.post(fixture.baseUrl + '/__e2e/local-path', {
+    headers: { Cookie: setCookie.split(';', 1)[0] },
+    data: { paths: [fixture.dataDir] },
+  });
+  if (response.status() !== 204) throw new Error('登记路径失败：' + response.status() + ' ' + (await response.text()));
+}
 
 function localFileUrl(fixture: KernelFixture, file: string): string {
   return fixture.baseUrl + '/local-file?path=' + encodeURIComponent(file);
@@ -148,13 +162,14 @@ async function resultOf(page: any): Promise<ProbeResult> {
   return JSON.parse((await page.locator('#result').textContent()) ?? '{}') as ProbeResult;
 }
 
-test('本地文件 CSP：HTML 脚本能跑，但拿不到 cookie/同源存储，/api 和同目录文件都调不通', async ({ page }) => {
+test('本地文件 CSP：HTML 脚本能跑，但拿不到 cookie/同源存储，/api 和同目录文件都调不通', async ({ page, request }) => {
   const fixture = await startKernelFixture({});
   try {
     const secret = path.join(fixture.dataDir, 'csp-secret.txt');
     await writeFile(secret, 'CSP-SECRET-CONTENT', 'utf8');
     const probe = path.join(fixture.dataDir, 'csp-probe.html');
     await writeFile(probe, probeHtml(), 'utf8');
+    await kindSays(request, fixture, [probe]);
 
     const response = await openLocalFile(page, fixture, probe, secret);
     expect(response.status()).toBe(200);
@@ -177,13 +192,14 @@ test('本地文件 CSP：HTML 脚本能跑，但拿不到 cookie/同源存储，
   }
 });
 
-test('本地文件 CSP：直接打开 SVG 时内嵌脚本同样被 sandbox 隔离（脚本能跑、调不通 /api）', async ({ page }) => {
+test('本地文件 CSP：直接打开 SVG 时内嵌脚本同样被 sandbox 隔离（脚本能跑、调不通 /api）', async ({ page, request }) => {
   const fixture = await startKernelFixture({});
   try {
     const secret = path.join(fixture.dataDir, 'svg-secret.txt');
     await writeFile(secret, 'SVG-SECRET-CONTENT', 'utf8');
     const probe = path.join(fixture.dataDir, 'csp-probe.svg');
     await writeFile(probe, probeSvg(), 'utf8');
+    await kindSays(request, fixture, [probe]);
 
     const response = await openLocalFile(page, fixture, probe, secret);
     expect(response.status()).toBe(200);
@@ -208,6 +224,7 @@ test('本地文件 CSP：PDF 仍交给 Chrome 内嵌查看器，不变成下载'
   try {
     const probe = path.join(fixture.dataDir, 'csp-probe.pdf');
     await writeFile(probe, minimalPdf());
+    await kindSays(request, fixture, [probe]);
 
     // 服务端原始响应：PDF 也带同一条 CSP，且没有变成 attachment。
     const raw = await request.get(localFileUrl(fixture, probe), {
@@ -241,7 +258,7 @@ test('本地文件 CSP：PDF 仍交给 Chrome 内嵌查看器，不变成下载'
   }
 });
 
-test('本地文件 CSP：txt、md、png 照常显示', async ({ page }) => {
+test('本地文件 CSP：txt、md、png 照常显示', async ({ page, request }) => {
   const fixture = await startKernelFixture({});
   try {
     const text = path.join(fixture.dataDir, 'csp-note.txt');
@@ -257,6 +274,7 @@ test('本地文件 CSP：txt、md、png 照常显示', async ({ page }) => {
       ),
     );
 
+    await kindSays(request, fixture, [text, markdown, pixel].join(' '));
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token));
     await page.goto(localFileUrl(fixture, text));
     expect(await page.locator('body').innerText()).toContain('TXT-CSP-OK');

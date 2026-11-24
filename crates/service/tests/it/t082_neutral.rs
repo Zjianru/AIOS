@@ -176,3 +176,33 @@ async fn kind_skill_roots_exclude_project_agents_but_keep_data_dir() {
         "Kind 保留 data-dir skill：{text}"
     );
 }
+
+/// /local-file 只放通 Kind 根会话说过的绝对路径；旧 cwd 里的文件不会因为 cwd 自动放通。
+#[tokio::test]
+async fn local_file_allows_only_paths_said_in_the_root_conversation() {
+    let dir = tempfile::tempdir().unwrap();
+    let host = crate::common::open(crate::common::options(dir.path())).await;
+    let said = dir.path().join("said.txt");
+    let silent = dir.path().join("silent.txt");
+    std::fs::write(&said, "said").unwrap();
+    std::fs::write(&silent, "silent").unwrap();
+    host.append_user_message_for_test(&format!("看下 {}", said.display()))
+        .await
+        .unwrap();
+    assert!(
+        host.local_file_allowed(
+            said.to_str().unwrap(),
+            &std::fs::canonicalize(&said).unwrap()
+        )
+        .await
+    );
+    assert!(
+        !host
+            .local_file_allowed(
+                silent.to_str().unwrap(),
+                &std::fs::canonicalize(&silent).unwrap()
+            )
+            .await
+    );
+    host.shutdown().await;
+}

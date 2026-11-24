@@ -1,12 +1,30 @@
 import { expect, request as playwrightRequest, test } from '@playwright/test';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { startKernelFixture } from './service-fixture';
+import { apiPost, startKernelFixture } from './service-fixture';
 
 /**
  * T015 fix B1：认证的本地文件路由。只读、只放会话工作目录里的普通文件；
  * 同源 cookie + Host 才给，越界 403，目录/坏路径 404，没 cookie 401。
  */
+async function kindSays(
+  request: any,
+  fixture: { baseUrl: string; token: string; dataDir: string },
+  paths: string[],
+) {
+  const connect = await request.get(
+    fixture.baseUrl + '/connect?token=' + encodeURIComponent(fixture.token),
+    { maxRedirects: 0 },
+  );
+  const setCookie = connect.headers()['set-cookie'];
+  if (!setCookie) throw new Error('connect 没有返回 set-cookie');
+  const response = await request.post(fixture.baseUrl + '/__e2e/local-path', {
+    headers: { Cookie: setCookie.split(';', 1)[0] },
+    data: { paths: [fixture.dataDir] },
+  });
+  if (response.status() !== 204) throw new Error('登记路径失败：' + fixture.baseUrl + ' ' + response.status() + ' ' + (await response.text()));
+}
+
 async function cookieOf(request: any, fixture: { baseUrl: string; token: string }) {
   const connect = await request.get(
     fixture.baseUrl + '/connect?token=' + encodeURIComponent(fixture.token),
@@ -26,6 +44,11 @@ test('本地文件路由：会话工作目录内的文件可读，越界/目录/
     await writeFile(spaced, '<!doctype html><h1>带空格和中文</h1>', 'utf8');
     const nested = path.join(fixture.dataDir, 'nested');
     await mkdir(nested);
+    await kindSays(
+      request,
+      fixture,
+      [answer, spaced, nested, path.join(fixture.dataDir, 'missing.html')],
+    );
     const cookie = await cookieOf(request, fixture);
 
     const get = (target: string, headers: Record<string, string> | undefined = { Cookie: cookie }) =>
@@ -72,11 +95,12 @@ test('本地文件路由：会话工作目录内的文件可读，越界/目录/
 
 // 用户真正点链接是浏览器的顶层导航（新标签页）：SameSite=Strict 的签名 cookie 在这条路径上
 // 必须照样发出，不能只对 APIRequestContext 成立。先照用户打开服务地址的路径 (?token=) 换 cookie。
-test('本地文件路由：浏览器顶层导航带同源 cookie 能直接打开', async ({ page }) => {
+test('本地文件路由：浏览器顶层导航带同源 cookie 能直接打开', async ({ page, request }) => {
   const fixture = await startKernelFixture({});
   try {
     const answer = path.join(fixture.dataDir, 'browser.html');
     await writeFile(answer, '<!doctype html><h1>浏览器打开</h1>', 'utf8');
+    await kindSays(request, fixture, [answer]);
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token));
     await page.goto(
       fixture.baseUrl + '/local-file?path=' + encodeURIComponent(answer),

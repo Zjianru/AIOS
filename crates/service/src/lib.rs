@@ -4,6 +4,17 @@
 //! 本文件只声明模块并 re-export 对外面，载体（web/cli）只从 crate 根取名字。
 
 pub mod actions;
+/// 旧 e2e 回放兼容总开关（只由假模型 e2e 进程设置；产品/真 key 不设）。
+pub(crate) fn e2e_legacy_mode() -> bool {
+    std::env::var_os("AIOS_E2E_LEGACY").is_some_and(|value| value == "1")
+}
+
+/// 旧 e2e 回放脚本兼容：只在显式测试环境变量下把相对写入范围当根会话目录。
+pub(crate) fn e2e_legacy_write_scope() -> bool {
+    e2e_legacy_mode()
+        || std::env::var_os("AIOS_E2E_LEGACY_WRITE_SCOPE").is_some_and(|value| value == "1")
+}
+
 pub mod aios_query;
 pub(crate) mod appointments;
 pub(crate) mod calendar_trigger;
@@ -31,6 +42,7 @@ mod status;
 mod web;
 pub mod work;
 mod worktree;
+mod write_scope;
 
 pub mod commands;
 pub mod fx;

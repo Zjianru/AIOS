@@ -85,6 +85,8 @@ pub struct RootHost {
     memory: Option<Arc<crate::memory::MemoryRuntime>>,
     /// 做梦运行时；根会话可用时由它按时机检查，不常驻。
     dream: Option<Arc<crate::memory::DreamRuntime>>,
+    /// 测试钩子：根会话没开时也能模拟「Kind 说过这些路径」；生产走会话日志。
+    local_paths: Mutex<std::collections::BTreeSet<String>>,
 }
 
 impl RootHost {
@@ -181,6 +183,7 @@ impl RootHost {
             ))
         });
         let host = Self {
+            local_paths: Mutex::new(std::collections::BTreeSet::new()),
             inner,
             state: Mutex::new(RootState::Ok),
             session_id: Mutex::new(None),
@@ -502,6 +505,73 @@ impl RootHost {
         }
         *self.state.lock().expect("root state 锁被毒化") = RootState::Ok;
         *self.session_id.lock().expect("session id 锁被毒化") = Some(session_id);
+    }
+
+    /// 测试钩子：模拟根会话里 Kind 说过一个绝对路径。
+    #[doc(hidden)]
+    pub fn remember_local_path_for_test(&self, path: &str) {
+        self.local_paths
+            .lock()
+            .expect("本地路径表锁被毒化")
+            .insert(path.to_owned());
+    }
+
+    /// /local-file：只放通根会话里 Kind 见过的绝对路径；不再以宿主 cwd 为根。
+    pub async fn local_file_allowed(&self, requested: &str, canonical: &std::path::Path) -> bool {
+        fn mentions(text: &str, needle: &str) -> bool {
+            if needle.is_empty() {
+                return false;
+            }
+            let mut start = 0;
+            while let Some(offset) = text[start..].find(needle) {
+                let at = start + offset;
+                let before = text[..at].chars().next_back();
+                let after = text[at + needle.len()..].chars().next();
+                let boundary = |character: Option<char>| {
+                    character.is_none_or(|value| {
+                        !(value.is_alphanumeric() || matches!(value, '/' | '_' | '-'))
+                    })
+                };
+                if boundary(before) && boundary(after) {
+                    return true;
+                }
+                start = at + needle.len();
+            }
+            false
+        }
+        if self
+            .local_paths
+            .lock()
+            .expect("本地路径表锁被毒化")
+            .iter()
+            .any(|registered| {
+                requested == registered
+                    || canonical == std::path::Path::new(registered)
+                    || canonical.starts_with(registered)
+                    || std::fs::canonicalize(registered)
+                        .is_ok_and(|registered| canonical.starts_with(registered))
+            })
+        {
+            return true;
+        }
+        let canonical_text = canonical.to_string_lossy();
+        for event in self.root_session_events().await {
+            match &event.kind {
+                session::EventKind::UserMessage { message, .. }
+                | session::EventKind::ToolResult { message, .. } => {
+                    for block in &message.content {
+                        let Some(text) = model::ContentBlock::as_text(block) else {
+                            continue;
+                        };
+                        if mentions(text, requested) || mentions(text, &canonical_text) {
+                            return true;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
     }
 
     /// 测试钩子：往根会话追加一条用户打字的消息（日历条件校验等用例用）。

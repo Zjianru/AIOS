@@ -119,6 +119,16 @@ async fn propose_create_and_update_facts_and_stale_version_refusal() {
     assert_eq!(created.title, "提醒喝水");
 
     let update = registry.get("update_appointment").expect("update 动作");
+    let unsaid_condition = json!({
+        "appointmentId": appointment_id,
+        "expectedVersion": created.version,
+        "condition": "用户没说过的新条件"
+    });
+    let normalized_unsaid = update.details(&unsaid_condition).unwrap();
+    let error = update
+        .describe(&normalized_unsaid, &env)
+        .expect_err("改 condition 也要用户原话");
+    assert!(error.contains("约定的条件要用用户原话"), "{error}");
     let change = json!({
         "appointmentId": appointment_id,
         "expectedVersion": created.version,

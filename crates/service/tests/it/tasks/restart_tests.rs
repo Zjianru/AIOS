@@ -477,7 +477,7 @@ async fn task_update_records_a_new_version_and_resumes_with_the_new_scope() {
         .join("outside.py");
     let update_args = serde_json::json!({
         "task_id": task.id.as_str(),
-        "write_scope": "outside.py"
+        "write_scope": scope.to_string_lossy()
     })
     .to_string();
     fixture.router.push_kind(crate::common::tool_use_sse(
@@ -498,7 +498,7 @@ async fn task_update_records_a_new_version_and_resumes_with_the_new_scope() {
         .dispatch(Call::Send(send(
             &fixture.host,
             "kind-2",
-            "我同意把写入范围扩大到 outside.py",
+            &format!("我同意把写入范围扩大到 {}", scope.display()),
         )))
         .await
         .expect("发送");
@@ -770,11 +770,12 @@ async fn task_update_in_a_worktree_resumes_with_the_converted_scope() {
     crate::common::wait_turns(&fixture.host, fixture.data(), 2).await;
     let worktree_cwd = worktree_cwd(&fixture, &task);
     let scope = worktree_cwd.join("outside.py");
+    let repo_scope = fixture.cwd.path().join("sub").join("outside.py");
 
-    // 用户在 Kind 对话里同意扩大范围。
+    // 用户在 Kind 对话里同意扩大范围；原话里是原仓库里的绝对路径，任务里换到工作树。
     let update_args = serde_json::json!({
         "task_id": task.id.as_str(),
-        "write_scope": "outside.py"
+        "write_scope": repo_scope.to_string_lossy()
     })
     .to_string();
     fixture.router.push_kind(crate::common::tool_use_sse(
@@ -794,7 +795,7 @@ async fn task_update_in_a_worktree_resumes_with_the_converted_scope() {
         .dispatch(Call::Send(send(
             &fixture.host,
             "kind-2",
-            "我同意把写入范围扩大到 outside.py",
+            &format!("我同意把写入范围扩大到 {}", repo_scope.display()),
         )))
         .await
         .expect("发送");

@@ -195,7 +195,7 @@ struct OpenedResume {
 }
 
 /// Kind 的 task_accept 解析后的参数：建任务并冻结执行策略需要的全部字段。
-struct TaskAcceptArgs {
+pub(crate) struct TaskAcceptArgs {
     title: String,
     quote: String,
     requirement: String,
@@ -1715,6 +1715,11 @@ impl TaskRuntime {
     pub fn set_background_limit_ms(&self, millis: i64) {
         self.background_limit_ms
             .store(millis.max(1), Ordering::SeqCst);
+    }
+
+    /// 本进程数据目录（工具模块核对原话用）。
+    pub(crate) fn data_dir(&self) -> &std::path::Path {
+        &self.data_dir
     }
 
     /// T055：工作快照读任务库（只读；同 crate 用）。
@@ -3272,15 +3277,44 @@ impl TaskRuntime {
         });
     }
 
+    /// 写范围：先按用户写的原样核原话，核过再展开 ~；确认卡确认的路径不再要求出现在原话里。
+    fn prepare_write_scope(
+        &self,
+        conversation: &str,
+        raw: &str,
+        confirmed: bool,
+    ) -> Result<PathBuf, ToolFailure> {
+        // 兼容旧 e2e 回放脚本：它们的 task_accept 还写相对范围。只在 e2e 进程环境里
+        // 展开成根会话目录；生产/真 key 路径没有这个变量，仍拒绝相对路径。
+        if crate::e2e_legacy_write_scope() {
+            let scope = raw.trim();
+            if !scope.starts_with('/') && !scope.starts_with("~/") {
+                return Ok(self.options.cwd.join(scope));
+            }
+        }
+        crate::write_scope::validate(raw).map_err(ToolFailure::plain)?;
+        if !confirmed
+            && crate::ledger::find_user_words(&self.data_dir, conversation, raw.trim())
+                .map_err(ToolFailure::plain)?
+                .is_none()
+        {
+            return Err(ToolFailure::plain(format!(
+                "write_scope 不在用户原话里：{raw}。不要派任务；调用 propose_action，action=confirm_write_scope，details={{\"write_scope\":\"{raw}\",\"task\":{{…task_accept 的完整参数（含 title/quote/requirement/dod）…}}}}，让用户确认写到哪。"
+            )));
+        }
+        crate::write_scope::expand(raw).map_err(ToolFailure::plain)
+    }
+
     /// 任务归属与起点：项目 id、用户点名起点都先校验；项目默认目录不存在就报错，
     /// 不偷偷退回对话目录。只读任务的起点按 用户路径（文件取父目录）→ 项目默认 → $HOME；
-    /// 写任务后续票前仍用项目默认 → 对话目录的旧回落。返回 (cwd, 项目 id, 来源)。
+    /// 写任务：用户路径（文件取父目录）→ 写范围所在目录。返回 (cwd, 项目 id, 来源)。
     fn resolve_placement(
         &self,
         context: &ToolContext,
         cwd: Option<String>,
         project: Option<String>,
         read_only: bool,
+        write_start: Option<PathBuf>,
     ) -> Result<(PathBuf, Option<String>, Option<String>), ToolFailure> {
         let project = match project {
             None => None,
@@ -3309,7 +3343,7 @@ impl TaskRuntime {
                     path.display()
                 )));
             }
-            let path = if read_only && path.is_file() {
+            let path = if path.is_file() {
                 path.parent()
                     .map(std::path::Path::to_path_buf)
                     .unwrap_or(path)
@@ -3329,10 +3363,24 @@ impl TaskRuntime {
                 Some("user".to_owned()),
             ));
         }
+        if let Some(start) = write_start {
+            if !start.is_dir() {
+                return Err(ToolFailure::plain(format!(
+                    "写入范围的起点目录不存在：{}",
+                    start.display()
+                )));
+            }
+            let path = std::fs::canonicalize(&start).unwrap_or(start);
+            return Ok((
+                path,
+                project.map(|project| project.id),
+                Some("write_scope".to_owned()),
+            ));
+        }
         if let Some(dir) = project.as_ref().and_then(|project| project.dir.as_ref()) {
             if !dir.is_dir() {
                 return Err(ToolFailure::plain(format!(
-                    "项目默认目录 {} 不存在",
+                    "项目默认目录 {} 不存在；告诉用户，问怎么办",
                     dir.display()
                 )));
             }
@@ -3343,8 +3391,8 @@ impl TaskRuntime {
                 Some("project".to_owned()),
             ));
         }
+        // 只读调查没有目录也不问：用户没点、项目没默认目录，就从主目录起。
         if read_only {
-            // 只读调查没有目录也不问：用户没点、项目没默认目录，就从主目录起。
             let home = std::env::var_os("HOME")
                 .filter(|home| !home.is_empty())
                 .map(PathBuf::from)
@@ -3362,10 +3410,8 @@ impl TaskRuntime {
                 Some("home".to_owned()),
             ));
         }
-        Ok((
-            context.cwd.clone(),
-            project.map(|project| project.id),
-            Some("conversation".to_owned()),
+        Err(ToolFailure::plain(
+            "写任务没有可用的起点：给 cwd，或让 write_scope 可定位",
         ))
     }
 
@@ -3408,6 +3454,7 @@ impl TaskRuntime {
         context: &ToolContext,
         call_id: &str,
         args: TaskAcceptArgs,
+        confirmed_scope: bool,
     ) -> Result<(Task, bool), ToolFailure> {
         let TaskAcceptArgs {
             title,
@@ -3430,10 +3477,23 @@ impl TaskRuntime {
         let quote_source = self
             .verify_dispatch_quote(&conversation, &quote)
             .map_err(ToolFailure::plain)?;
-        let writing = write_scope
+        let raw_scope = write_scope
             .as_deref()
-            .is_some_and(|scope| !scope.trim().is_empty());
-        let (cwd, project, cwd_source) = self.resolve_placement(context, cwd, project, !writing)?;
+            .map(str::trim)
+            .filter(|scope| !scope.is_empty())
+            .map(str::to_owned);
+        let writing = raw_scope.is_some();
+        let write_path = raw_scope
+            .as_deref()
+            .map(|raw| self.prepare_write_scope(&conversation, raw, confirmed_scope))
+            .transpose()?;
+        let write_start = raw_scope
+            .as_deref()
+            .zip(write_path.as_deref())
+            .map(|(raw, path)| crate::write_scope::start_dir(raw, path));
+        let write_scope = write_path.map(|path| path.to_string_lossy().into_owned());
+        let (cwd, project, cwd_source) =
+            self.resolve_placement(context, cwd, project, !writing, write_start)?;
         let selection = self
             .selection
             .lock()
@@ -3486,6 +3546,26 @@ impl TaskRuntime {
         Ok((task, created))
     }
 
+    /// 确认卡确认「扩大/改写到哪」后改已有任务的写入范围。
+    pub(crate) async fn update_scope_from_card(
+        self: &Arc<Self>,
+        task_id: &str,
+        write_scope: &str,
+    ) -> Result<String, ToolFailure> {
+        self.update_scope(task_id, write_scope.to_owned()).await
+    }
+
+    /// 确认卡确认「写到哪」后走与 task_accept 同一条建任务路径。
+    pub(crate) fn accept_from_card(
+        &self,
+        context: &ToolContext,
+        call_id: &str,
+        raw: &Value,
+    ) -> Result<(Task, bool), ToolFailure> {
+        let args = self::task_tools::accept::parse_accept_args(raw)?;
+        self.accept(context, call_id, args, true)
+    }
+
     /// T052：Kind 的 task_graph_propose：冻结每个子任务的策略、校验并建图；这一步不启动。
     fn propose_graph(
         &self,
@@ -3518,8 +3598,56 @@ impl TaskRuntime {
                 .as_deref()
                 .is_none_or(|scope| scope.trim().is_empty())
         });
+        // 图里的写范围也必须是原话里的绝对/~ 路径；不在原话就不建图。
+        let mut expanded_scopes: Vec<Option<String>> = Vec::with_capacity(subtasks.len());
+        for (index, item) in subtasks.iter().enumerate() {
+            let Some(raw) = item
+                .write_scope
+                .as_deref()
+                .map(str::trim)
+                .filter(|scope| !scope.is_empty())
+            else {
+                expanded_scopes.push(None);
+                continue;
+            };
+            let path = if crate::e2e_legacy_write_scope()
+                && !raw.starts_with('/')
+                && !raw.starts_with("~/")
+            {
+                self.options.cwd.join(raw)
+            } else {
+                crate::write_scope::validate(raw).map_err(ToolFailure::plain)?;
+                if crate::ledger::find_user_words(&self.data_dir, &conversation, raw)
+                    .map_err(ToolFailure::plain)?
+                    .is_none()
+                {
+                    return Err(ToolFailure::plain(format!(
+                        "第 {} 步的 write_scope 不在用户原话里：{raw}。不要建图；让用户说完整路径，或先逐项确认写范围。",
+                        index + 1
+                    )));
+                }
+                crate::write_scope::expand(raw).map_err(ToolFailure::plain)?
+            };
+            expanded_scopes.push(Some(path.to_string_lossy().into_owned()));
+        }
+        let graph_write_start = if read_only {
+            None
+        } else {
+            subtasks
+                .iter()
+                .zip(expanded_scopes.iter())
+                .find_map(|(item, scope)| {
+                    let raw = item
+                        .write_scope
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|raw| !raw.is_empty())?;
+                    let scope = scope.as_deref().map(std::path::Path::new)?;
+                    Some(crate::write_scope::start_dir(raw, scope))
+                })
+        };
         let (cwd, project, cwd_source) =
-            self.resolve_placement(context, cwd, project, read_only)?;
+            self.resolve_placement(context, cwd, project, read_only, graph_write_start)?;
         let selection = self
             .selection
             .lock()
@@ -3533,11 +3661,8 @@ impl TaskRuntime {
         };
         let count = subtasks.len();
         let mut frozen_subtasks = Vec::with_capacity(count);
-        for item in subtasks {
-            let writing = item
-                .write_scope
-                .as_deref()
-                .is_some_and(|scope| !scope.trim().is_empty());
+        for (item, expanded_scope) in subtasks.into_iter().zip(expanded_scopes) {
+            let writing = expanded_scope.is_some();
             let bash = writing && self.exec_bash.load(Ordering::SeqCst);
             let tools = match (writing, bash) {
                 (true, true) => THIN_WRITE_BASH_TOOLS
@@ -3566,7 +3691,7 @@ impl TaskRuntime {
                     cwd_source: cwd_source.clone(),
                 },
                 policy: TaskPolicy {
-                    write_scope: item.write_scope,
+                    write_scope: expanded_scope,
                     worktree: item.worktree,
                     bash,
                 },

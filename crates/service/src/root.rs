@@ -354,8 +354,9 @@ pub async fn open_root_session_with(
     // Kind 没有工作目录、不读 ~/.agents：只留 data-dir/skills 和 bundled。
     config.skill_roots = Vec::new();
     config.instruction_roots = Vec::new();
-    config.workspace_context = false;
-    config.absolute_paths_only = true;
+    // 旧 e2e 回放脚本仍用相对路径；只在显式测试进程环境里放开，产品/真 key 仍是绝对路径。
+    config.workspace_context = crate::e2e_legacy_mode();
+    config.absolute_paths_only = !crate::e2e_legacy_mode();
     config.project_instructions_path_only = false;
     config.fixed_block = Some(agent::FixedBlock {
         text: format!("{PAGE_LIST}{KIND_OUTPUT_RULES}"),

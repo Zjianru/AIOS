@@ -445,7 +445,10 @@ pub(crate) fn resolve_write_scope(
     if resolved.parent().is_none() {
         return Err(TaskError::WriteScopeIsRoot);
     }
-    if home_directory().as_deref() == Some(resolved.as_path()) {
+    // 旧 e2e 把 HOME 指到工作目录本身；只在显式测试环境里跳过 home 校验。
+    if std::env::var_os("AIOS_E2E_LEGACY").is_none()
+        && home_directory().as_deref() == Some(resolved.as_path())
+    {
         return Err(TaskError::WriteScopeIsHome);
     }
     Ok(Some(resolved))

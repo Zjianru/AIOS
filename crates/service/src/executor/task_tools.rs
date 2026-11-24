@@ -1,6 +1,6 @@
 //! executor 的任务工具：Kind 与 ThinAgent 两侧共 12 个工具的声明与执行。
 
-mod accept;
+pub(crate) mod accept;
 mod continue_tool;
 mod delivery;
 mod gate_again;

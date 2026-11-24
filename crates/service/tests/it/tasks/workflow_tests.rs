@@ -792,7 +792,7 @@ async fn graph_propose_card_confirm_launches_first_subtask_only() {
         facts[1]["value"]
             .as_str()
             .unwrap_or_default()
-            .contains("写入范围：other.txt"),
+            .contains("写入范围：只读"),
         "第二项写明写入范围：{facts:?}"
     );
 

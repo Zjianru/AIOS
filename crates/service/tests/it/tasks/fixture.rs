@@ -276,7 +276,7 @@ impl Respond for Router {
                         "dod": "other.txt 里写着行数",
                         "subtasks": [
                             {"title": "先查行数", "requirement": "查 notes.md 有几行", "dod": "给出行数"},
-                            {"title": "再写结果", "requirement": "把行数写进 other.txt", "dod": "other.txt 里是行数", "write_scope": "other.txt", "after": [0]}
+                            {"title": "再写结果", "requirement": "把行数写进 other.txt", "dod": "other.txt 里是行数", "after": [0]}
                         ]
                     })
                     .to_string();
@@ -340,7 +340,7 @@ impl Respond for Router {
                         "subtasks": [
                             {"title": "先查行数", "requirement": "查 notes.md 有几行", "dod": "给出行数"},
                             {"title": "独立核查", "requirement": "独立核查行数结果", "dod": "给出核查发现", "milestone": true, "after": [0]},
-                            {"title": "再写结果", "requirement": "把行数写进 other.txt", "dod": "other.txt 里是行数", "write_scope": "other.txt", "after": [0]}
+                            {"title": "再写结果", "requirement": "把行数写进 other.txt", "dod": "other.txt 里是行数", "after": [0]}
                         ]
                     })
                     .to_string();

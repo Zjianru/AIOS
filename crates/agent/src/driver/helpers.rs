@@ -156,12 +156,16 @@ pub(super) fn interrupted_content(
 /// 去掉讲目录的那半句：AIOS 的 @ 候选不列目录）。
 pub(crate) const FILE_REFERENCE_PROMPT: &str = "Tokens prefixed with @ are paths the user explicitly referenced. Relative paths resolve from the workspace root; absolute paths identify files or directories on the host. Anything else is a file: use the read tool when its contents are needed, and do not claim to have inspected it before reading. @\"...\" quotes a path containing spaces.";
 
+/// 无工作区的 Kind：@ 路径是用户点名的绝对路径，没有 workspace root 可解析。
+pub(crate) const ABSOLUTE_FILE_REFERENCE_PROMPT: &str = "Tokens prefixed with @ are paths the user explicitly referenced. Use the read tool when their contents are needed, and do not claim to have inspected one before reading. @\"...\" quotes a path containing spaces.";
+
 pub(super) fn system_prompt(
     cwd: &Path,
     tools: &ToolSet,
     policy_prompt: Option<&str>,
     identity_prompt: Option<&str>,
     include_workspace: bool,
+    absolute_paths_only: bool,
 ) -> String {
     let identity = identity_prompt.unwrap_or("You are AIOS, a coding agent.");
     // 无工作区的 Kind：只有身份和产品规则；不写目录、不带编程助手的读/写/命令说明。
@@ -176,6 +180,10 @@ pub(super) fn system_prompt(
 ",
             );
             prompt.push_str(policy);
+        }
+        if absolute_paths_only && tools.get("read").is_some() {
+            prompt.push_str("\n\n");
+            prompt.push_str(ABSOLUTE_FILE_REFERENCE_PROMPT);
         }
         return prompt;
     }
@@ -236,6 +244,7 @@ mod file_reference_prompt_tests {
             None,
             None,
             true,
+            false,
         )
     }
 
@@ -255,5 +264,20 @@ mod file_reference_prompt_tests {
             !without_read.contains(FILE_REFERENCE_PROMPT),
             "没有 read 工具时不要 @ 那句"
         );
+    }
+
+    #[test]
+    fn kind_without_workspace_uses_the_absolute_file_reference_prompt() {
+        let prompt = system_prompt(
+            std::path::Path::new("/tmp/workspace"),
+            &ToolSet::builtin(),
+            None,
+            Some("Kind"),
+            false,
+            true,
+        );
+        assert!(prompt.contains(ABSOLUTE_FILE_REFERENCE_PROMPT), "{prompt}");
+        assert!(!prompt.contains("workspace root"), "{prompt}");
+        assert!(!prompt.contains("Relative paths resolve"), "{prompt}");
     }
 }

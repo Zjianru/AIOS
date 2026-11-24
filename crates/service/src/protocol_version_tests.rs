@@ -1,10 +1,10 @@
 use super::*;
 
 #[test]
-fn protocol_version_is_29() {
+fn protocol_version_is_30() {
     assert_eq!(
-        PROTOCOL_VERSION, 29,
-        "任务要求版本带用户原话/补充/继承来源，协议升到 29"
+        PROTOCOL_VERSION, 30,
+        "新增 confirm_write_scope 动作所需协议，升到 30"
     );
 }
 

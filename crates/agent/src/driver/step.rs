@@ -36,6 +36,37 @@ pub(super) struct StepContext {
     cancel: CancelToken,
 }
 
+/// Kind 的读/搜路径参数：只收绝对路径或以 ~/ 开头的路径；glob/grep 的 path 必填。
+fn absolute_tool_schemas(schemas: &mut [model::ToolSchema]) {
+    for schema in schemas {
+        match schema.name.as_str() {
+            "read" => {
+                if let Some(properties) = schema.parameters.get_mut("properties") {
+                    properties["file_path"]["description"] =
+                        serde_json::json!("Absolute path or one starting with ~/. Required.");
+                }
+            }
+            "glob" | "grep" => {
+                if let Some(properties) = schema.parameters.get_mut("properties") {
+                    properties["path"]["description"] = serde_json::json!(
+                        "Absolute directory to search, or one starting with ~/. Required."
+                    );
+                }
+                if let Some(required) = schema
+                    .parameters
+                    .get_mut("required")
+                    .and_then(serde_json::Value::as_array_mut)
+                {
+                    if !required.iter().any(|value| value == "path") {
+                        required.push(serde_json::json!("path"));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 pub(super) async fn prepare_step(
     inner: &Arc<Inner>,
     turn: u64,
@@ -58,6 +89,7 @@ pub(super) async fn prepare_step(
             inner.policy_prompt.as_deref(),
             inner.identity_prompt.as_deref(),
             inner.workspace_context,
+            inner.tool_session.absolute_paths_only(),
         ));
         inner
             .append(&[EventKind::SystemMessage {
@@ -161,9 +193,12 @@ pub(super) async fn prepare_step(
             .expect("加载记录锁被毒化")
             .commit(&additions);
     }
-    let tool_schemas = inner.tools.definitions_for(&enabled);
+    let mut tool_schemas = inner.tools.definitions_for(&enabled);
+    if inner.tool_session.absolute_paths_only() {
+        absolute_tool_schemas(&mut tool_schemas);
+    }
     let enabled = Arc::new(enabled);
-    let (messages, tool_history) = {
+    let (messages, mut tool_history) = {
         let store = inner.store.lock().expect("agent 会话锁被毒化");
         let derived = store.derive_messages_with_seqs();
         let history = crate::tool_gate::tool_history(store.events(), &derived);
@@ -177,6 +212,15 @@ pub(super) async fn prepare_step(
             history,
         )
     };
+    if inner.tool_session.absolute_paths_only()
+        && let Some(history) = tool_history.as_mut()
+    {
+        // addition-only 路由的声明从历史里取；历史也要带同一份绝对路径说明。
+        absolute_tool_schemas(&mut history.baseline);
+        for addition in &mut history.updates {
+            absolute_tool_schemas(&mut addition.additions);
+        }
+    }
     let tool_request = model::ToolRequest {
         tools: tool_schemas,
         history: tool_history,

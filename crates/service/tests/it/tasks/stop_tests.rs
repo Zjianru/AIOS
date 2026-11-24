@@ -2119,20 +2119,18 @@ async fn confirming_an_interrupted_worktree_task_resumes_in_the_same_worktree() 
     init_git_repo(cwd.path());
     let host = open_actions_host(&server, data.path(), cwd.path()).await;
     host.task_runtime().expect("runtime").set_pump_paused(true);
+    let scope = cwd.path().join("sub").join("app.py");
+    let mut args = worktree_task_args();
+    args["write_scope"] = serde_json::json!(scope.to_string_lossy());
     kind_turn(
         &host,
         &router,
         data.path(),
         "kind-a",
-        "改一下",
+        &format!("改一下 {}", scope.display()),
         1,
         vec![
-            crate::common::tool_use_sse(
-                0,
-                "call-accept-a",
-                "task_accept",
-                &worktree_task_args().to_string(),
-            ),
+            crate::common::tool_use_sse(0, "call-accept-a", "task_accept", &args.to_string()),
             crate::common::text_sse("已派出"),
         ],
     )

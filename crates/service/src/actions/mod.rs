@@ -6,6 +6,7 @@
 
 mod appointments;
 mod cancel_tasks;
+mod confirm_write_scope;
 mod create_project;
 mod mask;
 mod resume_task;
@@ -124,6 +125,9 @@ impl ActionRegistry {
             data_dir.clone(),
         )));
         registry.register(Arc::new(resume_task::ResumeTaskAction::new(
+            data_dir.clone(),
+        )));
+        registry.register(Arc::new(confirm_write_scope::ConfirmWriteScopeAction::new(
             data_dir.clone(),
         )));
         registry.register(Arc::new(start_task_graph::StartTaskGraphAction::new(

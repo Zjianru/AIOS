@@ -235,6 +235,17 @@ impl ActionKind for UpdateAppointmentAction {
             );
         }
         if let Some(condition) = details.get("condition").and_then(Value::as_str) {
+            let conversation = env
+                .conversation
+                .ok_or_else(|| "没有发起会话 id，不能核对约定条件".to_owned())?;
+            if crate::ledger::find_user_words(env.data_dir, conversation, condition)
+                .map_err(|error| error.to_string())?
+                .is_none()
+            {
+                return Err(format!(
+                    "约定的条件要用用户原话：『{condition}』不在你的消息里"
+                ));
+            }
             facts.push(CardFact {
                 name: "原话".to_owned(),
                 value: format!("{} → {condition}", current.condition),

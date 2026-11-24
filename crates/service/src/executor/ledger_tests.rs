@@ -188,6 +188,7 @@ fn accept_and_propose_verify_constraints_against_the_originating_conversation() 
                 worktree: false,
                 constraints: vec!["别加新依赖".to_owned()],
             },
+            false,
         )
         .expect("原话约束应通过")
         .0;
@@ -209,6 +210,7 @@ fn accept_and_propose_verify_constraints_against_the_originating_conversation() 
                 worktree: false,
                 constraints: vec!["用户没说过".to_owned()],
             },
+            false,
         )
         .expect_err("非原话必须整次拒");
     assert!(

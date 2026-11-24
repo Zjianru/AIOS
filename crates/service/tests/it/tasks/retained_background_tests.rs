@@ -288,7 +288,7 @@ async fn shutdown_stops_all_running_and_retained_background_commands() {
             "quote": "派一个任务",
             "requirement": "等后台命令",
             "dod": "能停掉",
-            "write_scope": "target.py"
+            "write_scope": fixture.cwd.path().join("target.py").to_string_lossy()
         })
         .to_string();
         kind_turn(
@@ -296,7 +296,10 @@ async fn shutdown_stops_all_running_and_retained_background_commands() {
             &fixture.router,
             fixture.data(),
             &format!("kind-{index}"),
-            "派一个任务",
+            &format!(
+                "派一个任务 {}",
+                fixture.cwd.path().join("target.py").display()
+            ),
             index + 1,
             vec![
                 crate::common::tool_use_sse(

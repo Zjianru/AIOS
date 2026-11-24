@@ -6,6 +6,17 @@ const urlOf = (fixture: { baseUrl: string; token: string }) =>
 
 const input = (page: import('@playwright/test').Page) => page.locator('[data-kind="composer-input"]');
 
+/** @ 候选只列项目默认目录；给这组用例建一个默认目录=fixture 数据目录的项目。 */
+async function projectAtCwd(fixture: { dataDir: string; baseUrl: string; token: string }, request: import('@playwright/test').APIRequestContext) {
+  const response = await apiPost(request, fixture as never, {
+    method: 'project_create',
+    name: 'e2e',
+    goal: 'e2e',
+    dir: fixture.dataDir,
+  });
+  if (!response.ok()) throw new Error('project_create 失败：' + (await response.text()));
+}
+
 /**
  * T040：@ 菜单断言前先等输入态就绪（可见、可编辑、已聚焦），不再靠固定 15 秒硬等；
  * 菜单出现后的小超时只兜「已就绪但菜单确实没弹」的真实回归。
@@ -111,9 +122,10 @@ test('粘贴：1001 字符折卡片，1000 字符留在输入框', async ({ page
 });
 
 /// T013.7 清单 13：@ 菜单出现、选中插入 @路径；带空格的路径加引号。
-test('@ 菜单：出现、插入路径、带空格加引号', async ({ page }) => {
+test('@ 菜单：出现、插入路径、带空格加引号', async ({ page, request }) => {
   const fixture = await startKernelFixture({ toolTurn: true });
   try {
+    await projectAtCwd(fixture, request);
     await page.goto(urlOf(fixture));
     const box = input(page);
     await readyInput(page);
@@ -122,7 +134,7 @@ test('@ 菜单：出现、插入路径、带空格加引号', async ({ page }) =
     await expect(menu).toBeVisible({ timeout: 5_000 });
     await expect(menu).toContainText('hello.txt');
     await menu.getByRole('button', { name: /hello\.txt/ }).first().click();
-    await expect(box).toHaveValue('@hello.txt');
+    await expect(box).toHaveValue('@' + fixture.dataDir + '/hello.txt');
   } finally {
     await fixture.close();
   }
@@ -243,9 +255,10 @@ test('发送：粘贴折卡片后发出去，日志里有 paste 块', async ({ p
 
 
 /// T013.7 清单 13：插入 @路径 后下层高亮存在，文字仍可编辑。
-test('@路径高亮：插入后高亮层有 @路径，文字仍可编辑', async ({ page }) => {
+test('@路径高亮：插入后高亮层有 @路径，文字仍可编辑', async ({ page, request }) => {
   const fixture = await startKernelFixture({ toolTurn: true });
   try {
+    await projectAtCwd(fixture, request);
     await page.goto(urlOf(fixture));
     const box = input(page);
     await readyInput(page);
@@ -253,15 +266,16 @@ test('@路径高亮：插入后高亮层有 @路径，文字仍可编辑', async
     const menu = page.locator('[data-kind="at-menu"]');
     await expect(menu).toBeVisible({ timeout: 5_000 });
     await menu.getByRole('button', { name: /hello\.txt/ }).first().click();
-    await expect(box).toHaveValue('@hello.txt');
+    const at = '@' + fixture.dataDir + '/hello.txt';
+    await expect(box).toHaveValue(at);
     const highlight = page.locator('[data-kind="at-highlight"]');
-    await expect(highlight).toContainText('@hello.txt');
-    await expect(highlight.locator('[data-at-token="@hello.txt"]')).toHaveCount(1);
+    await expect(highlight).toContainText(at);
+    await expect(highlight.locator('[data-at-token="' + at + '"]')).toHaveCount(1);
     // 文字仍可编辑（高亮层是展示层，不抢焦点）：等插入后的光标落定，再继续输入。
     await page.waitForTimeout(150);
     await box.pressSequentially(' 追加');
-    await expect(box).toHaveValue('@hello.txt 追加');
-    await expect(highlight).toContainText('@hello.txt 追加');
+    await expect(box).toHaveValue(at + ' 追加');
+    await expect(highlight).toContainText(at + ' 追加');
   } finally {
     await fixture.close();
   }
@@ -411,9 +425,10 @@ test('@高亮：token 与输入框字符位置对齐', async ({ page }) => {
 });
 
 /// T013.7 清单 13：@ 菜单 ↑↓ 换高亮、Esc 关、Enter 选当前项。
-test('@ 菜单：ArrowDown/ArrowUp 换项、Escape 关闭', async ({ page }) => {
+test('@ 菜单：ArrowDown/ArrowUp 换项、Escape 关闭', async ({ page, request }) => {
   const fixture = await startKernelFixture({ toolTurn: true });
   try {
+    await projectAtCwd(fixture, request);
     await page.goto(urlOf(fixture));
     const box = input(page);
     await readyInput(page);
@@ -441,9 +456,10 @@ test('@ 菜单：ArrowDown/ArrowUp 换项、Escape 关闭', async ({ page }) => 
 });
 
 /// T013.7 清单 13：带空格的路径要加引号插入。
-test('@ 菜单：带空格的路径加引号', async ({ page }) => {
+test('@ 菜单：带空格的路径加引号', async ({ page, request }) => {
   const fixture = await startKernelFixture({ toolTurn: true });
   try {
+    await projectAtCwd(fixture, request);
     await page.goto(urlOf(fixture));
     const box = input(page);
     await readyInput(page);
@@ -452,7 +468,7 @@ test('@ 菜单：带空格的路径加引号', async ({ page }) => {
     await expect(menu).toBeVisible({ timeout: 5_000 });
     await expect(menu).toContainText('with space.txt');
     await menu.getByRole('button', { name: /with space/ }).first().click();
-    await expect(page.locator('[data-kind="composer-input"]')).toHaveValue('@"with space.txt"');
+    await expect(page.locator('[data-kind="composer-input"]')).toHaveValue('@"' + fixture.dataDir + '/with space.txt"');
   } finally {
     await fixture.close();
   }

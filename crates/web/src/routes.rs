@@ -179,6 +179,28 @@ fn local_file_content_type(path: &Path) -> &'static str {
 /// 响应头：nosniff、no-store（产物可能含隐私，不让浏览器缓存），以及所有响应（含错误）都加的
 /// LOCAL_FILE_CSP。外壳 CSP 仍只由 canvas_frame_handler 下发：两条用途不同，这里那串不限制
 /// script-src，所以自包含 HTML 的行内脚本和 CDN 图表照跑，只是进 opaque origin。
+/// 仅 debug 构建 + 显式 e2e 环境：把测试里"用户说过"的绝对路径登记给 /local-file。
+/// 生产 release 不含这条路由；真 key e2e 也不设这个环境变量。
+#[cfg(debug_assertions)]
+async fn e2e_local_path_handler(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<E2eLocalPaths>,
+) -> Response {
+    if std::env::var_os("AIOS_E2E_LEGACY").is_none() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    for path in request.paths {
+        state.host.remember_local_path_for_test(&path);
+    }
+    StatusCode::NO_CONTENT.into_response()
+}
+
+#[cfg(debug_assertions)]
+#[derive(Debug, Deserialize)]
+struct E2eLocalPaths {
+    paths: Vec<String>,
+}
+
 async fn local_file_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -209,14 +231,12 @@ async fn local_file_response(
     if !requested.starts_with('/') {
         return error_response(StatusCode::BAD_REQUEST, "path must be absolute");
     }
-    // /tmp 与 /private/tmp（macOS）这种同一个目录的两种写法由两边的 canonicalize 收束。
-    let Ok(root) = tokio::fs::canonicalize(state.host.cwd()).await else {
-        return error_response(StatusCode::NOT_FOUND, "not found");
-    };
+    // /tmp 与 /private/tmp（macOS）这种同一个目录的两种写法由 canonicalize 收束。
+    // 边界不再是宿主 cwd：只放通 Kind 在根会话里说过的绝对路径。
     let Ok(path) = tokio::fs::canonicalize(requested).await else {
         return error_response(StatusCode::NOT_FOUND, "not found");
     };
-    if !path.starts_with(&root) {
+    if !state.host.local_file_allowed(requested, &path).await {
         return error_response(StatusCode::FORBIDDEN, "forbidden");
     }
     let Ok(metadata) = tokio::fs::metadata(&path).await else {
@@ -539,7 +559,7 @@ pub fn router(host: RootHost, trust: Trust, static_dir: Option<PathBuf>) -> Rout
 }
 
 pub(crate) fn router_with_state(state: Arc<AppState>) -> Router {
-    Router::new()
+    let router = Router::new()
         .route("/", get(root_handler))
         .route("/connect", get(connect_handler))
         .route("/api", post(api_handler))
@@ -549,9 +569,11 @@ pub(crate) fn router_with_state(state: Arc<AppState>) -> Router {
         // 和官方路径行为不一致；显式接住，让两条路径走同一个 handler。
         .route("/canvas-frame.html", get(canvas_frame_handler))
         // T015 fix B1：回答里本地绝对路径的只读出口（cookie + Host，只放会话工作目录）。
-        .route("/local-file", get(local_file_handler))
-        .fallback(get(static_handler))
-        .with_state(state)
+        .route("/local-file", get(local_file_handler));
+    // e2e 专用（debug + AIOS_E2E_LEGACY）：登记测试里用户说过的本地路径。
+    #[cfg(debug_assertions)]
+    let router = router.route("/__e2e/local-path", post(e2e_local_path_handler));
+    router.fallback(get(static_handler)).with_state(state)
 }
 
 #[cfg(test)]
@@ -1320,11 +1342,17 @@ mod local_file_tests {
         String::from_utf8(bytes.to_vec()).expect("utf8")
     }
 
+    /// 只有 Kind 报过的绝对路径才放通；测试用用户消息模拟。
+    async fn kind_said(state: &Arc<AppState>, text: &str) {
+        state.host.remember_local_path_for_test(text);
+    }
+
     #[tokio::test]
     async fn serves_html_inside_work_dir_without_caching() {
         let fixture = fixture().await;
         let file = fixture.work.join("answer.html");
         std::fs::write(&file, "<!doctype html><h1>本地文件正文</h1>").expect("写文件");
+        kind_said(&fixture.state, file.to_str().expect("路径")).await;
         let response = call(
             &fixture.state,
             &fixture.headers,
@@ -1356,6 +1384,7 @@ mod local_file_tests {
         let fixture = fixture().await;
         let file = fixture.work.join("报告 第 1 版.txt");
         std::fs::write(&file, "带空格和中文的文件").expect("写文件");
+        kind_said(&fixture.state, file.to_str().expect("路径")).await;
         let response = call(
             &fixture.state,
             &fixture.headers,
@@ -1383,7 +1412,7 @@ mod local_file_tests {
         let cases = [
             (Some(outside.to_str().expect("路径")), StatusCode::FORBIDDEN),
             (Some(escape.to_str().expect("路径")), StatusCode::FORBIDDEN),
-            (Some(nested.to_str().expect("路径")), StatusCode::NOT_FOUND),
+            (Some(nested.to_str().expect("路径")), StatusCode::FORBIDDEN),
             (Some(missing.to_str().expect("路径")), StatusCode::NOT_FOUND),
             (Some("answer.html"), StatusCode::BAD_REQUEST),
             (None, StatusCode::BAD_REQUEST),
@@ -1392,6 +1421,20 @@ mod local_file_tests {
             let response = call(&fixture.state, &fixture.headers, "/local-file", path).await;
             assert_eq!(response.status(), expected, "path={path:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn serves_an_outside_path_only_after_kind_said_it() {
+        let fixture = fixture().await;
+        let outside = fixture.dir.path().join("outside.html");
+        std::fs::write(&outside, "outside").expect("写文件");
+        let path = outside.to_str().expect("路径");
+        let denied = call(&fixture.state, &fixture.headers, "/local-file", Some(path)).await;
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN, "没说过不给");
+        kind_said(&fixture.state, path).await;
+        let allowed = call(&fixture.state, &fixture.headers, "/local-file", Some(path)).await;
+        assert_eq!(allowed.status(), StatusCode::OK, "说过就能开");
+        assert!(body_text(allowed).await.contains("outside"));
     }
 
     #[tokio::test]
@@ -1419,6 +1462,7 @@ mod local_file_tests {
         let fixture = fixture().await;
         let file = fixture.work.join("unreadable.html");
         std::fs::write(&file, "<h1>secret</h1>").expect("写文件");
+        kind_said(&fixture.state, file.to_str().expect("路径")).await;
         let permissions = std::fs::metadata(&file).expect("metadata").permissions();
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).expect("chmod 000");
         // root（或忽略权限位的文件系统）读得到 000 文件，这条用例没有可断言的拒绝面：跳过。
@@ -1480,6 +1524,7 @@ mod local_file_tests {
         let fixture = fixture().await;
         let file = fixture.work.join("big.bin");
         std::fs::write(&file, vec![b'x'; LOCAL_FILE_MAX_BYTES as usize + 1]).expect("写文件");
+        kind_said(&fixture.state, file.to_str().expect("路径")).await;
         let response = call(
             &fixture.state,
             &fixture.headers,
@@ -1512,6 +1557,7 @@ mod local_file_tests {
         ] {
             let file = fixture.work.join(name);
             std::fs::write(&file, body).expect("写文件");
+            kind_said(&fixture.state, file.to_str().expect("路径")).await;
             let response = call(
                 &fixture.state,
                 &fixture.headers,

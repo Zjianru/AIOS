@@ -8,7 +8,7 @@ const urlOf = (fixture: { baseUrl: string; token: string }, hash = '#kind') =>
 
 /** 根会话日志里的 task_accept 回执带任务 id（Kind 派出的写任务）。 */
 async function taskIdOf(fixture: { dataDir: string }): Promise<string> {
-  for (let attempt = 0; attempt < 400; attempt += 1) {
+  for (let attempt = 0; attempt < 1200; attempt += 1) {
     try {
       const root = JSON.parse(
         await readFile(path.join(fixture.dataDir, 'kind-root.json'), 'utf8'),

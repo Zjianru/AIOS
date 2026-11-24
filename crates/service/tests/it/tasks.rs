@@ -114,6 +114,25 @@ impl Fixture {
 
     /// 用给定的 task_accept 参数受理一个任务（写任务带 write_scope）。
     async fn accept_args(&self, pause: bool, mut args: serde_json::Value, spares: usize) -> Task {
+        if let Some(scope) = args.get("write_scope").and_then(serde_json::Value::as_str) {
+            if !scope.starts_with('/') && !scope.starts_with("~/") {
+                let base = args
+                    .get("cwd")
+                    .and_then(serde_json::Value::as_str)
+                    .map_or_else(
+                        || self.cwd.path().to_path_buf(),
+                        |cwd| {
+                            let cwd = std::path::Path::new(cwd);
+                            if cwd.is_absolute() {
+                                cwd.to_path_buf()
+                            } else {
+                                self.cwd.path().join(cwd)
+                            }
+                        },
+                    );
+                args["write_scope"] = serde_json::json!(base.join(scope).to_string_lossy());
+            }
+        }
         if args.get("quote").is_none() {
             args["quote"] = serde_json::json!("改一下");
         }
@@ -133,8 +152,12 @@ impl Fixture {
         for _ in 0..spares {
             self.router.push_kind(crate::common::text_sse("收到"));
         }
+        let text = args
+            .get("write_scope")
+            .and_then(serde_json::Value::as_str)
+            .map_or_else(|| "改一下".to_owned(), |scope| format!("改一下 {scope}"));
         self.host
-            .dispatch(Call::Send(send(&self.host, "kind-1", "改一下")))
+            .dispatch(Call::Send(send(&self.host, "kind-1", &text)))
             .await
             .expect("发送");
         crate::common::wait_turns(&self.host, self.data(), 1).await;

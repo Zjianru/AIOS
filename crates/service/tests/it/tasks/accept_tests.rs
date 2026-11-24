@@ -219,8 +219,8 @@ async fn the_kind_system_prompt_is_neutral_with_only_routing() {
     );
     for absent in [
         "Your working directory is",
-        "Use the read tool",
-        "Tokens prefixed with @",
+        "Use the read tool — not shell commands like cat",
+        "Relative paths resolve from the workspace root",
         "Check the [exit code",
         "call task_accept to dispatch a task",
         "Kind's understanding of what the user asked",
@@ -275,6 +275,43 @@ async fn the_kind_system_prompt_is_neutral_with_only_routing() {
         ),
         "task_accept 说明也要有进展查询落点：{accept}"
     );
+    assert!(
+        system.contains(
+            "Tokens prefixed with @ are paths the user explicitly referenced. Use the read tool when their contents are needed, and do not claim to have inspected one before reading. @\"...\" quotes a path containing spaces."
+        ),
+        "Kind 的 @ 提示要保留在无工作区分支：{system}"
+    );
+    assert!(
+        !system.contains("workspace root"),
+        "Kind 的 @ 提示不能讲 workspace root：{system}"
+    );
+    let schema = |name: &str| -> &serde_json::Value {
+        request["tools"]
+            .as_array()
+            .expect("tools 数组")
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .unwrap_or_else(|| panic!("{name} 工具"))
+    };
+    assert_eq!(
+        schema("read")["input_schema"]["properties"]["file_path"]["description"],
+        "Absolute path or one starting with ~/. Required."
+    );
+    for name in ["glob", "grep"] {
+        let path = &schema(name)["input_schema"]["properties"]["path"];
+        assert!(
+            path["description"]
+                .as_str()
+                .is_some_and(|value| !value.contains("workspace") && !value.contains("relative")),
+            "{name} path 说明不能讲 workspace/relative：{path}"
+        );
+        assert!(
+            schema(name)["input_schema"]["required"]
+                .as_array()
+                .is_some_and(|required| required.iter().any(|value| value == "path")),
+            "{name} 的 path 要必填"
+        );
+    }
     let cwd_description = |name: &str| -> &str {
         request["tools"]
             .as_array()
@@ -285,6 +322,20 @@ async fn the_kind_system_prompt_is_neutral_with_only_routing() {
             .unwrap_or_else(|| panic!("{name} 的 cwd 说明"))
     };
     for name in ["task_accept", "task_graph_propose"] {
+        let tool = request["tools"]
+            .as_array()
+            .expect("tools 数组")
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .expect(name);
+        let project = tool["input_schema"]["properties"]["project"]["description"]
+            .as_str()
+            .expect("project 说明");
+        assert!(
+            project.contains("default directory does not exist")
+                && project.contains("tell the user"),
+            "{name} 的 project 说明要写默认目录不存在怎么办：{project}"
+        );
         let cwd = cwd_description(name);
         assert!(
             cwd.contains("The starting path the user pointed at") && cwd.contains("then $HOME"),
@@ -1439,4 +1490,260 @@ async fn task_graph_propose_requires_a_root_quote() {
     let text =
         serde_json::to_string(&crate::common::read_root_events(fixture.data())).unwrap_or_default();
     assert!(text.contains("quote 不能为空"), "{text}");
+}
+
+fn write_accept_args(title: &str, quote: &str, scope: &str) -> serde_json::Value {
+    serde_json::json!({
+        "title": title,
+        "quote": quote,
+        "requirement": "把文件改好",
+        "dod": "文件改好了",
+        "write_scope": scope
+    })
+}
+
+async fn one_accept_turn(
+    fixture: &Fixture,
+    call_id: &str,
+    content: &str,
+    args: serde_json::Value,
+) -> Vec<session::Event> {
+    fixture
+        .host
+        .task_runtime()
+        .expect("runtime")
+        .set_pump_paused(true);
+    fixture.router.push_kind(crate::common::tool_use_sse(
+        0,
+        call_id,
+        "task_accept",
+        &args.to_string(),
+    ));
+    fixture.router.push_kind(crate::common::text_sse("收到"));
+    fixture
+        .host
+        .dispatch(Call::Send(send(&fixture.host, "kind-write", content)))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&fixture.host, fixture.data(), 1).await;
+    crate::common::read_root_events(fixture.data())
+}
+
+#[tokio::test]
+async fn write_scope_relative_is_refused_without_a_task() {
+    let fixture = Fixture::new().await;
+    let events = one_accept_turn(
+        &fixture,
+        "call-relative",
+        "改一下 README.md",
+        write_accept_args("改 README", "改一下 README.md", "README.md"),
+    )
+    .await;
+    let text = serde_json::to_string(&events).unwrap_or_default();
+    assert!(text.contains("write_scope 要写全"), "{text}");
+    assert!(tasks_store(fixture.data()).all_tasks().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn write_scope_absolute_but_not_in_user_words_asks_for_a_card() {
+    let fixture = Fixture::new().await;
+    let scope = tempfile::tempdir().unwrap();
+    let path = scope.path().join("report.md");
+    let events = one_accept_turn(
+        &fixture,
+        "call-unsaid",
+        "帮我写一份周报草稿",
+        write_accept_args("写周报", "帮我写一份周报草稿", path.to_str().unwrap()),
+    )
+    .await;
+    let text = serde_json::to_string(&events).unwrap_or_default();
+    assert!(text.contains("confirm_write_scope"), "{text}");
+    assert!(tasks_store(fixture.data()).all_tasks().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn write_scope_in_user_words_dispatches_and_starts_at_its_directory() {
+    let fixture = Fixture::new().await;
+    let scope = tempfile::tempdir().unwrap();
+    let path = scope.path().join("report.md");
+    let user_text = format!("把这段写进 {}", path.display());
+    let events = one_accept_turn(
+        &fixture,
+        "call-said",
+        &user_text,
+        write_accept_args("写报告", &user_text, path.to_str().unwrap()),
+    )
+    .await;
+    let text = serde_json::to_string(&events).unwrap_or_default();
+    assert!(text.contains("已派出任务"), "{text}");
+    let task = one_task(&tasks_store(fixture.data()));
+    assert_eq!(
+        task.write_scope.as_deref(),
+        Some(
+            std::fs::canonicalize(scope.path())
+                .unwrap()
+                .join("report.md")
+                .as_path()
+        )
+    );
+    assert_eq!(task.cwd, std::fs::canonicalize(scope.path()).unwrap());
+    assert_eq!(task.cwd_source.as_deref(), Some("write_scope"));
+}
+
+#[tokio::test]
+async fn write_scope_tilde_is_checked_raw_before_expansion() {
+    let fixture = Fixture::new().await;
+    let user_text = "把这段写进 ~/t082c-test.md";
+    let events = one_accept_turn(
+        &fixture,
+        "call-tilde",
+        user_text,
+        write_accept_args("写一段", user_text, "~/t082c-test.md"),
+    )
+    .await;
+    let text = serde_json::to_string(&events).unwrap_or_default();
+    assert!(text.contains("已派出任务"), "{text}");
+    let task = one_task(&tasks_store(fixture.data()));
+    let expected = std::path::PathBuf::from(std::env::var("HOME").unwrap()).join("t082c-test.md");
+    assert_eq!(task.write_scope.as_deref(), Some(expected.as_path()));
+    assert_eq!(
+        task.cwd,
+        std::path::PathBuf::from(std::env::var("HOME").unwrap())
+    );
+}
+
+#[tokio::test]
+async fn confirm_write_scope_card_dispatches_through_the_same_path() {
+    let fixture = Fixture::new_with_actions().await;
+    fixture
+        .host
+        .dispatch(Call::Send(send(
+            &fixture.host,
+            "kind-card",
+            "帮我写一份周报草稿",
+        )))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&fixture.host, fixture.data(), 1).await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("weekly.md");
+    let details = serde_json::json!({
+        "write_scope": path.to_str().unwrap(),
+        "task": {
+            "title": "写周报",
+            "quote": "帮我写一份周报草稿",
+            "requirement": "写一份周报草稿",
+            "dod": "草稿写好了"
+        }
+    });
+    let described = fixture
+        .host
+        .dispatch(Call::ActionDescribe(service::ActionDescribeRequest {
+            action: "confirm_write_scope".to_owned(),
+            details: details.clone(),
+        }))
+        .await
+        .expect("describe");
+    let value = serde_json::to_value(described).unwrap();
+    let facts = value["facts"].as_array().expect("facts");
+    assert_eq!(facts[0]["name"], "写到哪");
+    assert_eq!(facts[0]["value"], path.to_string_lossy().as_ref());
+    fixture
+        .host
+        .dispatch(Call::ActionAct(service::ActionActRequest {
+            action: "confirm_write_scope".to_owned(),
+            details,
+        }))
+        .await
+        .expect("act");
+    let tasks = tasks_store(fixture.data());
+    let task = one_task(&tasks);
+    assert_eq!(
+        task.write_scope.as_deref(),
+        Some(
+            std::fs::canonicalize(dir.path())
+                .unwrap()
+                .join("weekly.md")
+                .as_path()
+        )
+    );
+    assert_eq!(task.cwd, std::fs::canonicalize(dir.path()).unwrap());
+
+    // 改范围卡带 task_id：第一行仍是写到哪，事实里带任务，不派新任务。
+    let next = dir.path().join("weekly2.md");
+    let described = fixture
+        .host
+        .dispatch(Call::ActionDescribe(service::ActionDescribeRequest {
+            action: "confirm_write_scope".to_owned(),
+            details: serde_json::json!({
+                "write_scope": next.to_string_lossy(),
+                "task_id": task.id.as_str()
+            }),
+        }))
+        .await
+        .expect("update describe");
+    let value = serde_json::to_value(described).unwrap();
+    assert_eq!(value["facts"][0]["name"], "写到哪");
+    assert_eq!(value["facts"][0]["value"], next.to_string_lossy().as_ref());
+    assert!(
+        value["facts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|fact| fact["name"] == "任务")
+    );
+}
+
+#[tokio::test]
+async fn task_update_scope_not_in_user_words_asks_for_a_scope_card() {
+    let fixture = Fixture::new_with_actions().await;
+    let scope = fixture.cwd.path().join("target.py");
+    let task = fixture
+        .accept_args(
+            true,
+            serde_json::json!({
+                "title": "改一下判重",
+                "quote": "改一下",
+                "requirement": "把判重改成按 url",
+                "dod": "改好了",
+                "write_scope": scope.to_string_lossy()
+            }),
+            0,
+        )
+        .await;
+    let new_scope = fixture.cwd.path().join("other.py");
+    fixture.router.push_kind(crate::common::tool_use_sse(
+        0,
+        "call-update-unsaid",
+        "task_update",
+        &serde_json::json!({
+            "task_id": task.id.as_str(),
+            "write_scope": new_scope.to_string_lossy()
+        })
+        .to_string(),
+    ));
+    fixture.router.push_kind(crate::common::text_sse("收到"));
+    fixture
+        .host
+        .dispatch(Call::Send(send(
+            &fixture.host,
+            "kind-update-unsaid",
+            "把范围改到别处",
+        )))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&fixture.host, fixture.data(), 2).await;
+    let stored = tasks_store(fixture.data()).task(&task.id).unwrap().unwrap();
+    assert_eq!(stored.versions.len(), 1, "没核过不能改");
+    let text = serde_json::to_string(&crate::common::read_root_events(fixture.data())).unwrap();
+    assert!(text.contains("confirm_write_scope"), "{text}");
+    assert_eq!(
+        stored.write_scope.as_deref(),
+        Some(
+            std::fs::canonicalize(fixture.cwd.path())
+                .unwrap()
+                .join("target.py")
+                .as_path()
+        )
+    );
 }
