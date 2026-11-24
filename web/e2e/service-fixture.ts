@@ -1137,6 +1137,18 @@ export async function startD78KernelFixture(): Promise<KernelFixture> {
     { input: apiKey + String.fromCharCode(10), encoding: 'utf8' },
   );
   if (seed.status !== 0) throw new Error('seed keyring failed: ' + String(seed.stderr));
+  // 根会话只从 settings.json 的 lastSelection 恢复默认选择；只 seed keyring 会让 status
+  // 停在 root/unavailable（页面等不到内核，第一轮 240s 超时）。
+  await writeFile(
+    path.join(dataDir, 'settings.json'),
+    JSON.stringify({
+      lastSelection: {
+        connection: 'minimax-cn',
+        model: 'MiniMax-M3.1-Flash',
+        effortWanted: 'max',
+      },
+    }) + String.fromCharCode(10),
+  );
   const child = spawn(
     bin,
     ['serve', '--data-dir', dataDir, '--identity', identityPath, '--web-dist', path.join(repoRoot, 'web/dist')],

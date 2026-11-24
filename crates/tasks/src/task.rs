@@ -445,13 +445,55 @@ pub(crate) fn resolve_write_scope(
     if resolved.parent().is_none() {
         return Err(TaskError::WriteScopeIsRoot);
     }
-    // 旧 e2e 把 HOME 指到工作目录本身；只在显式测试环境里跳过 home 校验。
-    if std::env::var_os("AIOS_E2E_LEGACY").is_none()
-        && home_directory().as_deref() == Some(resolved.as_path())
-    {
+    // 旧 e2e 把 HOME 指到工作目录本身；只在 debug 构建的显式测试环境里跳过 home 校验。
+    if !e2e_legacy_mode() && home_directory().as_deref() == Some(resolved.as_path()) {
         return Err(TaskError::WriteScopeIsHome);
     }
     Ok(Some(resolved))
+}
+
+#[cfg(debug_assertions)]
+fn e2e_legacy_mode() -> bool {
+    std::env::var_os("AIOS_E2E_LEGACY").is_some()
+}
+
+#[cfg(not(debug_assertions))]
+fn e2e_legacy_mode() -> bool {
+    false
+}
+
+#[cfg(all(test, not(debug_assertions)))]
+mod release_legacy_env_tests {
+    #[test]
+    fn legacy_env_variable_is_ignored_in_release_builds() {
+        let exe = std::env::current_exe().expect("测试二进制");
+        let output = std::process::Command::new(exe)
+            .arg("--exact")
+            .arg("task::release_legacy_env_tests::legacy_env_probe")
+            .arg("--test-threads=1")
+            .env("AIOS_RELEASE_LEGACY_PROBE", "1")
+            .env("AIOS_E2E_LEGACY", "1")
+            .output()
+            .expect("跑 release 子进程");
+        assert!(
+            output.status.success(),
+            "release 子进程失败：{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "release 子进程没跑到探针：{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+
+    #[test]
+    fn legacy_env_probe() {
+        if std::env::var_os("AIOS_RELEASE_LEGACY_PROBE").is_none() {
+            return;
+        }
+        assert!(!super::e2e_legacy_mode());
+    }
 }
 
 /// 用户主目录；取不到 HOME 时不做这一项校验。

@@ -5,14 +5,65 @@
 
 pub mod actions;
 /// 旧 e2e 回放兼容总开关（只由假模型 e2e 进程设置；产品/真 key 不设）。
+/// 编译期隔离：release 里连读取环境变量的代码都不编进来。
+#[cfg(debug_assertions)]
 pub(crate) fn e2e_legacy_mode() -> bool {
     std::env::var_os("AIOS_E2E_LEGACY").is_some_and(|value| value == "1")
 }
 
+#[cfg(not(debug_assertions))]
+pub(crate) fn e2e_legacy_mode() -> bool {
+    false
+}
+
 /// 旧 e2e 回放脚本兼容：只在显式测试环境变量下把相对写入范围当根会话目录。
+#[cfg(debug_assertions)]
 pub(crate) fn e2e_legacy_write_scope() -> bool {
     e2e_legacy_mode()
         || std::env::var_os("AIOS_E2E_LEGACY_WRITE_SCOPE").is_some_and(|value| value == "1")
+}
+
+#[cfg(not(debug_assertions))]
+pub(crate) fn e2e_legacy_write_scope() -> bool {
+    false
+}
+
+#[cfg(all(test, not(debug_assertions)))]
+mod release_legacy_env_tests {
+    /// release 构建即使被设了兼容环境变量，也不能放出旧相对写范围/旧相对读。
+    #[test]
+    fn legacy_env_variables_are_ignored_in_release_builds() {
+        let exe = std::env::current_exe().expect("测试二进制");
+        let output = std::process::Command::new(exe)
+            .arg("--exact")
+            .arg("release_legacy_env_tests::legacy_env_probe")
+            .arg("--test-threads=1")
+            .env("AIOS_RELEASE_LEGACY_PROBE", "1")
+            .env("AIOS_E2E_LEGACY", "1")
+            .env("AIOS_E2E_LEGACY_WRITE_SCOPE", "1")
+            .output()
+            .expect("跑 release 子进程");
+        assert!(
+            output.status.success(),
+            "release 子进程失败：{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "release 子进程没跑到探针：{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+
+    /// 只在子进程里检查：父进程把兼容变量放进了环境。
+    #[test]
+    fn legacy_env_probe() {
+        if std::env::var_os("AIOS_RELEASE_LEGACY_PROBE").is_none() {
+            return;
+        }
+        assert!(!super::e2e_legacy_mode());
+        assert!(!super::e2e_legacy_write_scope());
+    }
 }
 
 pub mod aios_query;
