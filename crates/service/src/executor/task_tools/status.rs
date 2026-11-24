@@ -30,7 +30,7 @@ impl Tool for TaskStatusTool {
     }
 
     fn description(&self) -> &str {
-        "Read a task's stage, its latest report in full, and its Attempt count. While the task is waiting for a report, this also asks its ThinAgent once for a status report."
+        "Read a task's stage, its latest report in full, and its Attempt count. While the task is waiting for a report, this also asks its ThinAgent once for a status report. If the user later asks how a task is going, call task_status once before answering."
     }
 
     fn parameters(&self) -> &Value {

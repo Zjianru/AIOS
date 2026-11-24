@@ -242,6 +242,38 @@ async fn the_kind_system_prompt_is_neutral_with_only_routing() {
             "非重复产品规则不能丢 {kept}：{system}"
         );
     }
+    // 从 KIND_POLICY 删掉的调用时机必须在工具说明里有落点，不能只靠系统提示断言缺席。
+    let request: serde_json::Value = serde_json::from_str(&bodies[0]).expect("请求体 JSON");
+    let descriptions: Vec<&str> = request["tools"]
+        .as_array()
+        .expect("tools 数组")
+        .iter()
+        .filter_map(|tool| tool["description"].as_str())
+        .collect();
+    let status = descriptions
+        .iter()
+        .find(|text| text.contains("Read a task's stage"))
+        .expect("task_status 说明");
+    assert!(
+        status.contains(
+            "If the user later asks how a task is going, call task_status once before answering."
+        ),
+        "task_status 说明要有调用时机：{status}"
+    );
+    let accept = descriptions
+        .iter()
+        .find(|text| text.contains("call task_accept to dispatch a task"))
+        .expect("task_accept 说明");
+    assert!(
+        accept.contains("When the user wants a file changed (even a single typo), a command run, or an investigation that reads more than one or two files, call task_accept"),
+        "task_accept 说明要有何时派任务：{accept}"
+    );
+    assert!(
+        accept.contains(
+            "If the user later asks how a task is going, call task_status once before answering."
+        ),
+        "task_accept 说明也要有进展查询落点：{accept}"
+    );
 }
 
 /// 没装任务执行者（CLI/老测试）：不给这段说明，它提到 Kind 没有的工具。
