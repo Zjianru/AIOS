@@ -15,6 +15,9 @@ const T0: i64 = 1_790_000_000_000;
 
 fn draft(cwd: &Path, title: &str) -> NewTask {
     NewTask {
+        quote: None,
+        quote_source: None,
+        kind_note: None,
         project_id: None,
         cwd_source: None,
         title: title.to_owned(),

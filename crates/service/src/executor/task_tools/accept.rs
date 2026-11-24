@@ -20,7 +20,9 @@ impl TaskAcceptTool {
                 "type": "object",
                 "properties": {
                     "title": {"type": "string", "description": TASK_ACCEPT_TITLE_DESCRIPTION},
-                    "requirement": {"type": "string", "description": "What the task must do, in the user's words."},
+                    "quote": {"type": "string", "description": "The user's request, copied verbatim from a user message. Required. The whole call is rejected if this is not a contiguous substring of a user message; on rejection, copy the exact words again or ask the user, never invent or paraphrase."},
+                    "kind_note": {"type": "string", "description": "Optional note from Kind: assumptions or additions that are not the user's own words. Keep it out of quote and requirement."},
+                    "requirement": {"type": "string", "description": "Kind's understanding of what the task must do, not a copy of the user's words."},
                     "dod": {"type": "string", "description": "How the result will be judged complete."},
                     "cwd": {"type": "string", "description": "Directory to work in; omit to use the project's default directory, then this conversation's directory. A path you pass must already exist."},
                     "project": {"type": "string", "description": "Project id from the fixed block's project list that this task belongs to. Omit for personal tasks or when you are unsure; if unsure, ask the user (include the personal choice) before dispatching. Never infer a project from cwd."},
@@ -28,7 +30,7 @@ impl TaskAcceptTool {
                     "worktree": {"type": "boolean", "description": "Run the task in a new git worktree under the data directory. Only when the user explicitly asks for a worktree. Defaults to false."},
                     "constraints": {"type": "array", "items": {"type": "string"}, "description": "The user's hard requirements (must/never rules), each copied verbatim from a user message. Omit when the user stated none. Every string is checked against the originating conversation and the whole call is rejected if one is not verbatim user text."}
                 },
-                "required": ["title", "requirement", "dod"]
+                "required": ["title", "quote", "requirement", "dod"]
             }),
         }
     }
@@ -40,7 +42,7 @@ impl Tool for TaskAcceptTool {
     }
 
     fn description(&self) -> &str {
-        "Dispatch a task to a ThinAgent and return its task id. Omit write_scope for a read-only investigation; pass one path for a writing task (a file, or a directory and everything under it). Pass project only when the task clearly belongs to one of the fixed block's projects; ask the user if unsure and never infer it from cwd. Omit project for a personal task. Pass worktree=true only when the user explicitly asked to work in a git worktree. The result arrives later as a task_report message; the user already sees a card, so answer only what is needed now and do not wait for the result."
+        "Dispatch a task to a ThinAgent and return its task id. Always pass quote: the user's request copied verbatim from a user message, never paraphrased; the call is rejected if it is not a contiguous substring of a user message. Put Kind's understanding in requirement and any Kind-only addition in kind_note, not in quote. Omit write_scope for a read-only investigation; pass one path for a writing task. Pass project only when the task clearly belongs to one of the fixed block's projects; ask the user if unsure and never infer it from cwd. Pass worktree=true only when the user explicitly asked for a git worktree. The result arrives later as a task_report message; the user already sees a card."
     }
 
     fn parameters(&self) -> &Value {
@@ -64,6 +66,12 @@ impl Tool for TaskAcceptTool {
             let Some(title) = string_arg(&args, "title") else {
                 return ToolResult::error(call.id, ToolFailure::plain("title 不能为空"));
             };
+            let Some(quote) = string_arg(&args, "quote") else {
+                return ToolResult::error(call.id, ToolFailure::plain("quote 不能为空"));
+            };
+            if quote.trim().is_empty() {
+                return ToolResult::error(call.id, ToolFailure::plain("quote 不能为空"));
+            }
             let Some(requirement) = string_arg(&args, "requirement") else {
                 return ToolResult::error(call.id, ToolFailure::plain("requirement 不能为空"));
             };
@@ -103,6 +111,18 @@ impl Tool for TaskAcceptTool {
                     return ToolResult::error(call.id, ToolFailure::plain("worktree 必须是布尔值"));
                 }
             };
+            let kind_note = match args.get("kind_note") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(value)) => {
+                    Some(value.clone()).filter(|value| !value.trim().is_empty())
+                }
+                Some(_) => {
+                    return ToolResult::error(
+                        call.id,
+                        ToolFailure::plain("kind_note 必须是字符串"),
+                    );
+                }
+            };
             let constraints = match parse_constraints(&args) {
                 Ok(constraints) => constraints,
                 Err(failure) => return ToolResult::error(call.id, failure),
@@ -112,7 +132,9 @@ impl Tool for TaskAcceptTool {
                 &call.id,
                 TaskAcceptArgs {
                     title,
+                    quote,
                     requirement,
+                    kind_note,
                     dod,
                     cwd,
                     project,

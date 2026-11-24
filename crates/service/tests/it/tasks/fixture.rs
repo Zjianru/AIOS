@@ -268,6 +268,7 @@ impl Respond for Router {
                 1 => {
                     let graph = serde_json::json!({
                         "title": "查行数再写结果",
+                        "quote": "先查",
                         "requirement": "先查 notes.md 有几行，再把行数写进 other.txt",
                         "dod": "other.txt 里写着行数",
                         "subtasks": [
@@ -330,6 +331,7 @@ impl Respond for Router {
                 1 => {
                     let graph = serde_json::json!({
                         "title": "查行数再写结果",
+                        "quote": "先查",
                         "requirement": "先查 notes.md 有几行，改完找个独立的核查看一眼，我来拍板，过了再写结果",
                         "dod": "核查通过了再写结果",
                         "subtasks": [
@@ -388,6 +390,7 @@ impl Respond for Router {
                 1 => {
                     let graph = serde_json::json!({
                         "title": "第一张图",
+                        "quote": "先查",
                         "requirement": "先查行数再写结果",
                         "dod": "结果写好了",
                         "subtasks": [
@@ -430,6 +433,7 @@ impl Respond for Router {
                 1 => {
                     let graph = serde_json::json!({
                         "title": "第一张图",
+                        "quote": "先查",
                         "requirement": "先查行数再写结果",
                         "dod": "结果写好了",
                         "subtasks": [
@@ -471,6 +475,7 @@ impl Respond for Router {
                 11 => {
                     let graph = serde_json::json!({
                         "title": "第二张图",
+                        "quote": "先查",
                         "requirement": "先查行数再写结果（第二版）",
                         "dod": "结果写好了",
                         "subtasks": [

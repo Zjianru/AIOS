@@ -20,7 +20,7 @@ impl TaskGraphProposeTool {
                 "type": "object",
                 "properties": {
                     "title": {"type": "string", "description": TASK_ACCEPT_TITLE_DESCRIPTION},
-                    "requirement": {"type": "string", "description": "What the whole graph must achieve, in the user's words."},
+                    "requirement": {"type": "string", "description": "Kind's understanding of what the whole graph must achieve, not a copy of the user's words."},
                     "dod": {"type": "string", "description": "How the whole graph will be judged complete."},
                     "cwd": {"type": "string", "description": "Directory to work in; omit to use the project's default directory, then this conversation's directory. A path you pass must already exist."},
                     "project": {"type": "string", "description": "Project id from the fixed block's project list for the whole graph. Omit for a personal graph or when unsure; ask the user if unsure. Never infer it from cwd."},
@@ -33,7 +33,7 @@ impl TaskGraphProposeTool {
                             "type": "object",
                             "properties": {
                                 "title": {"type": "string", "description": TASK_ACCEPT_TITLE_DESCRIPTION},
-                                "requirement": {"type": "string", "description": "What this step must do, in the user's words."},
+                                "requirement": {"type": "string", "description": "Kind's understanding of what this step must do; not a copy of the user's words."},
                                 "dod": {"type": "string", "description": "How this step will be judged complete."},
                                 "write_scope": {"type": "string", "description": "One path this step may write; omit for a read-only step."},
                                 "worktree": {"type": "boolean", "description": "Only when the user explicitly asks for a worktree. Defaults to false."},
@@ -45,7 +45,7 @@ impl TaskGraphProposeTool {
                         }
                     }
                 },
-                "required": ["title", "requirement", "dod", "subtasks"]
+                "required": ["title", "quote", "requirement", "dod", "subtasks"]
             }),
         }
     }
@@ -57,7 +57,7 @@ impl Tool for TaskGraphProposeTool {
     }
 
     fn description(&self) -> &str {
-        "Propose one ordered task graph when the user's request has steps that must run in order. Creates the graph and returns its id; then call propose_action once with action start_task_graph and that id so the user confirms on the card. Pass project only when the whole graph clearly belongs to one project; ask the user if unsure and never infer it from cwd. Independent work belongs in task_accept, not here."
+        "Propose one ordered task graph when the user's request has steps that must run in order. Always pass quote on the root: the user's request copied verbatim from a user message, never paraphrased; the call is rejected if it is not a contiguous substring of a user message. Child tasks inherit the root quote. Put Kind's understanding in requirement and any Kind-only addition in kind_note. Creates the graph and returns its id; then call propose_action once with action start_task_graph and that id so the user confirms on the card. Pass project only when the whole graph clearly belongs to one project; ask the user if unsure and never infer it from cwd. Independent work belongs in task_accept, not here."
     }
 
     fn parameters(&self) -> &Value {
@@ -145,6 +145,15 @@ fn parse_program_gate(
 
 fn parse_graph_args(args: &serde_json::Map<String, Value>) -> Result<TaskGraphArgs, ToolFailure> {
     let title = string_arg(args, "title").ok_or_else(|| ToolFailure::plain("title 不能为空"))?;
+    let quote = string_arg(args, "quote").ok_or_else(|| ToolFailure::plain("quote 不能为空"))?;
+    if quote.trim().is_empty() {
+        return Err(ToolFailure::plain("quote 不能为空"));
+    }
+    let kind_note = match args.get("kind_note") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(value)) => Some(value.clone()).filter(|value| !value.trim().is_empty()),
+        Some(_) => return Err(ToolFailure::plain("kind_note 必须是字符串")),
+    };
     let requirement = string_arg(args, "requirement")
         .ok_or_else(|| ToolFailure::plain("requirement 不能为空"))?;
     let dod = string_arg(args, "dod").ok_or_else(|| ToolFailure::plain("dod 不能为空"))?;
@@ -247,8 +256,10 @@ fn parse_graph_args(args: &serde_json::Map<String, Value>) -> Result<TaskGraphAr
     }
     Ok(TaskGraphArgs {
         title,
+        quote,
         requirement,
         dod,
+        kind_note,
         cwd,
         project,
         subtasks,

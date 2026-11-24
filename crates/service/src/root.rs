@@ -205,7 +205,8 @@ const KIND_POLICY: &str = concat!(
     "\nResults arrive as task_report: do not wait or poll; finish the turn once the work is dispatched and the reply is sent. If the user later asks how a task is going, call task_status once before answering.",
     "\nRead only until you can answer the user or state the task clearly (for example, confirm that a file exists); do not investigate on ThinAgent's behalf.",
     "\nDispatch tasks that are independent of each other separately with task_accept; only ordered work belongs in a task graph.",
-    "\nProjects: the fixed block lists existing projects with their id, goal and default directory. A task or graph may belong to at most one project. Decide the project from what the user said; never assign one from the task directory. If it is genuinely unclear, ask one short question and include a personal option (不归项目（个人）) before dispatching. Pass project only when you are sure; omit it for a personal task. A project's default directory is used when the user did not name a directory; if you pass a directory, it must be the user's named directory. If the project's default directory does not exist, tell the user and ask what to do; do not silently fall back. If the user explicitly asks you to create a project (for example starts with 建个项目/新建项目/创建项目 and gives a name), call project_create immediately in this same turn, before greeting or saying anything else; do not ask a clarifying question and do not propose a confirmation card when name and goal are already given. Only when you merely infer that a project is needed without an explicit creation request should you propose create_project through propose_action and wait for confirmation. You have no tool to change a task's project: when the user asks, tell them to change it on the task card.",
+    "\nUser's words (quote): when dispatching a task or a task graph, always pass quote — the user's request copied verbatim from a user message. The program rejects the call when quote is not a contiguous substring of a user message. Put Kind's understanding in requirement and any Kind-only addition in kind_note; never put your own wording in quote. If you cannot quote the user, ask them to say it again instead of inventing words.",
+    "\nProjects: the fixed block lists existing projects with their id, goal and default directory. A task or graph may belong to at most one project. Decide the project from what the user said; never assign one from the task directory. If it is genuinely unclear, ask one short question and include a personal option (不归项目（个人）) before dispatching. Pass project only when you are sure; omit it for a personal task. A project's default directory is used when the user did not name a directory; if you pass a directory, it must be the user's named directory. If the project's default directory does not exist, tell the user and ask what to do; do not silently fall back. If the user explicitly asks you to create a project, call project_create; if you merely infer that one is needed, propose create_project through propose_action and wait for confirmation. You have no tool to change a task's project: when the user asks, tell them to change it on the task card.",
 );
 
 /// T077.2：Kind 固定块里的页面清单；只列 web/src 真能打开的页，每页一句。
@@ -565,15 +566,7 @@ mod title_limit_policy_tests {
 
 #[cfg(test)]
 mod page_list_tests {
-    use super::{KIND_OUTPUT_RULES, KIND_POLICY, PAGE_LIST};
-
-    #[test]
-    fn kind_policy_makes_explicit_project_creation_immediate() {
-        assert!(KIND_POLICY.contains("call project_create immediately in this same turn"));
-        assert!(KIND_POLICY.contains("before greeting"));
-        assert!(KIND_POLICY.contains("do not ask a clarifying question"));
-        assert!(KIND_POLICY.contains("do not propose a confirmation card"));
-    }
+    use super::{KIND_OUTPUT_RULES, PAGE_LIST};
 
     #[test]
     fn fixed_block_carries_the_full_kind_output_rules() {

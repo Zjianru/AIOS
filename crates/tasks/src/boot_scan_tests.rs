@@ -20,6 +20,9 @@ fn create(store: &Store, title: &str) -> Task {
     store
         .create_task(
             NewTask {
+                quote: None,
+                quote_source: None,
+                kind_note: None,
                 project_id: None,
                 cwd_source: None,
                 title: title.to_owned(),

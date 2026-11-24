@@ -63,6 +63,9 @@ fn seed_task(data_dir: &Path, cwd: &Path, title: &str) {
     store
         .create_task_with(
             tasks::NewTask {
+                quote: None,
+                quote_source: None,
+                kind_note: None,
                 project_id: None,
                 cwd_source: None,
                 title: title.to_owned(),

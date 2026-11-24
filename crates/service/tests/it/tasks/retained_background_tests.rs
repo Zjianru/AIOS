@@ -285,6 +285,7 @@ async fn shutdown_stops_all_running_and_retained_background_commands() {
     for (index, title) in ["任务甲", "任务乙"].into_iter().enumerate() {
         let args = serde_json::json!({
             "title": title,
+            "quote": "派一个任务",
             "requirement": "等后台命令",
             "dod": "能停掉",
             "write_scope": "target.py"

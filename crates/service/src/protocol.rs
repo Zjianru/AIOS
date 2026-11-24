@@ -617,6 +617,13 @@ pub struct TaskReadHeader {
     pub id: String,
     pub title: String,
     pub requirement: String,
+    /// 每一版要求的用户原话、版本号、Kind 补充和继承来源；旧任务为空，页面不出「你说的」。
+    #[serde(
+        default,
+        rename = "requirementVersions",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub requirement_versions: Vec<RequirementVersionView>,
     pub dod: String,
     pub cwd: String,
     /// 当前要求版本的写入范围，相对任务 cwd 显示；None = 只读调查任务。
@@ -701,6 +708,31 @@ pub struct TaskReadHeader {
         skip_serializing_if = "Option::is_none"
     )]
     pub guarding_gate: Option<TaskReadGuardingGate>,
+}
+
+/// 任务要求的一版：原话/版本/Kind 补充；页面只读。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct RequirementVersionView {
+    /// 1 起。
+    pub version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quote: Option<String>,
+    #[serde(default, rename = "kindNote", skip_serializing_if = "Option::is_none")]
+    pub kind_note: Option<String>,
+    /// 子任务/门/里程碑继承总任务时，写总任务标题；根任务为空。
+    #[serde(
+        default,
+        rename = "inheritedFrom",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub inherited_from: Option<String>,
+    /// 诊断用：用户消息的会话+seq，或约定 id；页面不显示。
+    #[serde(
+        default,
+        rename = "quoteSource",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub quote_source: Option<String>,
 }
 
 /// task-read：打开任务当前 Attempt 的会话，拿头部和一页事件。
@@ -1789,7 +1821,7 @@ pub struct ActionActResponse {
 ///
 /// 连接上的旧价格乘数后来整条删掉，不升版本：两个请求里的这个字段本来就可省略，旧页再发
 /// 由 serde 当未知字段忽略；响应里少了它，旧页读到 undefined 也不会拿去定价。
-pub const PROTOCOL_VERSION: u64 = 28;
+pub const PROTOCOL_VERSION: u64 = 29;
 
 /// 日历读取：不带 appointmentId 读全部；带 week 时额外给那周的计划点。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]

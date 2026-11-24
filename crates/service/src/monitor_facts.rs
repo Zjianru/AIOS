@@ -815,6 +815,9 @@ mod tests {
             let task = store
                 .create_task(
                     tasks::NewTask {
+                        quote: None,
+                        quote_source: None,
+                        kind_note: None,
                         project_id: None,
                         cwd_source: None,
                         title: format!("任务 {index}"),
@@ -1203,6 +1206,9 @@ mod t075_usage_tests {
         let task = store
             .create_task(
                 tasks::NewTask {
+                    quote: None,
+                    quote_source: None,
+                    kind_note: None,
                     project_id: None,
                     cwd_source: None,
                     title: "D78 标记文件".to_owned(),
@@ -1312,6 +1318,9 @@ mod t075_usage_tests {
         let task = store
             .create_task(
                 tasks::NewTask {
+                    quote: None,
+                    quote_source: None,
+                    kind_note: None,
                     project_id: None,
                     cwd_source: None,
                     title: "异常事实任务".to_owned(),

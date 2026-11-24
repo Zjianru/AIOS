@@ -7,6 +7,9 @@ use service::{
 
 fn draft(title: &str) -> NewTask {
     NewTask {
+        quote: None,
+        quote_source: None,
+        kind_note: None,
         project_id: None,
         cwd_source: None,
         title: title.to_owned(),
@@ -191,6 +194,7 @@ async fn task_accept_reports_a_missing_project_default_directory() {
         "task_accept",
         &serde_json::json!({
             "title": "缺目录",
+            "quote": "改一下",
             "requirement": "看看目录",
             "dod": "有结果",
             "project": project.id,
@@ -258,6 +262,7 @@ async fn task_graph_propose_carries_the_project_to_every_child() {
         "task_graph_propose",
         &serde_json::json!({
             "title": "图",
+            "quote": "拆两步",
             "requirement": "两步",
             "dod": "都有结果",
             "project": project.id,
@@ -289,6 +294,17 @@ async fn task_graph_propose_carries_the_project_to_every_child() {
     for child in children {
         assert_eq!(child.project_id.as_deref(), Some(project.id.as_str()));
         assert_eq!(child.cwd, std::fs::canonicalize(&project_dir).unwrap());
+        assert_eq!(child.versions[0].quote.as_deref(), Some("拆两步"));
+        let header = task_read_header(&fixture.host, &child.id).await;
+        assert_eq!(header.requirement_versions.len(), 1);
+        assert_eq!(
+            header.requirement_versions[0].quote.as_deref(),
+            Some("拆两步")
+        );
+        assert_eq!(
+            header.requirement_versions[0].inherited_from.as_deref(),
+            Some(root.title.as_str())
+        );
     }
 }
 

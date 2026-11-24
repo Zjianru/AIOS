@@ -499,6 +499,15 @@ pub struct RequirementVersion {
     pub write_scope: Option<PathBuf>,
     pub at: i64,
     pub source: VersionSource,
+    /// 这一版对应的用户原话；每版只存那一次，旧行按 None 读。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quote: Option<String>,
+    /// 原话出处：用户消息（会话+seq）或到点约定；页面不显示，诊断可查。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quote_source: Option<QuoteSource>,
+    /// Kind 的补充；不算用户要求。旧行/没有补充为 None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind_note: Option<String>,
     /// T054.2：这一版要求（及 DoD）的全文；旧任务行按 None 读，第一次改要求时回填。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requirement: Option<String>,
@@ -507,6 +516,16 @@ pub struct RequirementVersion {
     /// T056.2：用户原话里的硬要求（跟着要求版本；旧行按空）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub constraints: Vec<String>,
+}
+
+/// 用户原话的出处。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum QuoteSource {
+    /// 发起 Kind 会话里的用户消息。
+    UserMessage { conversation: String, seq: u64 },
+    /// 到点约定创建时存的原话。
+    Appointment { appointment_id: String },
 }
 
 /// 一条要求版本是怎么来的。
@@ -757,6 +776,12 @@ pub struct NewTask {
     pub conversation: ConversationId,
     pub model: ModelChoice,
     pub tools: Vec<String>,
+    /// 第一版要求的用户原话；由 task_accept/task_graph_propose 必填并校验。
+    pub quote: Option<String>,
+    /// 原话出处；旧任务/到点任务可能没有。
+    pub quote_source: Option<QuoteSource>,
+    /// Kind 的补充；不算用户要求。
+    pub kind_note: Option<String>,
     /// 所属项目；建任务时和 cwd_source 同一次写入。
     pub project_id: Option<String>,
     /// 目录来源：user / project / conversation。

@@ -1,10 +1,10 @@
 use super::*;
 
 #[test]
-fn protocol_version_is_28() {
+fn protocol_version_is_29() {
     assert_eq!(
-        PROTOCOL_VERSION, 28,
-        "记忆项目范围和条目项目字段，协议升到 28"
+        PROTOCOL_VERSION, 29,
+        "任务要求版本带用户原话/补充/继承来源，协议升到 29"
     );
 }
 

@@ -224,6 +224,9 @@ mod tests {
 
     fn draft() -> tasks::NewTask {
         tasks::NewTask {
+            quote: None,
+            quote_source: None,
+            kind_note: None,
             project_id: None,
             cwd_source: None,
             title: "要取消的任务".to_owned(),

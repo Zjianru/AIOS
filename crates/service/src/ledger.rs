@@ -210,38 +210,23 @@ pub(crate) fn report_state_word(state: ReportState) -> &'static str {
     }
 }
 
-/// T056.2：约束必须在发起会话的某条用户消息里原样出现（去首尾空白后），否则整次拒。
-pub(crate) fn verify_user_words(
+/// 在发起会话里找用户原话，返回包含它的最近一条用户消息（原文 + seq）。
+///
+/// 只认 is_typed_by_user；约束（D91）和任务 quote 共用这一处口径，不另写 normalize。
+pub(crate) fn find_user_words(
     data_dir: &Path,
     conversation: &str,
-    constraints: &[String],
-) -> Result<(), String> {
-    let wanted: Vec<&str> = constraints
-        .iter()
-        .map(|constraint| constraint.trim())
-        .filter(|constraint| !constraint.is_empty())
-        .collect();
+    wanted: &str,
+) -> Result<Option<(String, u64)>, String> {
+    let wanted = wanted.trim();
     if wanted.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
-    let messages = user_message_texts(data_dir, conversation)?;
-    for constraint in wanted {
-        if !messages.iter().any(|message| message.contains(constraint)) {
-            return Err(format!(
-                "约束要用用户原话：『{constraint}』不在用户的消息里"
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// 发起会话里用户真正打过的字；程序注入的 relay/说明消息排除。
-fn user_message_texts(data_dir: &Path, conversation: &str) -> Result<Vec<String>, String> {
     let session_id = session::SessionId::parse(conversation)
         .map_err(|error| format!("发起会话 id 不合法：{error}"))?;
     let store = session::SessionStore::open_read_only(data_dir, &session_id)
         .map_err(|error| format!("拿不到发起会话的消息：{error}"))?;
-    let mut texts = Vec::new();
+    let mut found = None;
     for event in store.events() {
         let EventKind::UserMessage { message, .. } = &event.kind else {
             continue;
@@ -258,11 +243,48 @@ fn user_message_texts(data_dir: &Path, conversation: &str) -> Result<Vec<String>
                 "
 ",
             );
-        if !text.trim().is_empty() {
-            texts.push(text);
+        if text.contains(wanted) {
+            found = Some((text, event.seq));
         }
     }
-    Ok(texts)
+    Ok(found)
+}
+
+/// 约束必须在发起会话的某条用户消息里原样出现（去首尾空白后），否则整次拒。
+pub(crate) fn verify_user_words(
+    data_dir: &Path,
+    conversation: &str,
+    constraints: &[String],
+) -> Result<(), String> {
+    for constraint in constraints.iter().map(|constraint| constraint.trim()) {
+        if constraint.is_empty() {
+            continue;
+        }
+        if find_user_words(data_dir, conversation, constraint)?.is_none() {
+            return Err(format!(
+                "约束要用用户原话：『{constraint}』不在用户的消息里"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// 核对并定位任务原话；返回它所在的最近一条用户消息 seq。
+pub(crate) fn verify_task_quote(
+    data_dir: &Path,
+    conversation: &str,
+    quote: &str,
+) -> Result<tasks::QuoteSource, String> {
+    let quote = quote.trim();
+    let Some((_text, seq)) = find_user_words(data_dir, conversation, quote)? else {
+        return Err(format!(
+            "派任务要用用户原话：『{quote}』不在你的消息里；照原样引用，或者问用户。"
+        ));
+    };
+    Ok(tasks::QuoteSource::UserMessage {
+        conversation: conversation.to_owned(),
+        seq,
+    })
 }
 
 /// T057 补审：只认「用户真的在输入框打的字」——User 且 rpc_id 是输入框 UUID（不含冒号）。
@@ -290,6 +312,9 @@ mod ledger_tests {
 
     fn draft(title: &str) -> NewTask {
         NewTask {
+            quote: None,
+            quote_source: None,
+            kind_note: None,
             project_id: None,
             cwd_source: None,
             title: title.to_owned(),

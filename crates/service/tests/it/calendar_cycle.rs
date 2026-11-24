@@ -30,6 +30,9 @@ fn create_task(data: &std::path::Path) -> tasks::TaskId {
     let task = tasks
         .create_task(
             tasks::NewTask {
+                quote: None,
+                quote_source: None,
+                kind_note: None,
                 project_id: None,
                 cwd_source: None,
                 title: "循环任务".to_owned(),

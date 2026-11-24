@@ -40,6 +40,9 @@ fn open_runtime(data_dir: &std::path::Path) -> Arc<TaskRuntime> {
 
 fn draft(title: &str) -> NewTask {
     NewTask {
+        quote: None,
+        quote_source: None,
+        kind_note: None,
         project_id: None,
         cwd_source: None,
         title: title.to_owned(),
@@ -635,6 +638,9 @@ async fn gate_check_again_refuses_four_other_states() {
     let task = store
         .create_task(
             NewTask {
+                quote: None,
+                quote_source: None,
+                kind_note: None,
                 project_id: None,
                 cwd_source: None,
                 title: "普通任务".to_owned(),

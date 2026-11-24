@@ -21,6 +21,7 @@ async fn accept_freezes_the_task_and_the_launch_uses_it() {
 
     let args = serde_json::json!({
         "title": "查一下 Exa 怎么用",
+        "quote": "查一下 Exa 怎么用",
         "requirement": "读官方文档，给出能操作的例子",
         "dod": "给出例子和出处"
     })
@@ -294,6 +295,7 @@ async fn the_tasks_skill_is_bundled_for_kind_only() {
     fixture.router.push_thin(crate::common::text_sse("查完"));
     let args = serde_json::json!({
         "title": "查一下",
+        "quote": "查一下",
         "requirement": "找答案",
         "dod": "有答案"
     })
@@ -1026,6 +1028,7 @@ async fn task_accept_rejects_a_constraint_the_user_never_said() {
     let fixture = Fixture::new().await;
     let args = serde_json::json!({
         "title": "伪造约束",
+        "quote": "改一下",
         "requirement": "找答案",
         "dod": "有答案",
         "constraints": ["用户没说过这句"],
@@ -1131,6 +1134,9 @@ async fn task_writes_reach_the_root_ws_changed_channel() {
         .store()
         .create_task(
             NewTask {
+                quote: None,
+                quote_source: None,
+                kind_note: None,
                 project_id: None,
                 cwd_source: None,
                 title: "查一下 changed".to_owned(),
@@ -1231,4 +1237,149 @@ async fn monitor_snapshot_round_trips_through_the_root_host() {
         .await
         .unwrap_err();
     assert!(error.to_string().contains("Kind 不诊断"), "{error}");
+}
+
+#[tokio::test]
+async fn task_accept_quote_is_verified_and_stored_on_the_first_version() {
+    let fixture = Fixture::new().await;
+    let args = serde_json::json!({
+        "title": "带原话",
+        "quote": "改一下",
+        "kind_note": "Kind 的补充",
+        "requirement": "Kind 的理解",
+        "dod": "有结果",
+    });
+    fixture.router.push_kind(crate::common::tool_use_sse(
+        0,
+        "call-quote",
+        "task_accept",
+        &args.to_string(),
+    ));
+    fixture.router.push_kind(crate::common::text_sse("已派出"));
+    fixture
+        .host
+        .dispatch(Call::Send(send(&fixture.host, "kind-quote", "改一下")))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&fixture.host, fixture.data(), 1).await;
+    let store = tasks_store(fixture.data());
+    let task = one_task(&store);
+    let version = &task.versions[0];
+    assert_eq!(version.quote.as_deref(), Some("改一下"));
+    assert_eq!(version.kind_note.as_deref(), Some("Kind 的补充"));
+    assert!(matches!(
+        version.quote_source,
+        Some(tasks::QuoteSource::UserMessage { ref conversation, seq }) if conversation == task.conversation.as_str() && seq > 0
+    ));
+    let header = task_read_header(&fixture.host, &task.id).await;
+    assert_eq!(header.requirement_versions.len(), 1);
+    assert_eq!(header.requirement_versions[0].version, 1);
+    assert_eq!(
+        header.requirement_versions[0].quote.as_deref(),
+        Some("改一下")
+    );
+    assert_eq!(
+        header.requirement_versions[0].kind_note.as_deref(),
+        Some("Kind 的补充")
+    );
+    assert!(header.requirement_versions[0].inherited_from.is_none());
+}
+
+#[tokio::test]
+async fn task_accept_rejects_a_quote_the_user_never_said() {
+    let fixture = Fixture::new().await;
+    let args = serde_json::json!({
+        "title": "伪造原话",
+        "quote": "用户没说过这句",
+        "requirement": "Kind 的理解",
+        "dod": "有结果",
+    });
+    fixture.router.push_kind(crate::common::tool_use_sse(
+        0,
+        "call-bad-quote",
+        "task_accept",
+        &args.to_string(),
+    ));
+    fixture
+        .router
+        .push_kind(crate::common::text_sse("没派出去"));
+    fixture
+        .host
+        .dispatch(Call::Send(send(&fixture.host, "kind-bad-quote", "改一下")))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&fixture.host, fixture.data(), 1).await;
+    assert!(tasks_store(fixture.data()).task_ids().unwrap().is_empty());
+    let events = crate::common::read_root_events(fixture.data());
+    let text = serde_json::to_string(&events).unwrap_or_default();
+    assert!(
+        text.contains(
+            "派任务要用用户原话：『用户没说过这句』不在你的消息里；照原样引用，或者问用户。"
+        ),
+        "{text}"
+    );
+}
+
+#[tokio::test]
+async fn task_accept_requires_a_quote() {
+    let fixture = Fixture::new().await;
+    let args = serde_json::json!({
+        "title": "没有原话",
+        "requirement": "Kind 的理解",
+        "dod": "有结果",
+    });
+    fixture.router.push_kind(crate::common::tool_use_sse(
+        0,
+        "call-no-quote",
+        "task_accept",
+        &args.to_string(),
+    ));
+    fixture
+        .router
+        .push_kind(crate::common::text_sse("没派出去"));
+    fixture
+        .host
+        .dispatch(Call::Send(send(&fixture.host, "kind-no-quote", "改一下")))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&fixture.host, fixture.data(), 1).await;
+    assert!(tasks_store(fixture.data()).task_ids().unwrap().is_empty());
+    let text =
+        serde_json::to_string(&crate::common::read_root_events(fixture.data())).unwrap_or_default();
+    assert!(text.contains("quote 不能为空"), "{text}");
+}
+
+#[tokio::test]
+async fn task_graph_propose_requires_a_root_quote() {
+    let fixture = Fixture::new().await;
+    let args = serde_json::json!({
+        "title": "没有原话的图",
+        "requirement": "Kind 的理解",
+        "dod": "有结果",
+        "subtasks": [
+            {"title": "一", "requirement": "第一步", "dod": "有"},
+            {"title": "二", "requirement": "第二步", "dod": "有", "after": [0]}
+        ]
+    });
+    fixture.router.push_kind(crate::common::tool_use_sse(
+        0,
+        "call-graph-no-quote",
+        "task_graph_propose",
+        &args.to_string(),
+    ));
+    fixture.router.push_kind(crate::common::text_sse("没提"));
+    fixture
+        .host
+        .dispatch(Call::Send(send(
+            &fixture.host,
+            "kind-graph-no-quote",
+            "拆两步",
+        )))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&fixture.host, fixture.data(), 1).await;
+    assert!(tasks_store(fixture.data()).task_ids().unwrap().is_empty());
+    let text =
+        serde_json::to_string(&crate::common::read_root_events(fixture.data())).unwrap_or_default();
+    assert!(text.contains("quote 不能为空"), "{text}");
 }

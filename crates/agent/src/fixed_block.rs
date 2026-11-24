@@ -42,11 +42,11 @@ fn timezone_name() -> String {
 }
 
 fn now_line() -> String {
-    format!(
+    crate::instructions::frame_system_reminder(&format!(
         "现在：{}（{}）",
         chrono::Local::now().format("%Y-%m-%d %H:%M"),
         timezone_name()
-    )
+    ))
 }
 
 fn now_millis() -> i64 {
@@ -203,11 +203,11 @@ impl FixedBlockCapability {
             return Ok(HookOutcome::Continue);
         }
         let message = Message::user_text_with_request_id(
-            format!(
+            crate::instructions::frame_system_reminder(&format!(
                 "AIOS 固定块（内容有变化时只补这一条；不是新任务）：
 {}",
                 self.state.text
-            ),
+            )),
             RPC_PREFIX.to_owned() + &self.state.identity,
         );
         host.append(&[EventKind::UserMessage {

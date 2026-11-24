@@ -231,6 +231,9 @@ async fn a_task_cc_stays_later_when_its_kind_conversation_is_not_the_root() {
     let task = store
         .create_task(
             tasks::NewTask {
+                quote: None,
+                quote_source: None,
+                kind_note: None,
                 project_id: None,
                 cwd_source: None,
                 title: "另一个对话派的任务".to_owned(),
@@ -704,6 +707,9 @@ async fn task_delivery_reads_the_same_record_and_refuses_unknown_tasks() {
     let task = store
         .create_task(
             NewTask {
+                quote: None,
+                quote_source: None,
+                kind_note: None,
                 project_id: None,
                 cwd_source: None,
                 title: "查一下".to_owned(),

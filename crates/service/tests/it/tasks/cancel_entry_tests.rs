@@ -5,6 +5,9 @@ use super::*;
 
 fn draft(title: &str) -> NewTask {
     NewTask {
+        quote: None,
+        quote_source: None,
+        kind_note: None,
         project_id: None,
         cwd_source: None,
         title: title.to_owned(),
@@ -100,6 +103,9 @@ async fn cancel_tasks_act_reports_actual_downstream_ids() {
     fn subtask(cwd: &std::path::Path, title: &str, after: Vec<usize>) -> tasks::NewSubtask {
         tasks::NewSubtask {
             task: NewTask {
+                quote: None,
+                quote_source: None,
+                kind_note: None,
                 project_id: None,
                 cwd_source: None,
                 title: title.to_owned(),
@@ -203,8 +209,17 @@ async fn root_user_turn_end_appends_local_now_message() {
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
     }
     let text = found.expect("用户回合结束后要有「现在」程序消息");
-    assert!(text.starts_with("现在："), "实际：{text}");
-    assert!(text.contains('（') && text.ends_with('）'), "实际：{text}");
+    assert!(
+        text.starts_with(
+            "<system-reminder>
+现在："
+        ),
+        "实际：{text}"
+    );
+    assert!(
+        text.contains('（') && text.ends_with("</system-reminder>"),
+        "实际：{text}"
+    );
     assert!(
         text.contains(&chrono::Local::now().format("%Y").to_string()),
         "要写本机年份，不是零值时间：{text}"

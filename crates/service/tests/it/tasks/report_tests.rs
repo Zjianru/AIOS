@@ -23,6 +23,9 @@ async fn task_status_returns_the_full_report_and_attempts() {
     let task = store
         .create_task(
             tasks::NewTask {
+                quote: None,
+                quote_source: None,
+                kind_note: None,
                 project_id: None,
                 cwd_source: None,
                 title: "查一下".to_owned(),
@@ -102,6 +105,7 @@ async fn a_missing_credential_opens_no_task_session_and_relays_what_is_missing()
 
     let args = serde_json::json!({
         "title": "查一下",
+        "quote": "查一下",
         "requirement": "找答案",
         "dod": "有答案"
     })
@@ -566,6 +570,9 @@ async fn a_relay_for_another_kind_conversation_stays_later() {
     fixture.router.push_thin(crate::common::text_sse("done"));
     let store = tasks_store(fixture.data());
     let draft = tasks::NewTask {
+        quote: None,
+        quote_source: None,
+        kind_note: None,
         project_id: None,
         cwd_source: None,
         title: "另一个对话派的任务".to_owned(),

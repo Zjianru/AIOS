@@ -36,7 +36,7 @@ pub use task::{
     CancellationSource, Confirmation, ContinueCause, GateCandidate, GateCheck, GateCheckOutcome,
     GateCommand, GateConclusion, GateVerdict, Handoff, Input, InputAttachment, InputSource,
     MilestoneGate, MissingItem, ModelChoice, Need, NewGraph, NewInput, NewReport, NewSubtask,
-    NewTask, ProgramGateOutcome, Report, ReportOrigin, ReportState, RequirementVersion, RoundEnd,
-    Run, SayOutcome, Task, TaskCancellation, TaskPolicy, VerdictSource, VersionSource, Worktree,
-    validate_gate_commands,
+    NewTask, ProgramGateOutcome, QuoteSource, Report, ReportOrigin, ReportState,
+    RequirementVersion, RoundEnd, Run, SayOutcome, Task, TaskCancellation, TaskPolicy,
+    VerdictSource, VersionSource, Worktree, validate_gate_commands,
 };

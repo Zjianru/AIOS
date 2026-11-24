@@ -36,6 +36,9 @@ fn due_appointment(data: &Path, title: &str, cycle: Option<CycleSpec>) -> calend
 
 fn draft(data: &Path, title: &str) -> NewTask {
     NewTask {
+        quote: None,
+        quote_source: None,
+        kind_note: None,
         project_id: None,
         cwd_source: None,
         title: title.to_owned(),
@@ -243,6 +246,7 @@ async fn wake_turn_task_accept_marks_dispatched_but_user_turn_does_not() {
     due_appointment(fixture.data(), "派调查", None);
     let args = serde_json::json!({
         "title": "调查 elkjs",
+        "quote": "一分钟后提醒我喝水",
         "requirement": "看新版",
         "dod": "有结论"
     });
@@ -270,6 +274,10 @@ async fn wake_turn_task_accept_marks_dispatched_but_user_turn_does_not() {
         .into_iter()
         .find(|task| task.title == "调查 elkjs")
         .unwrap();
+    assert!(matches!(
+        dispatched.versions[0].quote_source,
+        Some(tasks::QuoteSource::Appointment { .. })
+    ));
     assert_eq!(
         dispatched.origin.as_ref().map(|origin| origin.role),
         Some(tasks::AppointmentRole::Dispatched)
@@ -290,6 +298,7 @@ async fn wake_turn_graph_propose_marks_root_and_children_dispatched() {
     due_appointment(fixture.data(), "图派出", None);
     let graph = serde_json::json!({
         "title": "调查图",
+        "quote": "一分钟后提醒我喝水",
         "requirement": "两步查",
         "dod": "有结论",
         "subtasks": [

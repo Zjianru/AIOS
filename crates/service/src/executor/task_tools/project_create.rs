@@ -38,7 +38,7 @@ impl Tool for ProjectCreateTool {
     }
 
     fn description(&self) -> &str {
-        "Create a project directly when the user explicitly asks to create one (建个项目/新建项目/创建项目 with a name). Call this immediately in the same turn, before a greeting or any clarifying question, when the user already gave name and goal; do not propose a confirmation card first. Returns the project id, name and default directory. If the name already exists, returns an error and creates nothing. Do not use this for a project you merely inferred; propose create_project on a confirmation card instead."
+        "Create a project directly when the user explicitly asks to create one. Returns the project id, name and default directory. If the name already exists, returns an error and creates nothing. Do not use this for a project you merely inferred; propose create_project on a confirmation card instead."
     }
 
     fn parameters(&self) -> &Value {

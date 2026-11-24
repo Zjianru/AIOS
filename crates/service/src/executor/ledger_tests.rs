@@ -59,6 +59,9 @@ fn runtime_store_task(
     store
         .create_task_with_constraints(
             tasks::NewTask {
+                quote: Some("账本注入原话".to_owned()),
+                quote_source: None,
+                kind_note: Some("Kind 的补充原话".to_owned()),
                 project_id: None,
                 cwd_source: None,
                 title: "账本注入".to_owned(),
@@ -174,6 +177,8 @@ fn accept_and_propose_verify_constraints_against_the_originating_conversation() 
             &context,
             "call-ok",
             TaskAcceptArgs {
+                quote: "改一下".to_owned(),
+                kind_note: None,
                 title: "带约束".to_owned(),
                 requirement: "把事做完".to_owned(),
                 dod: "有结果".to_owned(),
@@ -193,6 +198,8 @@ fn accept_and_propose_verify_constraints_against_the_originating_conversation() 
             &context,
             "call-bad",
             TaskAcceptArgs {
+                quote: "改一下".to_owned(),
+                kind_note: None,
                 title: "伪造".to_owned(),
                 requirement: "把事做完".to_owned(),
                 dod: "有结果".to_owned(),
@@ -211,6 +218,8 @@ fn accept_and_propose_verify_constraints_against_the_originating_conversation() 
     );
 
     let graph = TaskGraphArgs {
+        quote: "改一下".to_owned(),
+        kind_note: None,
         title: "图".to_owned(),
         requirement: "两步".to_owned(),
         dod: "都有结果".to_owned(),
@@ -413,4 +422,55 @@ fn compaction_fixed_block_carries_current_assignment_and_ledger_even_when_empty(
             .compaction_task_block(&task.id, tasks::AttemptId(attempt.0 + 1000))
             .is_none()
     );
+}
+
+#[tokio::test]
+async fn task_status_reports_the_user_quote_by_version() {
+    let (directory, runtime) = open_runtime();
+    let task = runtime_store_task(directory.path(), Vec::new(), false);
+    let text = runtime
+        .status_text(task.id.as_str())
+        .await
+        .expect("任务状态");
+    assert!(text.contains("用户原话（第 1 版）：账本注入原话"), "{text}");
+}
+
+#[test]
+fn assignment_puts_user_quotes_first_then_kind_material_then_constraints() {
+    let (directory, runtime) = open_runtime();
+    let task = runtime_store_task(directory.path(), vec!["账本注入原话".to_owned()], false);
+    let assignment = runtime.assignment_text(&task, false);
+    let quote_at = assignment.find("user_quotes").expect("原话段");
+    let understanding_at = assignment.find("requirement").expect("理解段");
+    let note_at = assignment.find("kind_note").expect("补充段");
+    let constraints_at = assignment.find("constraints").expect("约束段");
+    let id_at = assignment.find("task_id").expect("任务 id");
+    assert!(quote_at < understanding_at, "{assignment}");
+    assert!(understanding_at < note_at, "{assignment}");
+    assert!(note_at < constraints_at, "{assignment}");
+    assert!(constraints_at < id_at, "{assignment}");
+    assert!(assignment.contains("用户原话"), "{assignment}");
+    assert!(
+        assignment.contains("Kind 的理解，不是用户原话"),
+        "{assignment}"
+    );
+    assert!(
+        assignment.contains("Kind 的补充，不算用户要求"),
+        "{assignment}"
+    );
+}
+
+#[test]
+fn old_task_without_quote_keeps_the_plain_assignment() {
+    let (directory, runtime) = open_runtime();
+    let mut task = runtime_store_task(directory.path(), Vec::new(), false);
+    for version in &mut task.versions {
+        version.quote = None;
+        version.kind_note = None;
+    }
+    let assignment = runtime.assignment_text(&task, false);
+    assert!(assignment.starts_with("{\"task_id\":"), "{assignment}");
+    assert!(!assignment.contains("user_quotes"), "{assignment}");
+    assert!(!assignment.contains("Kind 的理解"), "{assignment}");
+    assert!(!assignment.contains("Kind 的补充"), "{assignment}");
 }

@@ -29,6 +29,9 @@ fn task_cwd() -> (tempfile::TempDir, PathBuf) {
 
 fn draft(cwd: &Path) -> NewTask {
     NewTask {
+        quote: None,
+        quote_source: None,
+        kind_note: None,
         project_id: None,
         cwd_source: None,
         title: "改一下判重".to_owned(),
@@ -81,6 +84,9 @@ fn task_accept_freezes_the_write_scope_bash_and_worktree() {
     assert_eq!(
         task.versions,
         vec![RequirementVersion {
+            quote: None,
+            quote_source: None,
+            kind_note: None,
             write_scope: Some(scope),
             at: T0,
             source: VersionSource::TaskAccept,
@@ -104,6 +110,9 @@ fn a_task_without_a_scope_is_read_only_and_gets_a_first_version() {
     assert_eq!(
         task.versions,
         vec![RequirementVersion {
+            quote: None,
+            quote_source: None,
+            kind_note: None,
             write_scope: None,
             at: T0,
             source: VersionSource::TaskAccept,
@@ -177,6 +186,9 @@ fn task_update_appends_a_requirement_version_and_moves_the_scope() {
         updated.versions,
         vec![
             RequirementVersion {
+                quote: None,
+                quote_source: None,
+                kind_note: None,
                 write_scope: Some(cwd.join("notes")),
                 at: T0,
                 source: VersionSource::TaskAccept,
@@ -185,6 +197,9 @@ fn task_update_appends_a_requirement_version_and_moves_the_scope() {
                 constraints: Vec::new(),
             },
             RequirementVersion {
+                quote: None,
+                quote_source: None,
+                kind_note: None,
                 write_scope: Some(cwd.join("rank")),
                 at: T0 + 1,
                 source: VersionSource::UserAgreed,

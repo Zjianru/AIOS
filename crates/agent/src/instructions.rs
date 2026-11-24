@@ -652,6 +652,10 @@ fn truncate_utf8(value: &str, max_bytes: usize) -> String {
     value[..end].to_owned()
 }
 
+pub(crate) fn frame_system_reminder(body: &str) -> String {
+    format!("{FRAME_OPEN}\n{}\n{FRAME_CLOSE}", escape_frame_body(body))
+}
+
 fn escape_frame_body(body: &str) -> String {
     body.replace(FRAME_CLOSE, FRAME_CLOSE_ESCAPED)
 }

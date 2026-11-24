@@ -20,6 +20,9 @@ fn create(store: &Store) -> Task {
     store
         .create_task(
             NewTask {
+                quote: None,
+                quote_source: None,
+                kind_note: None,
                 project_id: None,
                 cwd_source: None,
                 title: "查一下 exa 怎么用".to_owned(),

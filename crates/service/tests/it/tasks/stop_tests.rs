@@ -138,6 +138,7 @@ async fn stopping_a_running_task_persists_the_stop_before_cancelling_and_relays_
 
     let args = serde_json::json!({
         "title": "查一下",
+        "quote": "查一下",
         "requirement": "找答案",
         "dod": "有答案"
     })
@@ -2123,7 +2124,7 @@ async fn confirming_an_interrupted_worktree_task_resumes_in_the_same_worktree() 
         &router,
         data.path(),
         "kind-a",
-        "派一个任务",
+        "改一下",
         1,
         vec![
             crate::common::tool_use_sse(
@@ -2441,6 +2442,9 @@ async fn update_gate_commands_act_stops_a_running_gate_then_reruns_the_new_comma
     runtime.set_pump_paused(true);
     let store = tasks_store(fixture.data());
     let draft = |title: &str| NewTask {
+        quote: None,
+        quote_source: None,
+        kind_note: None,
         project_id: None,
         cwd_source: None,
         title: title.to_owned(),

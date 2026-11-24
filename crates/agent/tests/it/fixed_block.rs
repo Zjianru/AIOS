@@ -197,6 +197,66 @@ async fn now_message_follows_this_turns_user_message_in_the_model_request() {
 }
 
 #[tokio::test]
+async fn first_round_only_user_words_are_outside_system_reminder() {
+    use std::sync::{Arc, Mutex};
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(SequenceResponder::new(vec![sse(FINAL_TEXT_SSE.to_owned())]))
+        .mount(&server)
+        .await;
+    let data = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let store = SessionStore::create(data.path(), project.path()).unwrap();
+    let id = store.id().clone();
+    drop(store);
+    let deps = || Deps {
+        model: model::DeepSeek::with_credentials(model_config(&server.uri()), test_credential())
+            .unwrap(),
+        tools: tools::ToolSet::builtin(),
+        store: SessionStore::open(data.path(), &id).unwrap(),
+    };
+    let mut config = isolated_config(data.path());
+    config.fixed_block = Some(agent::FixedBlock {
+        text: "固定块正文".to_owned(),
+        now_message: true,
+    });
+    config.dynamic_block = Some(Arc::new(|| {
+        Some(agent::DynamicBlock {
+            title: "项目清单".to_owned(),
+            kind: "projects".to_owned(),
+            text: "项目清单正文".to_owned(),
+        })
+    }));
+    let agent = Agent::create(config, deps()).await.unwrap();
+    agent
+        .send(UserMessage::text("建个项目：框外原话"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    agent.idle().await;
+    let requests = server.received_requests().await.unwrap();
+    let body = String::from_utf8(requests[0].body.clone()).unwrap();
+    let pos = body.find("建个项目：框外原话").expect("用户原话在请求里");
+    let before = &body[..pos];
+    assert!(
+        before.contains("</system-reminder>"),
+        "前面有固定块/项目清单的框：{body}"
+    );
+    assert!(
+        before.rfind("</system-reminder>").unwrap() > before.rfind("<system-reminder>").unwrap(),
+        "用户原话前一块框已经闭合：{body}"
+    );
+    let after = &body[pos..];
+    let next_open = after
+        .find("<system-reminder>")
+        .expect("用户原话后还有「现在」框");
+    assert!(
+        !after[..next_open].contains("</system-reminder>"),
+        "用户原话和下一块之间不能有框结束符：{after}"
+    );
+}
+
+#[tokio::test]
 async fn dynamic_block_appends_only_when_its_text_changes() {
     use std::sync::{Arc, Mutex};
     let server = MockServer::start().await;

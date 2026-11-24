@@ -197,8 +197,10 @@ struct OpenedResume {
 /// Kind 的 task_accept 解析后的参数：建任务并冻结执行策略需要的全部字段。
 struct TaskAcceptArgs {
     title: String,
+    quote: String,
     requirement: String,
     dod: String,
+    kind_note: Option<String>,
     cwd: Option<String>,
     project: Option<String>,
     write_scope: Option<String>,
@@ -226,8 +228,10 @@ struct GraphSubtaskArgs {
 #[derive(Debug)]
 struct TaskGraphArgs {
     title: String,
+    quote: String,
     requirement: String,
     dod: String,
+    kind_note: Option<String>,
     cwd: Option<String>,
     project: Option<String>,
     subtasks: Vec<GraphSubtaskArgs>,
@@ -349,6 +353,17 @@ pub struct TaskRuntime {
     trigger_turns: Mutex<std::collections::HashMap<(String, u64), AppointmentOrigin>>,
     /// 测试钩子：盯变化的 URL 抓取用这个出站环境（wiremock 代理）。
     watch_http: std::sync::Mutex<Option<model::http::HttpEnv>>,
+}
+
+fn quote_source_text(source: &tasks::QuoteSource) -> String {
+    match source {
+        tasks::QuoteSource::UserMessage { conversation, seq } => {
+            format!("用户消息 {conversation} seq {seq}")
+        }
+        tasks::QuoteSource::Appointment { appointment_id } => {
+            format!("约定 {appointment_id}")
+        }
+    }
 }
 
 impl TaskRuntime {
@@ -1044,6 +1059,7 @@ impl TaskRuntime {
                 id: task.id.as_str().to_owned(),
                 title: task.title.clone(),
                 requirement: task.requirement.clone(),
+                requirement_versions: self.requirement_version_views(&task),
                 dod: task.dod.clone(),
                 cwd: task.cwd.to_string_lossy().into_owned(),
                 write_scope: crate::result_cards::write_scope_display(&task),
@@ -1089,6 +1105,31 @@ impl TaskRuntime {
             currency: Some(settings.currency),
             ledger,
         })
+    }
+
+    /// 任务要求版本给页面的只读视图；子任务/门/里程碑标继承来源=总任务标题。
+    fn requirement_version_views(
+        &self,
+        task: &Task,
+    ) -> Vec<crate::protocol::RequirementVersionView> {
+        let inherited_from = task.parent.as_ref().and_then(|parent| {
+            self.store
+                .task(parent)
+                .ok()
+                .flatten()
+                .map(|root| root.title)
+        });
+        task.versions
+            .iter()
+            .enumerate()
+            .map(|(index, version)| crate::protocol::RequirementVersionView {
+                version: u32::try_from(index + 1).unwrap_or(u32::MAX),
+                quote: version.quote.clone(),
+                kind_note: version.kind_note.clone(),
+                inherited_from: inherited_from.clone(),
+                quote_source: version.quote_source.as_ref().map(quote_source_text),
+            })
+            .collect()
     }
 
     /// 任务聚合：读任务库；找不到/读不出来都带可读原因。
@@ -1295,6 +1336,9 @@ impl TaskRuntime {
         let draft = NewTask {
             project_id: None,
             cwd_source: None,
+            quote: None,
+            quote_source: None,
+            kind_note: None,
             title: appointment.title.clone(),
             requirement: appointment.condition.clone(),
             dod: "到点办完".to_owned(),
@@ -2735,7 +2779,7 @@ impl TaskRuntime {
         );
         self.monitor(task.id.clone(), attempt_id, conversation.clone(), events);
         self.notify_changed(&task.id);
-        let assignment = self.assignment_value(&task, false).to_string();
+        let assignment = self.assignment_text(&task, false);
         let sent = host
             .send_message(
                 &format!("assignment:{}", task.id),
@@ -3263,6 +3307,35 @@ impl TaskRuntime {
         ))
     }
 
+    /// 核对任务原话；到点轮的核对范围还包括这条约定存下的原文（当前为 condition）。
+    fn verify_dispatch_quote(
+        &self,
+        conversation: &str,
+        quote: &str,
+    ) -> Result<tasks::QuoteSource, String> {
+        match crate::ledger::verify_task_quote(&self.data_dir, conversation, quote) {
+            Ok(source) => Ok(source),
+            Err(error) => {
+                let Some(origin) = self.dispatched_origin(conversation) else {
+                    return Err(error);
+                };
+                let Some(calendar) = self.calendar.as_ref() else {
+                    return Err(error);
+                };
+                let Ok(Some(appointment)) = calendar.appointment(&origin.appointment_id) else {
+                    return Err(error);
+                };
+                if appointment.condition.trim().contains(quote.trim()) {
+                    Ok(tasks::QuoteSource::Appointment {
+                        appointment_id: origin.appointment_id,
+                    })
+                } else {
+                    Err(error)
+                }
+            }
+        }
+    }
+
     /// Kind 的 task_accept：冻结模型选择与执行策略、落任务和 launch、回任务 id。
     ///
     /// 写入范围为空 = 只读调查（9 件工具）；有范围 = 写任务（加 write、edit）。
@@ -3276,8 +3349,10 @@ impl TaskRuntime {
     ) -> Result<(Task, bool), ToolFailure> {
         let TaskAcceptArgs {
             title,
+            quote,
             requirement,
             dod,
+            kind_note,
             cwd,
             project,
             write_scope,
@@ -3289,6 +3364,9 @@ impl TaskRuntime {
             .ok_or_else(|| ToolFailure::plain("没有会话 id，不能受理任务"))?
             .to_owned();
         crate::ledger::verify_user_words(&self.data_dir, &conversation, &constraints)
+            .map_err(ToolFailure::plain)?;
+        let quote_source = self
+            .verify_dispatch_quote(&conversation, &quote)
             .map_err(ToolFailure::plain)?;
         let (cwd, project, cwd_source) = self.resolve_placement(context, cwd, project)?;
         let selection = self
@@ -3325,6 +3403,9 @@ impl TaskRuntime {
                 effort_wanted: selection.effort_wanted,
             },
             tools,
+            quote: Some(quote),
+            quote_source: Some(quote_source),
+            kind_note,
             project_id: project.clone(),
             cwd_source: cwd_source.clone(),
         };
@@ -3352,8 +3433,10 @@ impl TaskRuntime {
     ) -> Result<(Task, usize), ToolFailure> {
         let TaskGraphArgs {
             title,
+            quote,
             requirement,
             dod,
+            kind_note,
             cwd,
             project,
             subtasks,
@@ -3364,6 +3447,9 @@ impl TaskRuntime {
             .ok_or_else(|| ToolFailure::plain("没有会话 id，不能建任务图"))?
             .to_owned();
         crate::ledger::verify_user_words(&self.data_dir, &conversation, &constraints)
+            .map_err(ToolFailure::plain)?;
+        let quote_source = self
+            .verify_dispatch_quote(&conversation, &quote)
             .map_err(ToolFailure::plain)?;
         let (cwd, project, cwd_source) = self.resolve_placement(context, cwd, project)?;
         let selection = self
@@ -3398,6 +3484,9 @@ impl TaskRuntime {
             };
             frozen_subtasks.push(NewSubtask {
                 task: NewTask {
+                    quote: Some(quote.clone()),
+                    quote_source: Some(quote_source.clone()),
+                    kind_note: kind_note.clone(),
                     title: item.title,
                     requirement: item.requirement,
                     dod: item.dod,
@@ -3427,6 +3516,9 @@ impl TaskRuntime {
                 conversation: ConversationId::new(conversation.as_str()),
                 model,
                 tools: Vec::new(),
+                quote: Some(quote),
+                quote_source: Some(quote_source),
+                kind_note,
                 project_id: project.clone(),
                 cwd_source: cwd_source.clone(),
             },
@@ -3715,6 +3807,11 @@ impl TaskRuntime {
                 format!("阶段：{}", stage_label(stage)),
                 format!("子任务数：{}", children.len()),
             ];
+            for (index, version) in task.versions.iter().enumerate() {
+                if let Some(quote) = version.quote.as_deref() {
+                    lines.push(format!("用户原话（第 {} 版）：{quote}", index + 1));
+                }
+            }
             for (index, child) in children.iter().enumerate() {
                 let child_stage = self
                     .store
@@ -3749,6 +3846,11 @@ impl TaskRuntime {
             format!("阶段：{}", stage_label(stage)),
             format!("Attempt 数：{attempts}"),
         ];
+        for (index, version) in task.versions.iter().enumerate() {
+            if let Some(quote) = version.quote.as_deref() {
+                lines.push(format!("用户原话（第 {} 版）：{quote}", index + 1));
+            }
+        }
         if let Some(report) = &latest {
             lines.push(format!("最近报告（{}）：", report_state_key(report.state)));
             lines.push(report.summary.clone());
@@ -4075,6 +4177,9 @@ mod trigger_guard_tests {
 
     fn draft(cwd: &std::path::Path, title: &str) -> NewTask {
         NewTask {
+            quote: None,
+            quote_source: None,
+            kind_note: None,
             project_id: None,
             cwd_source: None,
             title: title.to_owned(),
@@ -4164,6 +4269,9 @@ mod trigger_tool_tests {
 
     fn trigger_task(directory: &std::path::Path, runtime: &TaskRuntime) -> Task {
         let draft = NewTask {
+            quote: None,
+            quote_source: None,
+            kind_note: None,
             project_id: None,
             cwd_source: None,
             title: "到点任务".to_owned(),

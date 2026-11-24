@@ -10,24 +10,132 @@ impl TaskRuntime {
         include_empty_ledger: bool,
     ) -> serde_json::Value {
         let ledger = self.ledger_section(task);
-        let mut assignment = serde_json::json!({
-            "task_id": task.id.as_str(),
-            "title": task.title,
-            "requirement": task.requirement,
-            "dod": task.dod,
-            "cwd": task.effective_cwd().to_string_lossy(),
+        let inherited_from = task.parent.as_ref().and_then(|parent| {
+            self.store
+                .task(parent)
+                .ok()
+                .flatten()
+                .map(|root| root.title)
         });
+        let quotes: Vec<serde_json::Value> = task
+            .versions
+            .iter()
+            .enumerate()
+            .filter_map(|(index, version)| {
+                version.quote.as_ref().map(|quote| {
+                    serde_json::json!({
+                        "version": index + 1,
+                        "label": "用户原话",
+                        "quote": quote,
+                        "inherited_from": inherited_from,
+                    })
+                })
+            })
+            .collect();
+        let mut assignment = serde_json::Map::new();
+        let has_quotes = !quotes.is_empty();
+        if has_quotes {
+            assignment.insert("user_quotes".to_owned(), serde_json::json!(quotes));
+            assignment.insert(
+                "requirement".to_owned(),
+                serde_json::json!(task.requirement),
+            );
+            assignment.insert(
+                "requirement_label".to_owned(),
+                serde_json::json!("Kind 的理解，不是用户原话"),
+            );
+            if let Some(note) = task
+                .versions
+                .last()
+                .and_then(|version| version.kind_note.as_deref())
+            {
+                assignment.insert("kind_note".to_owned(), serde_json::json!(note));
+                assignment.insert(
+                    "kind_note_label".to_owned(),
+                    serde_json::json!("Kind 的补充，不算用户要求"),
+                );
+            }
+            let constraints = task.current_constraints();
+            if !constraints.is_empty() {
+                assignment.insert("constraints".to_owned(), serde_json::json!(constraints));
+            }
+            assignment.insert("dod".to_owned(), serde_json::json!(task.dod));
+        }
+        assignment.insert("task_id".to_owned(), serde_json::json!(task.id.as_str()));
+        assignment.insert("title".to_owned(), serde_json::json!(task.title));
+        if !has_quotes {
+            assignment.insert(
+                "requirement".to_owned(),
+                serde_json::json!(task.requirement),
+            );
+            assignment.insert("dod".to_owned(), serde_json::json!(task.dod));
+        }
+        assignment.insert(
+            "cwd".to_owned(),
+            serde_json::json!(task.effective_cwd().to_string_lossy()),
+        );
         if let Some(scope) = task.effective_write_scope() {
-            assignment["write_scope"] = serde_json::json!(scope.to_string_lossy());
+            assignment.insert(
+                "write_scope".to_owned(),
+                serde_json::json!(scope.to_string_lossy()),
+            );
         }
         let upstream = self.upstream_results_for(task);
         if !upstream.is_empty() {
-            assignment["upstream_results"] = serde_json::json!(upstream);
+            assignment.insert("upstream_results".to_owned(), serde_json::json!(upstream));
         }
         if !ledger.is_empty() || include_empty_ledger {
-            assignment["ledger"] = serde_json::json!(ledger);
+            assignment.insert("ledger".to_owned(), serde_json::json!(ledger));
         }
-        assignment
+        serde_json::Value::Object(assignment)
+    }
+
+    /// 开跑用的任务书 JSON 文本：顶层字段按票面顺序写，不受 serde_json Map 排序影响。
+    pub(crate) fn assignment_text(&self, task: &Task, include_empty_ledger: bool) -> String {
+        let value = self.assignment_value(task, include_empty_ledger);
+        let Some(map) = value.as_object() else {
+            return value.to_string();
+        };
+        let has_quotes = map.contains_key("user_quotes");
+        let order: &[&str] = if has_quotes {
+            &[
+                "user_quotes",
+                "requirement",
+                "requirement_label",
+                "kind_note",
+                "kind_note_label",
+                "constraints",
+                "dod",
+                "task_id",
+                "title",
+                "cwd",
+                "write_scope",
+                "upstream_results",
+                "ledger",
+            ]
+        } else {
+            &[
+                "task_id",
+                "title",
+                "requirement",
+                "dod",
+                "cwd",
+                "write_scope",
+                "upstream_results",
+                "ledger",
+            ]
+        };
+        let mut fields = Vec::new();
+        for key in order {
+            if let Some(field) = map.get(*key) {
+                fields.push(format!(
+                    "{}:{}",
+                    serde_json::to_string(key).unwrap_or_default(),
+                    field
+                ));
+            }
+        }
+        format!("{{{}}}", fields.join(","))
     }
 
     /// 压缩替换里重带的任务书+账本原文；只有当前 Attempt 有效。
@@ -40,7 +148,7 @@ impl TaskRuntime {
         if task.latest_attempt().map(|attempt| attempt.id) != Some(attempt_id) {
             return None;
         }
-        let assignment = self.assignment_value(&task, true);
+        let assignment = self.assignment_text(&task, true);
         Some(agent::CompactionFixedBlock {
             kind: "task".to_owned(),
             identity: format!("{}:{}:{}", task.id, attempt_id, task.requirement_version()),

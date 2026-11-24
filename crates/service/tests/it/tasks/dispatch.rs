@@ -93,6 +93,7 @@ pub(super) async fn accept_task(
 ) -> Task {
     let args = serde_json::json!({
         "title": title,
+        "quote": "派一个任务",
         "requirement": "找答案",
         "dod": "有答案",
     })
@@ -134,6 +135,7 @@ pub(super) async fn dispatch_task(
 ) -> Task {
     let args = serde_json::json!({
         "title": title,
+        "quote": "派一个任务",
         "requirement": "找答案",
         "dod": "有答案",
     })

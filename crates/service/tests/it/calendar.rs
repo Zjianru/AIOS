@@ -493,6 +493,9 @@ async fn task_facts_watch_sends_then_unchanged() {
     let task_id = {
         let tasks = tasks::Store::open(data.join("tasks.sqlite")).unwrap();
         let draft = tasks::NewTask {
+            quote: None,
+            quote_source: None,
+            kind_note: None,
             project_id: None,
             cwd_source: None,
             title: "盯任务事实".to_owned(),

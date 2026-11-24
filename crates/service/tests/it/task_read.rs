@@ -16,6 +16,9 @@ async fn open_host(data: &Path) -> RootHost {
 
 fn draft(conversation: &ConversationId, cwd: &Path, title: &str) -> NewTask {
     NewTask {
+        quote: None,
+        quote_source: None,
+        kind_note: None,
         project_id: None,
         cwd_source: None,
         title: title.to_owned(),

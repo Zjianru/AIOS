@@ -12,6 +12,9 @@ async fn a_task_frozen_with_the_eight_tool_list_still_launches() {
     let mut tools: Vec<String> = service::THIN_TOOLS.map(str::to_owned).to_vec();
     tools.retain(|name| name != "task_handback" && !name.starts_with("task_ledger_"));
     let draft = tasks::NewTask {
+        quote: None,
+        quote_source: None,
+        kind_note: None,
         project_id: None,
         cwd_source: None,
         title: "升级前受理的任务".to_owned(),
@@ -59,6 +62,7 @@ async fn task_stream_is_live_while_the_task_is_running() {
 
     let args = serde_json::json!({
         "title": "查一下 hello",
+        "quote": "查一下 hello",
         "requirement": "读 hello.txt",
         "dod": "说出内容"
     })
@@ -714,6 +718,9 @@ async fn update_task_requirement_act_rejects_a_never_started_task_without_writin
     let task = store
         .create_task(
             NewTask {
+                quote: None,
+                quote_source: None,
+                kind_note: None,
                 project_id: None,
                 cwd_source: None,
                 title: "没开跑".to_owned(),

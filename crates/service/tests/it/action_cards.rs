@@ -1306,6 +1306,9 @@ fn seed_task(store: &tasks::Store, data_dir: &std::path::Path, title: &str) -> t
     store
         .create_task(
             tasks::NewTask {
+                quote: None,
+                quote_source: None,
+                kind_note: None,
                 project_id: None,
                 cwd_source: None,
                 title: title.to_owned(),
@@ -1425,6 +1428,9 @@ fn update_gate_commands_card_shows_before_after_and_version() {
     let data_dir = directory.path();
     let store = task_store(data_dir);
     let draft = |title: &str| tasks::NewTask {
+        quote: None,
+        quote_source: None,
+        kind_note: None,
         project_id: None,
         cwd_source: None,
         title: title.to_owned(),

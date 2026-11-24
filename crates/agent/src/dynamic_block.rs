@@ -105,11 +105,11 @@ impl Capability for DynamicBlockCapability {
                 return Ok(HookOutcome::Continue);
             }
             let message = Message::user_text_with_request_id(
-                format!(
+                crate::instructions::frame_system_reminder(&format!(
                     "{}
 {}",
                     block.title, block.text
-                ),
+                )),
                 RPC_PREFIX.to_owned() + &identity,
             );
             host.append(&[EventKind::UserMessage {

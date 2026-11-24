@@ -112,7 +112,10 @@ impl Fixture {
     }
 
     /// 用给定的 task_accept 参数受理一个任务（写任务带 write_scope）。
-    async fn accept_args(&self, pause: bool, args: serde_json::Value, spares: usize) -> Task {
+    async fn accept_args(&self, pause: bool, mut args: serde_json::Value, spares: usize) -> Task {
+        if args.get("quote").is_none() {
+            args["quote"] = serde_json::json!("改一下");
+        }
         if pause {
             self.host
                 .task_runtime()
@@ -235,6 +238,7 @@ async fn set_bash(host: &RootHost, bash: bool) {
 fn write_task_args() -> Value {
     serde_json::json!({
         "title": "改一下判重",
+        "quote": "改一下",
         "requirement": "把重复判断改成按 url",
         "dod": "同一个 url 只留一条",
         "write_scope": "target.py"
@@ -345,6 +349,7 @@ fn request_working_directory(body: &str) -> String {
 fn worktree_task_args() -> Value {
     serde_json::json!({
         "title": "改一下判重",
+        "quote": "改一下",
         "requirement": "把重复判断改成按 url",
         "dod": "同一个 url 只留一条",
         "cwd": "sub",
@@ -611,6 +616,9 @@ fn seed_ready_task(
     let task = store
         .create_task(
             NewTask {
+                quote: None,
+                quote_source: None,
+                kind_note: None,
                 project_id: None,
                 cwd_source: None,
                 title: title.to_owned(),

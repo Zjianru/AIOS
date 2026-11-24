@@ -911,6 +911,7 @@ async fn graph_propose_rejects_invalid_graph_with_reason() {
         .set_pump_paused(true);
     let bad = serde_json::json!({
         "title": "有环的图",
+        "quote": "先查再改",
         "requirement": "r",
         "dod": "d",
         "subtasks": [
