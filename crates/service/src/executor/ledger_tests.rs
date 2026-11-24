@@ -474,3 +474,37 @@ fn old_task_without_quote_keeps_the_plain_assignment() {
     assert!(!assignment.contains("Kind 的理解"), "{assignment}");
     assert!(!assignment.contains("Kind 的补充"), "{assignment}");
 }
+#[test]
+fn find_user_words_returns_the_latest_matching_user_message() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut log = session::SessionStore::create(directory.path(), directory.path()).unwrap();
+    let id = log.id().clone();
+    let first = log
+        .append(&[session::EventKind::UserMessage {
+            turn: 1,
+            step: 0,
+            message: model::UserMessage::text_with_request_id(
+                "第一句 target",
+                "11111111-1111-4111-8111-111111111111",
+            )
+            .into_message(),
+        }])
+        .unwrap()[0];
+    let second = log
+        .append(&[session::EventKind::UserMessage {
+            turn: 2,
+            step: 0,
+            message: model::UserMessage::text_with_request_id(
+                "第二句 target",
+                "22222222-2222-4222-8222-222222222222",
+            )
+            .into_message(),
+        }])
+        .unwrap()[0];
+    let (text, seq) = crate::ledger::find_user_words(directory.path(), id.as_str(), "target")
+        .unwrap()
+        .expect("找到原话");
+    assert_eq!(text, "第二句 target");
+    assert_eq!(seq, second);
+    assert!(second > first);
+}
