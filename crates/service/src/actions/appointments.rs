@@ -95,7 +95,19 @@ impl ActionKind for CreateAppointmentAction {
         crate::appointments::canonicalize(raw, now_ms())
     }
 
-    fn describe(&self, details: &Value, _env: &ActionEnv<'_>) -> Result<Vec<CardFact>, String> {
+    fn describe(&self, details: &Value, env: &ActionEnv<'_>) -> Result<Vec<CardFact>, String> {
+        let condition = details
+            .get("condition")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "canonical details.condition 必须是非空字符串".to_owned())?;
+        let conversation = env
+            .conversation
+            .ok_or_else(|| "发起会话还没开，建不了约定".to_owned())?;
+        if crate::ledger::find_user_words(env.data_dir, conversation, condition)?.is_none() {
+            return Err(format!(
+                "约定的条件要用用户原话：『{condition}』不在用户的消息里"
+            ));
+        }
         let rule = details
             .get("rule")
             .and_then(Value::as_str)
@@ -136,19 +148,6 @@ impl ActionKind for CreateAppointmentAction {
             let runtime = host
                 .task_runtime()
                 .ok_or_else(|| "任务库没开，建不了约定".to_owned())?;
-            let condition = details
-                .get("condition")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "canonical details.condition 必须是非空字符串".to_owned())?;
-            let conversation = host
-                .info()
-                .session_id
-                .ok_or_else(|| "发起会话还没开，建不了约定".to_owned())?;
-            if crate::ledger::find_user_words(&host.options.data_dir, &conversation, condition)?
-                .is_none()
-            {
-                return Err(format!("约束要用用户原话：『{condition}』不在用户的消息里"));
-            }
             let source_turn = host.current_root_turn().await;
             let appointment = runtime.calendar_create(details, source_turn)?;
             Ok(ActionOutcome {

@@ -1,6 +1,11 @@
 {
   "routes": [
     {
+      "contains": "\"name\":\"task_report\"",
+      "file": "t054-thin-update.jsonl",
+      "paceMs": 100
+    },
+    {
       "contains": "再改一点",
       "file": "t054-kind-update2.jsonl",
       "paceMs": 50
@@ -14,11 +19,6 @@
       "contains": "\"name\":\"task_accept\"",
       "file": "t054-kind-update-accept.jsonl",
       "paceMs": 50
-    },
-    {
-      "contains": "\"name\":\"task_report\"",
-      "file": "t054-thin-update.jsonl",
-      "paceMs": 100
     }
   ]
 }

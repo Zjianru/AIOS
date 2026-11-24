@@ -34,6 +34,7 @@ import { cn } from '@/lib/utils';
 
 import { BackToKind, TaskMenu } from './parts/menu';
 import { Brief } from './parts/brief';
+import { Said } from './parts/said';
 import { Ledger } from './parts/ledger';
 import { ProgramSection, ProgramState } from './parts/program';
 import { ReviewSection } from './parts/review';
@@ -736,6 +737,7 @@ export function TaskChatScene() {
               <span data-kind="task-attempt">第 {task.attempts} 次 Attempt</span>
             ) : null}
           </div>
+          <Said task={task} />
           {program ? (
             <ProgramSection
               gate={program}

@@ -211,6 +211,7 @@ fn action_env<'a>(data_dir: &'a std::path::Path, identity: &'a std::path::Path) 
         data_dir,
         identity: Some(identity),
         events: &[],
+        conversation: None,
     }
 }
 

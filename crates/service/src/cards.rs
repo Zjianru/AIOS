@@ -514,10 +514,12 @@ impl RootHost {
             .find(|meta| meta.id == option.id)
             .map(|meta| meta.facts.as_slice())
             .unwrap_or(&[]);
+        let session_id = self.info().session_id;
         let env = ActionEnv {
             data_dir: &self.options.data_dir,
             identity: self.options.identity.as_deref(),
             events,
+            conversation: session_id.as_deref(),
         };
         if let Err(reason) = kind.reconcile(&details, facts, &env) {
             return Ok(Some(session::CardDecision {

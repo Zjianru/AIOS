@@ -268,6 +268,7 @@ mod tests {
             data_dir: data.path(),
             identity: None,
             events: &[],
+            conversation: None,
         };
         let facts = action
             .describe(&json!({"task_ids": [task.id.as_str()]}), &env)

@@ -615,6 +615,7 @@ async fn update_task_requirement_action_rejects_queued_running_and_unchanged() {
         data_dir: fixture.data(),
         identity: None,
         events: &events,
+        conversation: None,
     };
     let queued = action.describe(
         &serde_json::json!({"task_id": task.id.as_str(), "quote": "改一下", "requirement": "新要求"}),
@@ -648,6 +649,7 @@ async fn update_task_requirement_action_rejects_queued_running_and_unchanged() {
         data_dir: fixture.data(),
         identity: None,
         events: &events,
+        conversation: None,
     };
     let running = action.describe(
         &serde_json::json!({"task_id": task.id.as_str(), "quote": "改一下", "requirement": "新要求"}),
@@ -680,6 +682,7 @@ async fn update_task_requirement_reconcile_refuses_after_a_change() {
         data_dir: fixture.data(),
         identity: None,
         events: &events,
+        conversation: None,
     };
     let task_id = task.id.as_str().to_owned();
 

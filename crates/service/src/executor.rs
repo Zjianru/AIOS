@@ -3728,7 +3728,7 @@ impl TaskRuntime {
             note.push_str("\n\n");
         }
         note.push_str(&format!(
-            "AIOS：用户在 Kind 对话里把任务要求改成第 {version} 版：\nKind 的理解（不是用户原话）：{requirement}\nDoD：{}\n写集不变；先按新要求在原来的范围里继续；要改写入范围仍走 task_update。",
+            "AIOS：用户在 Kind 对话里把任务要求改成第 {version} 版：\nKind 的理解（不是用户原话）：{requirement}\nDoD：{}",
             task.dod
         ));
         if let Some(note_text) = self.latest_kind_note(task) {

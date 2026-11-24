@@ -91,6 +91,9 @@ test('任务图：先查再写 → 确认卡两行事实 → 确认 → 第一�
     const upstream = pane.locator('[data-kind="upstream-results"]');
     await expect(upstream).toBeVisible({ timeout: 20_000 });
     await expect(upstream).toContainText('先查行数');
+    // D115：子任务的「你说的」继承图根，标签写来自总任务。
+    await expect(pane.locator('[data-kind="task-said"]')).toContainText('先查 notes.md 有几行');
+    await expect(pane.locator('[data-kind="task-said-from"]')).toContainText('来自「查行数再写结果」');
     // T059 F2：上游结果默认折叠，摘要展开后卡内看。
     await upstream.locator('[data-kind="upstream-toggle"]').click();
     await expect(upstream.locator('[data-kind="upstream-scroll"]')).toContainText('判重用的是原始链接');

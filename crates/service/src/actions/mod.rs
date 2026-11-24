@@ -37,6 +37,8 @@ pub struct ActionEnv<'a> {
     pub data_dir: &'a Path,
     pub identity: Option<&'a Path>,
     pub events: &'a [session::Event],
+    /// 发起这次操作/卡片的会话 id；日历条件等要和用户原话对时用。
+    pub conversation: Option<&'a str>,
 }
 
 /// 执行结果：给用户看的一句结果，加上落进 card/decision 的数据。

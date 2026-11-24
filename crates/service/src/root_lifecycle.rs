@@ -973,10 +973,12 @@ impl RootHost {
             .details(&request.details)
             .map_err(crate::error::ServiceError::TaskUnavailable)?;
         let events = self.root_session_events().await;
+        let session_id = self.info().session_id;
         let env = crate::actions::ActionEnv {
             data_dir: &self.options.data_dir,
             identity: self.options.identity.as_deref(),
             events: &events,
+            conversation: session_id.as_deref(),
         };
         let facts = kind
             .describe(&details, &env)

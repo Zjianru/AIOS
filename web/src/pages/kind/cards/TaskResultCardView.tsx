@@ -176,6 +176,25 @@ function ProgramChecks({ program }: { program: NonNullable<TaskResultSlots['prog
   );
 }
 
+/** D115：结果卡上的「你说的」：默认一行，点一下看整句。 */
+function SaidLine({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={() => setOpen((value) => !value)}
+      className={cn(
+        'mt-1 block w-full min-w-0 text-left text-2 leading-5 text-ink-3 transition-colors hover:text-ink-2',
+        !open && 'truncate',
+      )}
+      data-kind="task-said-line"
+      title={open ? undefined : text}
+    >
+      你说的「<span className="text-ink-2">{text}</span>」
+    </button>
+  );
+}
+
 export function TaskResultCardView({ envelope, slots, host }: CardViewProps<TaskResultSlots>) {
   const [accepting, setAccepting] = useState(false);
   const [judging, setJudging] = useState(false);
@@ -256,6 +275,13 @@ export function TaskResultCardView({ envelope, slots, host }: CardViewProps<Task
           <span className="truncate">{slots.status}</span>
         </span>
       </div>
+      {slots.quote && !slots.gate && !slots.programGate ? (
+        <SaidLine
+          text={[slots.quote.text]
+            .concat((slots.laterQuotes ?? []).map((item) => '第 ' + item.version + ' 版：' + item.text))
+            .join(' ／ ')}
+        />
+      ) : null}
       {gate?.state === 'pending_verdict' && gate.guarded && gate.candidate ? (
         <div className="mt-1 text-2 leading-5 text-ink-2" data-kind="gate-candidate">
           核查的是「{gate.guarded.title}」第 {gate.candidate.ordinal} 次交的结果

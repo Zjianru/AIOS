@@ -297,6 +297,30 @@ impl TaskRuntime {
                 body["report_id"] = json!(report.id.as_str());
                 // ：这份报告绑的要求版本（小标题版本 >1 时加「· 第 N 版要求」）。
                 body["requirement_version"] = json!(report.version);
+                // 结果卡上的「你说的」：只给任务自己的卡；子任务/门卡不重复。
+                if task.parent.is_none() && !task.is_gate() && !task.is_program_gate() {
+                    let up_to = usize::try_from(report.version).unwrap_or(usize::MAX);
+                    let quoted: Vec<(usize, &str)> = task
+                        .versions
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, _)| index + 1 <= up_to)
+                        .filter_map(|(index, version)| {
+                            version.quote.as_deref().map(|quote| (index + 1, quote))
+                        })
+                        .collect();
+                    if let Some((_, first)) = quoted.first() {
+                        body["quote"] = json!({ "text": first, "from": Value::Null });
+                        let later: Vec<Value> = quoted
+                            .iter()
+                            .skip(1)
+                            .map(|(version, quote)| json!({ "version": version, "text": quote }))
+                            .collect();
+                        if !later.is_empty() {
+                            body["later_quotes"] = json!(later);
+                        }
+                    }
+                }
                 let request_id = format!("task-report:{}:{}", task.id, report.id);
                 Ok(Some((task, body, request_id)))
             }

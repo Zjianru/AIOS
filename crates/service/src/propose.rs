@@ -88,6 +88,7 @@ impl ProposeActionTool {
             data_dir: &self.data_dir,
             identity: self.identity.as_deref(),
             events: &events,
+            conversation: context.session_id(),
         };
         let registered: Vec<String> = self.actions.names();
         let mut options = Vec::with_capacity(args.options.len());

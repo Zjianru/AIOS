@@ -5,9 +5,11 @@ import { ChevronRight } from 'lucide-react';
 import type { TaskReadHeader } from '@/data/generated/TaskReadHeader';
 import { cn } from '@/lib/utils';
 import { toolsText } from './helpers';
+import { saidOf } from './said';
 
 export function Brief({ task }: { task: TaskReadHeader }) {
   const [open, setOpen] = useState(false);
+  const said = saidOf(task);
   return (
     <div className="mt-2">
       <button
@@ -17,7 +19,7 @@ export function Brief({ task }: { task: TaskReadHeader }) {
         className="flex items-center gap-1 text-2 text-ink-3 transition-colors hover:text-ink-2"
       >
         <ChevronRight className={cn('size-3 transition-transform', open && 'rotate-90')} />
-        任务要求和 DoD
+        {said ? 'Kind 的理解：要求和 DoD' : '任务要求和 DoD'}
       </button>
       {open ? (
         <div
@@ -28,6 +30,15 @@ export function Brief({ task }: { task: TaskReadHeader }) {
           <span className="text-ink-2">{task.requirement}</span>
           <span className="text-ink-3">DoD</span>
           <span className="text-ink-2">{task.dod}</span>
+          {said?.kindNote ? (
+            <>
+              <span className="text-ink-3">Kind 的补充</span>
+              <span className="text-ink-2" data-kind="task-kind-note">
+                {said.kindNote}
+                <span className="text-ink-3"> · 不算你的要求</span>
+              </span>
+            </>
+          ) : null}
           <span className="text-ink-3">模型</span>
           <span className="text-ink-2">{task.model}（派出时定下，不跟着改）</span>
           <span className="text-ink-3">工具</span>

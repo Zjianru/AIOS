@@ -127,6 +127,10 @@ export interface TaskResultFact {
   reportId?: string;
   /** T054：这份报告绑的要求版本（服务 relay 给；旧日志可缺）。 */
   reportVersion?: number;
+  /** D115：这张结果卡对应要求的用户原话；子任务/门卡没有。 */
+  quote?: { text: string; from: string | null };
+  /** D115：改要求时你说的，按版本；没有改过就没有。 */
+  laterQuotes?: { version: number; text: string }[];
   /** T054.2：这条 relay 事件的日志 seq（和 card/decision 的 seq 比先后；旧路径可缺）。 */
   seq?: number;
   /** T054：这张卡现在能点「接受」「要求修改」（由会话事实派生，kindStore 算）。 */
@@ -192,6 +196,10 @@ export interface TaskResultSlots {
   reportId: string;
   /** T054：这份报告的要求版本；旧日志为 0。 */
   reportVersion: number;
+  /** D115：你说的原话；子任务/门卡没有。 */
+  quote?: { text: string; from: string | null };
+  /** D115：改要求时你说的，按版本。 */
+  laterQuotes?: { version: number; text: string }[];
   /** T054：按钮是否出（当前版本最新结果、未接受、有门的已判通过）。 */
   acceptable: boolean;
 }
@@ -254,6 +262,8 @@ export const taskResultSlotsSchema = z.object({
   acceptedAt: z.number().optional(),
   reportId: textSlot,
   reportVersion: z.number().int().catch(0),
+  quote: z.object({ text: textSlot, from: z.string().nullable() }).optional(),
+  laterQuotes: z.array(z.object({ version: z.number().int(), text: textSlot })).optional(),
   acceptable: z.boolean().catch(false),
 });
 
@@ -453,6 +463,8 @@ export function taskResultCardOf(
     ...(acceptedAt === undefined ? {} : { acceptedAt }),
     reportId,
     reportVersion,
+    ...(fact.quote === undefined ? {} : { quote: fact.quote }),
+    ...(fact.laterQuotes === undefined ? {} : { laterQuotes: fact.laterQuotes }),
     acceptable: fact.acceptable === true,
   });
   if (!parsed.success) return null;
@@ -550,6 +562,15 @@ export function parseTaskRelay(
     body.requirement_version >= 1
       ? body.requirement_version
       : undefined;
+  const quote = parseQuote(body.quote);
+  const laterQuotes = Array.isArray(body.later_quotes)
+    ? body.later_quotes.flatMap((item) => {
+        if (!isRecord(item) || typeof item.version !== 'number' || typeof item.text !== 'string') {
+          return [];
+        }
+        return [{ version: item.version, text: item.text }];
+      })
+    : undefined;
 
   return {
     id: rpcId,
@@ -571,9 +592,18 @@ export function parseTaskRelay(
     ...(programGate === undefined ? {} : { programGate }),
     ...(reportId === undefined ? {} : { reportId }),
     ...(reportVersion === undefined ? {} : { reportVersion }),
+    ...(quote === undefined ? {} : { quote }),
+    ...(laterQuotes === undefined || laterQuotes.length === 0 ? {} : { laterQuotes }),
     ...(typeof seq === 'number' && Number.isFinite(seq) ? { seq } : {}),
     ...(cardState === undefined ? {} : { cardState }),
   };
+}
+
+/** D115：结果卡上的用户原话；坏字段当没有。 */
+function parseQuote(value: unknown): { text: string; from: string | null } | undefined {
+  if (!isRecord(value) || typeof value.text !== 'string' || value.text.trim() === '') return undefined;
+  const from = typeof value.from === 'string' && value.from !== '' ? value.from : null;
+  return { text: value.text, from };
 }
 
 /** T053：结果卡上的里程碑事实；形状不对当没有。 */

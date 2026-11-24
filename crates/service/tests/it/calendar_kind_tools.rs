@@ -84,10 +84,12 @@ async fn propose_create_and_update_facts_and_stale_version_refusal() {
     options.actions = Arc::new(ActionRegistry::settings(data.to_path_buf(), None));
     let host = crate::common::open(options).await;
     let registry = ActionRegistry::settings(data.to_path_buf(), None);
+    let session_id = host.info().session_id.expect("根会话");
     let env = ActionEnv {
         data_dir: data,
         identity: None,
         events: &[],
+        conversation: Some(&session_id),
     };
     let create = registry.get("create_appointment").expect("create 动作");
     assert_eq!(create.skill(), "aios-calendar");
@@ -99,6 +101,7 @@ async fn propose_create_and_update_facts_and_stale_version_refusal() {
         "startAt": now_ms(),
         "binding": "kind"
     });
+    record_user_words(&host, "每天九点提醒我喝水").await;
     let normalized = create.details(&details).unwrap();
     let facts = create.describe(&normalized, &env).unwrap();
     assert!(facts.iter().any(|fact| fact.name == "触发"
@@ -109,7 +112,6 @@ async fn propose_create_and_update_facts_and_stale_version_refusal() {
             .iter()
             .any(|fact| fact.name == "原话" && fact.value.contains("喝水"))
     );
-    record_user_words(&host, "每天九点提醒我喝水").await;
     let outcome = create.act(&normalized, &host).await.unwrap();
     let appointment_id = outcome.data["appointmentId"].as_str().unwrap().to_owned();
     let store = calendar::CalendarStore::open(data.join("calendar.sqlite")).unwrap();
@@ -362,10 +364,12 @@ async fn create_card_accepts_number_string_start_delay_and_binding_objects() {
     options.actions = Arc::new(ActionRegistry::settings(data.to_path_buf(), None));
     let host = crate::common::open(options).await;
     let registry = ActionRegistry::settings(data.to_path_buf(), None);
+    let session_id = host.info().session_id.expect("根会话");
     let env = ActionEnv {
         data_dir: data,
         identity: None,
         events: &[],
+        conversation: Some(&session_id),
     };
     let create = registry.get("create_appointment").expect("create 动作");
 
@@ -380,6 +384,7 @@ async fn create_card_accepts_number_string_start_delay_and_binding_objects() {
         "binding": { "kind": "chat" },
         "durationMinutes": 45
     });
+    record_user_words(&host, "一分钟后提醒我喝水").await;
     let normalized = create
         .details(&raw)
         .expect("数字字符串 startAt 和 binding 对象要过");
@@ -397,7 +402,6 @@ async fn create_card_accepts_number_string_start_delay_and_binding_objects() {
             .iter()
             .any(|fact| fact.name == "绑定" && fact.value.contains("Kind"))
     );
-    record_user_words(&host, "一分钟后提醒我喝水").await;
     let outcome = create.act(&normalized, &host).await.expect("按卡建约定");
     let appointment_id = outcome.data["appointmentId"].as_str().unwrap().to_owned();
     let store = calendar::CalendarStore::open(data.join("calendar.sqlite")).unwrap();
@@ -541,6 +545,13 @@ async fn create_appointment_rejects_a_condition_the_user_never_said() {
     options.actions = Arc::new(ActionRegistry::settings(data.to_path_buf(), None));
     let host = crate::common::open(options).await;
     let registry = ActionRegistry::settings(data.to_path_buf(), None);
+    let session_id = host.info().session_id.expect("根会话");
+    let env = ActionEnv {
+        data_dir: data,
+        identity: None,
+        events: &[],
+        conversation: Some(&session_id),
+    };
     let create = registry.get("create_appointment").expect("create 动作");
     let details = create
         .details(&json!({
@@ -552,11 +563,8 @@ async fn create_appointment_rejects_a_condition_the_user_never_said() {
             "binding": "kind"
         }))
         .unwrap();
-    let error = create
-        .act(&details, &host)
-        .await
-        .expect_err("非用户原话要拒");
-    assert!(error.contains("约束要用用户原话"), "{error}");
+    let error = create.describe(&details, &env).expect_err("非用户原话要拒");
+    assert!(error.contains("约定的条件要用用户原话"), "{error}");
     let store = calendar::CalendarStore::open(data.join("calendar.sqlite")).unwrap();
     assert!(store.list_appointments().unwrap().is_empty());
     host.shutdown().await;

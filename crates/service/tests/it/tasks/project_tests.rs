@@ -455,6 +455,7 @@ async fn create_project_action_creates_once_and_reconciles_an_existing_name() {
         data_dir: fixture.data(),
         identity: None,
         events: &[],
+        conversation: None,
     };
     let facts = action.describe(&details, &env).unwrap();
     assert!(

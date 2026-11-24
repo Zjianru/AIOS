@@ -285,6 +285,9 @@ test('写任务：点「要求修改」→ 卡进输入框 → 带一句话发�
     const first = reviewCard(page);
     await expect(first).toBeVisible({ timeout: 60_000 });
     await expect(first.locator('[data-kind="task-accept"]')).toBeVisible();
+    await expect(first.locator('[data-kind="task-said-line"]')).toContainText(
+      '你说的「把 hello.txt 的判重改成按 url」',
+    );
     const modify = first.locator('[data-kind="task-modify-requirement"]');
     await expect(modify).toBeVisible();
     await expect(first).not.toContainText('第 1 版要求');
@@ -326,13 +329,17 @@ test('写任务：点「要求修改」→ 卡进输入框 → 带一句话发�
       page.locator('[data-kind="user-message-row"] [data-kind="result-card-chip"]').last(),
     ).toContainText('第 1 版的结果');
 
-    // Kind 出改要求确认卡：要求一行（改前 → 改后）、版本一行（第 1 版 → 第 2 版）。
+    // Kind 出改要求确认卡：你这次说的、Kind 的理解改前→改后、版本。
     const confirm = page.locator('[data-kind="confirm-card"]').last();
     await expect(confirm).toBeVisible({ timeout: 60_000 });
     const facts = confirm.locator('[data-kind="confirm-fact"]');
-    await expect(facts.nth(0)).toContainText('把 hello.txt 里按整条链接判重的写法改成按 url');
+    await expect(facts).toHaveCount(3);
+    await expect(facts.nth(0)).toContainText('你这次说的');
     await expect(facts.nth(0)).toContainText('标题也拿不到的别丢，用域名加路径当键');
-    await expect(facts.nth(1)).toContainText('第 1 版 → 第 2 版');
+    await expect(facts.nth(1)).toContainText('要求（Kind 的理解）');
+    await expect(facts.nth(1)).toContainText('把 hello.txt 里按整条链接判重的写法改成按 url');
+    await expect(facts.nth(1)).toContainText('标题也拿不到的别丢，用域名加路径当键');
+    await expect(facts.nth(2)).toContainText('第 1 版 → 第 2 版');
     await confirm.locator('[data-action="card-option"]').first().click();
     await confirm.locator('[data-action="card-confirm"]').click();
     await expect(confirm).toHaveAttribute('data-state', 'done', { timeout: 40_000 });
@@ -348,6 +355,9 @@ test('写任务：点「要求修改」→ 卡进输入框 → 带一句话发�
     await expect(second).toHaveAttribute('data-state', 'review', { timeout: 60_000 });
     await expect(second.locator('[data-kind="task-accept"]')).toBeVisible();
     await expect(second).toContainText('空标题也不丢了');
+    await expect(second.locator('[data-kind="task-said-line"]')).toContainText(
+      '第 2 版：标题也拿不到的别丢，用域名加路径当键',
+    );
     const oldCard = resultCards(page, WRITE_CARD_TITLE).first();
     await expect(oldCard.locator('[data-kind="task-accept"]')).toHaveCount(0);
     await expect(oldCard.locator('[data-kind="task-modify-requirement"]')).toHaveCount(0);
@@ -358,10 +368,25 @@ test('写任务：点「要求修改」→ 卡进输入框 → 带一句话发�
       .toBe(2);
     const task = taskOf(fixture, WRITE_TITLE);
     expect(task.versions?.[0]?.requirement).toContain('把 hello.txt 里按整条链接判重');
+    // 任务页：「你说的」+ 第 2 版；Kind 的理解折叠标题 + Kind 的补充。
+    await page.goto(urlOf(fixture).replace('#kind', '#taskchat:' + task.id));
+    await expect(page.locator('[data-kind="task-said"]')).toContainText('把 hello.txt 的判重改成按 url');
+    await expect(page.locator('[data-kind="task-said-later"]')).toContainText(
+      '第 2 版',
+    );
+    await expect(page.getByText('Kind 的理解：要求和 DoD')).toBeVisible();
+    await page.getByText('Kind 的理解：要求和 DoD').click();
+    await expect(page.locator('[data-kind="task-kind-note"]')).toContainText(
+      'Kind 补充：只动 hello.txt，判重入口在 dedupe()。',
+    );
+    await expect(page.locator('[data-kind="task-kind-note"]')).toContainText('不算你的要求');
+    await page.reload();
+    await expect(page.locator('[data-kind="task-said"]')).toContainText('把 hello.txt 的判重改成按 url');
     expect(task.versions?.[1]?.requirement).toContain('标题也拿不到的别丢，用域名加路径当键');
     expect(task.requirement).toContain('标题也拿不到的别丢，用域名加路径当键');
 
     // 刷新：两张卡都还在，第 2 版仍在，输入框里没有残留的卡。
+    await page.goto(urlOf(fixture));
     await page.reload();
     await expect(lastResultCard(page, WRITE_CARD_TITLE)).toContainText('第 2 版要求', {
       timeout: 60_000,
@@ -420,7 +445,9 @@ test('已关闭的任务再改要求：卡上没有按钮也从 Kind 说一句�
     const confirm = page.locator('[data-kind="confirm-card"]').last();
     await expect(confirm).toBeVisible({ timeout: 60_000 });
     const facts = confirm.locator('[data-kind="confirm-fact"]');
-    await expect(facts.nth(1)).toContainText('第 2 版 → 第 3 版');
+    await expect(facts).toHaveCount(3);
+    await expect(facts.nth(0)).toContainText('再改一点：按域名归并');
+    await expect(facts.nth(2)).toContainText('第 2 版 → 第 3 版');
     await confirm.locator('[data-action="card-option"]').first().click();
     await confirm.locator('[data-action="card-confirm"]').click();
     await expect(confirm).toHaveAttribute('data-state', 'done', { timeout: 40_000 });
@@ -513,7 +540,10 @@ test('F1 第二窗口：第二次确认改要求后、v3 结果卡出来前，v2
     await page.getByRole('button', { name: '发送', exact: true }).click();
     const confirm2 = page.locator('[data-kind="confirm-card"]').last();
     await expect(confirm2).toBeVisible({ timeout: 60_000 });
-    await expect(confirm2.locator('[data-kind="confirm-fact"]').nth(1)).toContainText(
+    await expect(confirm2.locator('[data-kind="confirm-fact"]').nth(0)).toContainText(
+      '再改一点：按域名归并',
+    );
+    await expect(confirm2.locator('[data-kind="confirm-fact"]').nth(2)).toContainText(
       '第 2 版 → 第 3 版',
     );
     await confirm2.locator('[data-action="card-option"]').first().click();
