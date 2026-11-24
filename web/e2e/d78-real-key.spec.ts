@@ -109,7 +109,11 @@ test('D78 写进 ~/Desktop/t082.md：原样核过直接派，不出写到哪卡'
   try {
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind');
     await send(page, '把这段写进 ~/Desktop/t082.md');
-    await expect(page.getByText('已派出', { exact: false }).last()).toBeVisible({ timeout: 180_000 });
+    // 按 spec 这条只要求：原话里有路径就直接派、不要「写到哪」卡；任务后续缺正文可以卡住，
+    // 不要求它成功，所以不等「已派出」，只等写任务卡出现。
+    await expect(
+      page.locator('[data-kind="task-result"]').filter({ hasText: '写任务' }).last(),
+    ).toBeVisible({ timeout: 180_000 });
     await expect(page.locator('[data-kind="confirm-card"]').filter({ hasText: '写到哪' })).toHaveCount(0);
   } finally {
     await fixture.close();
