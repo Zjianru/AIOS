@@ -40,6 +40,7 @@ impl TaskRuntime {
                 "requirement".to_owned(),
                 serde_json::json!(task.requirement),
             );
+            assignment.insert("dod".to_owned(), serde_json::json!(task.dod));
             assignment.insert(
                 "requirement_label".to_owned(),
                 serde_json::json!("Kind 的理解，不是用户原话"),
@@ -59,7 +60,6 @@ impl TaskRuntime {
             if !constraints.is_empty() {
                 assignment.insert("constraints".to_owned(), serde_json::json!(constraints));
             }
-            assignment.insert("dod".to_owned(), serde_json::json!(task.dod));
         }
         assignment.insert("task_id".to_owned(), serde_json::json!(task.id.as_str()));
         assignment.insert("title".to_owned(), serde_json::json!(task.title));
@@ -101,11 +101,11 @@ impl TaskRuntime {
             &[
                 "user_quotes",
                 "requirement",
+                "dod",
                 "requirement_label",
                 "kind_note",
                 "kind_note_label",
                 "constraints",
-                "dod",
                 "task_id",
                 "title",
                 "cwd",

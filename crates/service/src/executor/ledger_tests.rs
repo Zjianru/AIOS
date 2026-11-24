@@ -442,11 +442,13 @@ fn assignment_puts_user_quotes_first_then_kind_material_then_constraints() {
     let assignment = runtime.assignment_text(&task, false);
     let quote_at = assignment.find("user_quotes").expect("原话段");
     let understanding_at = assignment.find("requirement").expect("理解段");
+    let dod_at = assignment.find("\"dod\"").expect("DoD 段");
     let note_at = assignment.find("kind_note").expect("补充段");
     let constraints_at = assignment.find("constraints").expect("约束段");
     let id_at = assignment.find("task_id").expect("任务 id");
     assert!(quote_at < understanding_at, "{assignment}");
-    assert!(understanding_at < note_at, "{assignment}");
+    assert!(understanding_at < dod_at, "{assignment}");
+    assert!(dod_at < note_at, "{assignment}");
     assert!(note_at < constraints_at, "{assignment}");
     assert!(constraints_at < id_at, "{assignment}");
     assert!(assignment.contains("用户原话"), "{assignment}");
