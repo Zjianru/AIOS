@@ -103,6 +103,8 @@ pub struct InstructionState {
     scopes: BTreeMap<String, ScopeState>,
     /// Kind：项目链只给路径，不整份注入。
     project_paths_only: bool,
+    /// 是否按会话 cwd 读项目指令；Kind 无工作目录时为 false（只读 data-dir 全局）。
+    workspace_context: bool,
     /// 最近一次发现的完整内容（不随增量消息丢），压缩固定块用。
     /// 独立锁，压缩回调不等指令能力自己的异步锁。
     current_full: Arc<std::sync::RwLock<Option<String>>>,
@@ -117,6 +119,10 @@ struct ScopeState {
 impl InstructionState {
     pub fn set_project_paths_only(&mut self, project_paths_only: bool) {
         self.project_paths_only = project_paths_only;
+    }
+
+    pub fn set_workspace_context(&mut self, workspace_context: bool) {
+        self.workspace_context = workspace_context;
     }
 
     /// 当前 owner 的完整指令文本（保留给测试/诊断；压缩固定块走独立 handle）。
@@ -165,15 +171,33 @@ impl InstructionState {
         instruction_roots: &[PathBuf],
         observed: impl IntoIterator<Item = PathBuf> + Send,
     ) -> Option<Message> {
-        let cwd = absolute(cwd);
-        let (project_root, root_warning) = find_project_root(&cwd).await;
-        if let Some(warning) = root_warning {
-            // DSH 把 marker 探测错误交给调用方（files.ts:224-249 `@throws`）；AIOS 没有请求级
-            // 抛错接缝（P11 适配），选择降级 cwd + stderr 留痕（T006.10b）。
-            warn(format!("[instructions] {warning}; using cwd"));
+        // Kind 没有工作区：不按会话 cwd 找项目指令，也不把读过的路径当项目根；
+        // 只保留 data-dir 的全局指令。identity 用 data-dir 做稳定基线（不随 cwd 变）。
+        let (cwd, project_root) = if self.workspace_context {
+            let cwd = absolute(cwd);
+            let (project_root, root_warning) = find_project_root(&cwd).await;
+            if let Some(warning) = root_warning {
+                // DSH 把 marker 探测错误交给调用方（files.ts:224-249 `@throws`）；AIOS 没有请求级
+                // 抛错接缝（P11 适配），选择降级 cwd + stderr 留痕。
+                warn(format!("[instructions] {warning}; using cwd"));
+            }
+            (cwd, project_root)
+        } else {
+            (absolute(data_dir), absolute(data_dir))
+        };
+        let mut dirs = if self.workspace_context {
+            ancestor_chain(&project_root, &cwd)
+        } else {
+            Vec::new()
+        };
+        if self.workspace_context {
+            extend_with_observed(&mut dirs, &cwd, observed.into_iter());
         }
-        let mut dirs = ancestor_chain(&project_root, &cwd);
-        extend_with_observed(&mut dirs, &cwd, observed.into_iter());
+        let instruction_roots = if self.workspace_context {
+            instruction_roots
+        } else {
+            &[]
+        };
         let identity = baseline_identity(&cwd, &project_root, data_dir, instruction_roots);
         let discovered = discover(data_dir, instruction_roots, &project_root, &dirs).await;
         let mut files: Vec<InstructionFile> = dedupe(discovered);

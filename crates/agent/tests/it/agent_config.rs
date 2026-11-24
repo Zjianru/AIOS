@@ -141,6 +141,8 @@ async fn accepts_valid_non_default_values() {
         memory_flashback: None,
         identity_prompt: None,
         project_instructions_path_only: false,
+        workspace_context: true,
+        absolute_paths_only: false,
         compaction_profile: agent::CompactionProfile::Thin,
         compaction_fixed_block: None,
         max_parallel_tool_calls: 2,

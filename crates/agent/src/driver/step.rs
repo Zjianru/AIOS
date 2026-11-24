@@ -57,6 +57,7 @@ pub(super) async fn prepare_step(
             &inner.tools,
             inner.policy_prompt.as_deref(),
             inner.identity_prompt.as_deref(),
+            inner.workspace_context,
         ));
         inner
             .append(&[EventKind::SystemMessage {

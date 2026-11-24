@@ -161,8 +161,24 @@ pub(super) fn system_prompt(
     tools: &ToolSet,
     policy_prompt: Option<&str>,
     identity_prompt: Option<&str>,
+    include_workspace: bool,
 ) -> String {
     let identity = identity_prompt.unwrap_or("You are AIOS, a coding agent.");
+    // 无工作区的 Kind：只有身份和产品规则；不写目录、不带编程助手的读/写/命令说明。
+    if !include_workspace {
+        let mut prompt = identity.to_owned();
+        if let Some(policy) = policy_prompt
+            && !policy.trim().is_empty()
+        {
+            prompt.push_str(
+                "
+
+",
+            );
+            prompt.push_str(policy);
+        }
+        return prompt;
+    }
     let mut prompt = format!("{identity} Your working directory is {}.", cwd.display());
     if tools.get("read").is_some() {
         prompt.push_str(
@@ -214,7 +230,13 @@ mod file_reference_prompt_tests {
     use super::*;
 
     fn prompt_with(tools: &ToolSet) -> String {
-        system_prompt(std::path::Path::new("/tmp/workspace"), tools, None, None)
+        system_prompt(
+            std::path::Path::new("/tmp/workspace"),
+            tools,
+            None,
+            None,
+            true,
+        )
     }
 
     #[test]

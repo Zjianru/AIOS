@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 
 use crate::{Tool, ToolCall, ToolConcurrency, ToolContext, ToolFailure, ToolFuture, ToolResult};
 
-use super::{display_path, resolve_path};
+use super::display_path;
 
 /// 单次 grep 内联保留的最大匹配数。
 pub const GREP_MAX_MATCHES: usize = 250;
@@ -154,7 +154,13 @@ fn grep(arguments: &str, context: &ToolContext) -> Result<String, ToolFailure> {
         )
     })?;
     let root = match &requested_path {
-        Some(text) => resolve_path(context, text),
+        Some(text) => super::absolute_path(context, text)?,
+        None if context.session().absolute_paths_only() => {
+            return Err(ToolFailure::coded(
+                "PATH_NOT_ABSOLUTE",
+                "路径要写全：以 / 或 ~/ 开头".to_owned(),
+            ));
+        }
         None => context.cwd.clone(),
     };
     let metadata = fs::metadata(&root).map_err(|error| {

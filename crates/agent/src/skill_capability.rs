@@ -24,6 +24,8 @@ pub(crate) struct SkillCapability {
     roots: Vec<std::path::PathBuf>,
     /// 程序自带的 skill 来源（排在用户根后面）。
     bundled: Vec<tools::BundledSkill>,
+    /// Kind 无工作目录：不扫项目 .agents/skills。
+    workspace_context: bool,
 }
 
 /// 装载带回来的两样：目录状态 + 用户根；自带的来源由调用方另存（能力不重复持有）。
@@ -45,11 +47,12 @@ impl SkillCapability {
         (Arc::new(Mutex::new(state)), roots, bundled)
     }
 
-    pub(crate) fn new((state, roots, bundled): Loaded) -> Self {
+    pub(crate) fn new((state, roots, bundled): Loaded, workspace_context: bool) -> Self {
         Self {
             state,
             roots,
             bundled,
+            workspace_context,
         }
     }
 }
@@ -90,6 +93,7 @@ impl Capability for SkillCapability {
                         &self.roots,
                         &self.bundled,
                         &tool_keys,
+                        self.workspace_context,
                     );
                 if let Some(message) = catalog {
                     host.append(&[EventKind::UserMessage {

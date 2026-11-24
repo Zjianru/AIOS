@@ -26,9 +26,11 @@ impl InstructionsCapability {
         store: &session::SessionStore,
         roots: Vec<std::path::PathBuf>,
         project_paths_only: bool,
+        workspace_context: bool,
     ) -> (Arc<Mutex<InstructionState>>, Vec<std::path::PathBuf>) {
         let mut state = InstructionState::default();
         state.set_project_paths_only(project_paths_only);
+        state.set_workspace_context(workspace_context);
         state.rehydrate(&store.derive_messages());
         (Arc::new(Mutex::new(state)), roots)
     }

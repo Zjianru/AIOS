@@ -39,8 +39,6 @@ async fn arbitrary_effort_is_sent() {
             data_dir.path().to_str().unwrap(),
             "--identity",
             identity.to_str().unwrap(),
-            "--cwd",
-            ".",
             "--effort",
             "weird-vendor-level",
             "你好",

@@ -77,6 +77,10 @@ fn load(arguments: &str, context: &ToolContext) -> Result<String, ToolFailure> {
     };
     let roots = context.session().skill_roots();
     let bundled = context.session().bundled_skills();
-    let skill = load_skill(&context.cwd, data_dir, &roots, &bundled, name)?;
+    let skill = if context.session().workspace_context() {
+        load_skill(&context.cwd, data_dir, &roots, &bundled, name)?
+    } else {
+        crate::skills::load_skill_without_project(&context.cwd, data_dir, &roots, &bundled, name)?
+    };
     Ok(render_skill_content(&skill))
 }

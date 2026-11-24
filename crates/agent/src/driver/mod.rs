@@ -73,6 +73,8 @@ pub(crate) struct Inner {
     compaction_profile: crate::CompactionProfile,
     compaction_fixed_blocks: Vec<crate::CompactionFixedBlockSource>,
     identity_prompt: Option<String>,
+    /// 是否把 cwd 当工作区（Kind 为 false：系统提示无目录、指令不按 cwd）。
+    workspace_context: bool,
 
     pub(crate) model: DeepSeek,
     pub(crate) tools: ToolSet,
@@ -358,7 +360,15 @@ impl Inner {
         let tool_keys = config.tool_keys.clone();
         let policy_prompt = config.policy_prompt.clone();
         let spill_max_inline_tokens = config.spill_max_inline_tokens;
-        tool_session.set_skill_roots(skill_roots.clone());
+        let workspace_context = config.workspace_context;
+        let absolute_paths_only = config.absolute_paths_only;
+        tool_session.set_skill_roots(if config.workspace_context {
+            skill_roots.clone()
+        } else {
+            Vec::new()
+        });
+        tool_session.set_absolute_paths_only(absolute_paths_only);
+        tool_session.set_workspace_context(config.workspace_context);
         tool_session.set_bundled_skills(config.bundled_skills.clone());
         tool_session.set_tool_keys(tool_keys.clone());
         // 能力状态由能力模块装载/持有；driver 只做装配。
@@ -367,6 +377,7 @@ impl Inner {
                 &store,
                 instruction_roots,
                 config.project_instructions_path_only,
+                config.workspace_context,
             );
         let (memory_identity, memory_context, memory_delivery) =
             crate::memory_capability::MemoryCapability::load(
@@ -479,6 +490,7 @@ impl Inner {
             compaction_profile: config.compaction_profile,
             compaction_fixed_blocks: fixed_block_sources,
             identity_prompt: config.identity_prompt.clone(),
+            workspace_context,
             no_wait: config.no_wait,
             write_scope: config.write_scope.clone(),
             stop_after_report: AtomicBool::new(false),
@@ -516,6 +528,7 @@ impl Inner {
                 instruction_roots,
                 skill_roots,
                 bundled_skills,
+                workspace_context,
                 fixed_block: fixed_block_state,
                 dynamic_block: dynamic_block_state,
                 spill_max_inline_tokens,

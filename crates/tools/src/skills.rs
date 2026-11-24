@@ -240,7 +240,27 @@ pub fn discover_skill_catalog(
     configured: &[PathBuf],
     bundled: &[BundledSkill],
 ) -> SkillDiscovery {
-    let (found, warnings, incomplete) = discover(cwd, data_dir, configured, bundled);
+    discover_skill_catalog_with(cwd, data_dir, configured, bundled, true)
+}
+
+pub fn discover_skill_catalog_without_project(
+    cwd: &Path,
+    data_dir: &Path,
+    configured: &[PathBuf],
+    bundled: &[BundledSkill],
+) -> SkillDiscovery {
+    discover_skill_catalog_with(cwd, data_dir, configured, bundled, false)
+}
+
+fn discover_skill_catalog_with(
+    cwd: &Path,
+    data_dir: &Path,
+    configured: &[PathBuf],
+    bundled: &[BundledSkill],
+    include_project: bool,
+) -> SkillDiscovery {
+    let (found, warnings, incomplete) =
+        discover(cwd, data_dir, configured, bundled, include_project);
     SkillDiscovery {
         skills: found
             .into_iter()
@@ -260,10 +280,32 @@ pub fn load_skill(
     bundled: &[BundledSkill],
     name: &str,
 ) -> Result<SkillContent, ToolFailure> {
+    load_skill_with(cwd, data_dir, configured, bundled, name, true)
+}
+
+pub fn load_skill_without_project(
+    cwd: &Path,
+    data_dir: &Path,
+    configured: &[PathBuf],
+    bundled: &[BundledSkill],
+    name: &str,
+) -> Result<SkillContent, ToolFailure> {
+    load_skill_with(cwd, data_dir, configured, bundled, name, false)
+}
+
+fn load_skill_with(
+    cwd: &Path,
+    data_dir: &Path,
+    configured: &[PathBuf],
+    bundled: &[BundledSkill],
+    name: &str,
+    include_project: bool,
+) -> Result<SkillContent, ToolFailure> {
     if !is_skill_name(name) {
         return Err(ToolFailure::plain(format!("invalid skill name \"{name}\"")));
     }
-    let (found, _warnings, _incomplete) = discover(cwd, data_dir, configured, bundled);
+    let (found, _warnings, _incomplete) =
+        discover(cwd, data_dir, configured, bundled, include_project);
     let Some(found) = found.into_iter().find(|found| found.summary.name == name) else {
         return Err(ToolFailure::plain(format!(
             "skill \"{name}\" is unknown or no longer available"
@@ -290,10 +332,33 @@ pub fn load_user_invocable_skill(
     bundled: &[BundledSkill],
     name: &str,
 ) -> Option<SkillContent> {
+    load_user_invocable_skill_with(cwd, data_dir, configured, bundled, name, true)
+}
+
+/// Kind 无工作目录：和目录一样不扫项目 .agents/skills。
+pub fn load_user_invocable_skill_without_project(
+    cwd: &Path,
+    data_dir: &Path,
+    configured: &[PathBuf],
+    bundled: &[BundledSkill],
+    name: &str,
+) -> Option<SkillContent> {
+    load_user_invocable_skill_with(cwd, data_dir, configured, bundled, name, false)
+}
+
+fn load_user_invocable_skill_with(
+    cwd: &Path,
+    data_dir: &Path,
+    configured: &[PathBuf],
+    bundled: &[BundledSkill],
+    name: &str,
+    include_project: bool,
+) -> Option<SkillContent> {
     if !is_skill_name(name) {
         return None;
     }
-    let (found, _warnings, _incomplete) = discover(cwd, data_dir, configured, bundled);
+    let (found, _warnings, _incomplete) =
+        discover(cwd, data_dir, configured, bundled, include_project);
     let found = found.into_iter().find(|found| found.summary.name == name)?;
     if !found.summary.invocation.user_invocable {
         return None;
@@ -399,11 +464,23 @@ fn discover(
     data_dir: &Path,
     configured: &[PathBuf],
     bundled: &[BundledSkill],
+    include_project: bool,
 ) -> (Vec<Discovered>, Vec<SkillWarning>, bool) {
     let mut found: BTreeMap<String, Discovered> = BTreeMap::new();
     let mut warnings: Vec<SkillWarning> = Vec::new();
     let mut incomplete = false;
-    for root in skill_roots(cwd, data_dir, configured) {
+    let roots = if include_project {
+        skill_roots(cwd, data_dir, configured)
+    } else {
+        let mut roots = vec![data_dir.join("skills")];
+        for root in configured {
+            if !roots.contains(root) {
+                roots.push(root.clone());
+            }
+        }
+        roots
+    };
+    for root in roots {
         let entries = match std::fs::read_dir(&root) {
             Ok(entries) => entries,
             Err(error) => {

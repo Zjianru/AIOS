@@ -578,6 +578,7 @@ mod attachment_http_tests {
 
     fn options(data_dir: &Path, identity: &Path) -> RootSessionOptions {
         RootSessionOptions {
+            projects: None,
             data_dir: data_dir.to_path_buf(),
             cwd: data_dir.to_path_buf(),
             model: DeepSeekConfig {
@@ -928,6 +929,7 @@ mod ops_endpoint_tests {
         let dir = tempfile::tempdir().expect("临时目录");
         let identity = dir.path().join("identity.txt");
         let options = service::RootSessionOptions {
+            projects: None,
             data_dir: dir.path().to_path_buf(),
             cwd: dir.path().to_path_buf(),
             model: model_config(),
@@ -1256,6 +1258,7 @@ mod local_file_tests {
         std::fs::create_dir_all(&work).expect("工作目录");
         std::fs::create_dir_all(&data).expect("数据目录");
         let options = service::RootSessionOptions {
+            projects: None,
             data_dir: data,
             cwd: work.clone(),
             model: model_config(),

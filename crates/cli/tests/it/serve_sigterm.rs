@@ -155,8 +155,6 @@ async fn serve_sigterm_kills_task_background_commands() {
             data_dir.to_str().unwrap(),
             "--identity",
             identity.to_str().unwrap(),
-            "--cwd",
-            cwd.to_str().unwrap(),
             "--port",
             "0",
             "--web-dist",

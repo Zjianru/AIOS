@@ -25,8 +25,6 @@ fn run_with_env(
             data_dir.to_str().unwrap(),
             "--identity",
             identity.to_str().unwrap(),
-            "--cwd",
-            ".",
             "你好",
         ])
         .env_remove("DEEPSEEK_API_KEY")

@@ -23,6 +23,7 @@ mod scripted_sse;
 mod send_blocks;
 mod settings;
 mod status;
+mod t082_neutral;
 mod task_read;
 mod tasks;
 mod work_graph_fixture;

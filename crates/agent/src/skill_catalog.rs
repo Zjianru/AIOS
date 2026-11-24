@@ -63,13 +63,18 @@ impl SkillCatalogState {
         skill_roots: &[PathBuf],
         bundled: &[BundledSkill],
         tool_keys: &BTreeSet<ToolKey>,
+        workspace_context: bool,
     ) -> Option<Message> {
         let available: Vec<BundledSkill> = bundled
             .iter()
             .copied()
             .filter(|skill| skill.available(tool_keys))
             .collect();
-        let discovery = discover_skill_catalog(cwd, data_dir, skill_roots, &available);
+        let discovery = if workspace_context {
+            discover_skill_catalog(cwd, data_dir, skill_roots, &available)
+        } else {
+            tools::discover_skill_catalog_without_project(cwd, data_dir, &[], &available)
+        };
         for warning in &discovery.warnings {
             // 警告文案在 tools 层已按 DSH skill-filesystem 的 logger.warn 形状生成
             // （`skill file <path> ignored: <reason>` 等），这里只做去重与落 stderr。
@@ -298,6 +303,7 @@ mod tests {
                 std::slice::from_ref(&roots),
                 &[],
                 &BTreeSet::new(),
+                true,
             )
             .expect("首次发布");
         let first_text = state.current_text().expect("完整目录");
@@ -317,7 +323,14 @@ mod tests {
         )
         .unwrap();
         let update = state
-            .prepare(cwd.path(), data.path(), &[roots], &[], &BTreeSet::new())
+            .prepare(
+                cwd.path(),
+                data.path(),
+                &[roots],
+                &[],
+                &BTreeSet::new(),
+                true,
+            )
             .expect("目录更新");
         assert!(
             update

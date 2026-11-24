@@ -101,7 +101,8 @@ fn read(arguments: &str, context: &ToolContext) -> Result<String, ToolFailure> {
         )));
     }
 
-    let target = crate::fs::resolve(context, &file_path)?;
+    let file_path = super::absolute_path(context, &file_path)?;
+    let target = crate::fs::resolve(context, &file_path.to_string_lossy())?;
     let display = target.display();
     let Some(info) = crate::fs::probe(&target)? else {
         crate::fs::record_absent(context, &target);

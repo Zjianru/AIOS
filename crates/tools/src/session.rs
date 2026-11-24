@@ -4,6 +4,7 @@
 //! 这些状态挂在一次会话上：Agent::create/resume 各建一份，续接不继承上一次的观察。
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use session::{CanvasState, TodoItem};
@@ -77,6 +78,10 @@ pub struct ToolSessionState {
     todos: Mutex<Option<Vec<TodoItem>>>,
     /// 画布状态（T015.2）：建/续接会话时从日志折叠，canvas 工具每出一版更新。
     canvases: Mutex<Vec<CanvasState>>,
+    /// 读/搜工具只接受绝对路径（Kind 无工作目录；D117）。
+    absolute_paths_only: AtomicBool,
+    /// 是否把 cwd 当工作区（Kind 为 false：skill 不扫项目 .agents/skills）。
+    workspace_context: AtomicBool,
 }
 
 impl ToolSessionState {
@@ -93,6 +98,8 @@ impl ToolSessionState {
             tool_keys: Mutex::new(crate::ToolKeySource::none()),
             todos: Mutex::new(None),
             canvases: Mutex::new(Vec::new()),
+            absolute_paths_only: AtomicBool::new(false),
+            workspace_context: AtomicBool::new(true),
         }
     }
 
@@ -150,6 +157,23 @@ impl ToolSessionState {
     /// 配置的 skill 根（skill 工具用）。
     pub(crate) fn skill_roots(&self) -> Vec<PathBuf> {
         self.skill_roots.lock().expect("skill 根锁被毒化").clone()
+    }
+
+    /// Kind 无工作目录：read/glob/grep 只收绝对路径。
+    pub fn set_absolute_paths_only(&self, yes: bool) {
+        self.absolute_paths_only.store(yes, Ordering::Relaxed);
+    }
+
+    pub fn absolute_paths_only(&self) -> bool {
+        self.absolute_paths_only.load(Ordering::Relaxed)
+    }
+
+    pub fn set_workspace_context(&self, yes: bool) {
+        self.workspace_context.store(yes, Ordering::Relaxed);
+    }
+
+    pub fn workspace_context(&self) -> bool {
+        self.workspace_context.load(Ordering::Relaxed)
     }
 
     /// Agent 建/续接会话时写入程序自带的 skill 来源（排在用户根后面）。

@@ -369,6 +369,8 @@ pub(crate) struct CapabilityStates {
     pub skill_roots: Vec<PathBuf>,
     /// 程序自带的 skill 来源（产品装配填；排在用户根后面）。
     pub bundled_skills: Vec<tools::BundledSkill>,
+    /// Kind 无工作目录：skill 目录不扫项目 .agents/skills。
+    pub workspace_context: bool,
     pub fixed_block: Option<crate::fixed_block::FixedBlockState>,
     pub dynamic_block: Option<crate::dynamic_block::DynamicBlockState>,
     pub spill_max_inline_tokens: usize,
@@ -398,11 +400,14 @@ impl CapabilityRegistry {
                 states.memory_delivery,
                 states.memory_flashback,
             ))),
-            Box::new(SkillCapability::new((
-                states.skill_catalog,
-                states.skill_roots,
-                states.bundled_skills,
-            ))),
+            Box::new(SkillCapability::new(
+                (
+                    states.skill_catalog,
+                    states.skill_roots,
+                    states.bundled_skills,
+                ),
+                states.workspace_context,
+            )),
             Box::new(TodoCapability),
             Box::new(AskCapability::new(states.ask)),
             Box::new(SpillCapability::new(states.spill_max_inline_tokens)),

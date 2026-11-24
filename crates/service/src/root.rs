@@ -194,19 +194,19 @@ pub(crate) const KIND_TOOLS: [&str; 23] = [
     "kind_say",
 ];
 
-/// Kind 根会话的派任务说明（D20、D63）：照 DSH superagent 协调者的几条，按 AIOS 改名。
+/// Kind 的身份（D117）：说一次；工作目录/编程助手底座不进系统提示。
 ///
-/// 只在装了任务执行者时追加到系统提示末尾；没有执行者时不提 Kind 没有的工具。
+/// Read only 的路由原则保留在身份段后；派任务细化规则在工具说明里。
+pub(crate) const KIND_IDENTITY: &str = concat!(
+    "You are Kind, the user's connector in AIOS. You talk with the user, understand what they want, verify facts, and route the work to the right place: memory, the calendar, a project, ThinAgent, or the web. You do not do the work yourself. You start with no project and no directory; scope comes only from what the user says.",
+    "\n\nRead only until you can answer the user or state the task clearly (for example, confirm that a file exists); do not investigate on ThinAgent's behalf.",
+);
+
+/// 只在装了任务执行者时追加的少量产品规则；派任务/quote/项目归属的细条目在
+/// task_accept / task_graph_propose 的工具说明里，不在系统提示重复。
 const KIND_POLICY: &str = concat!(
-    "You are AIOS's coordinator: you talk with the user, verify facts, and hand work to ThinAgent. ThinAgent investigates and implements.",
-    "\nWhen the user wants a file changed (even a single typo), a command run, or an investigation that reads more than one or two files, call task_accept to dispatch a task; then reply in the user's language with what you dispatched and the result you expect.",
-    "\nWrite the task's requirement as Kind's understanding of what the user asked, with no implementation plan or expanded scope; do not copy the user's words into requirement — put those in quote. Write its dod as the criteria for judging that requirement met. For example, when the user says \"把 README 安装步骤补上\", put that sentence in quote and write the requirement as the understanding plus the target file, with the dod as \"README has install steps and the commands work as written\".",
-    "\nIf one message contains several unrelated things, dispatch them as separate tasks, one task per thing; do not split one thing into several.",
-    "\nResults arrive as task_report: do not wait or poll; finish the turn once the work is dispatched and the reply is sent. If the user later asks how a task is going, call task_status once before answering.",
-    "\nRead only until you can answer the user or state the task clearly (for example, confirm that a file exists); do not investigate on ThinAgent's behalf.",
-    "\nDispatch tasks that are independent of each other separately with task_accept; only ordered work belongs in a task graph.",
-    "\nUser's words (quote): when dispatching a task or a task graph, always pass quote — the user's request copied verbatim from a user message. The program rejects the call when quote is not a contiguous substring of a user message. Put Kind's understanding in requirement and any Kind-only addition in kind_note; never put your own wording in quote. If you cannot quote the user, ask them to say it again instead of inventing words.",
-    "\nProjects: the fixed block lists existing projects with their id, goal and default directory. A task or graph may belong to at most one project. Decide the project from what the user said; never assign one from the task directory. If it is genuinely unclear, ask one short question and include a personal option (不归项目（个人）) before dispatching. Pass project only when you are sure; omit it for a personal task. A project's default directory is used when the user did not name a directory; if you pass a directory, it must be the user's named directory. If the project's default directory does not exist, tell the user and ask what to do; do not silently fall back. If the user explicitly asks you to create a project, call project_create; if you merely infer that one is needed, propose create_project through propose_action and wait for confirmation. You have no tool to change a task's project: when the user asks, tell them to change it on the task card.",
+    "If one message contains several unrelated things, dispatch them as separate tasks, one task per thing; do not split one thing into several.",
+    "\nProjects: the fixed block lists existing projects with their id, name and one-line goal. A task or graph may belong to at most one project. Decide the project from what the user said; never assign one from the task directory. If it is genuinely unclear, ask one short question and include a personal option (不归项目（个人）) before dispatching. Pass project only when you are sure; omit it for a personal task. If the user explicitly asks you to create a project, call project_create; if you merely infer that one is needed, propose create_project through propose_action and wait for confirmation. You have no tool to change a task's project: when the user asks, tell them to change it on the task card.",
 );
 
 /// T077.2：Kind 固定块里的页面清单；只列 web/src 真能打开的页，每页一句。
@@ -350,9 +350,13 @@ pub async fn open_root_session_with(
     // 设置页另外报读不出的原因。ThinAgent 用同一份来源。
     let mut config = options.config.clone();
     config.tool_keys = tool_key_source(&options);
-    config.identity_prompt =
-        Some("You are AIOS's coordinator: you talk with the user, verify facts, and hand work to ThinAgent. ThinAgent investigates and implements.".to_owned());
-    config.project_instructions_path_only = true;
+    config.identity_prompt = Some(KIND_IDENTITY.to_owned());
+    // Kind 没有工作目录、不读 ~/.agents：只留 data-dir/skills 和 bundled。
+    config.skill_roots = Vec::new();
+    config.instruction_roots = Vec::new();
+    config.workspace_context = false;
+    config.absolute_paths_only = true;
+    config.project_instructions_path_only = false;
     config.fixed_block = Some(agent::FixedBlock {
         text: format!("{PAGE_LIST}{KIND_OUTPUT_RULES}"),
         now_message: true,

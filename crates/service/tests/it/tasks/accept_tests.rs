@@ -187,9 +187,9 @@ async fn accept_freezes_the_task_and_the_launch_uses_it() {
     assert_eq!(body["summary"], "官方文档给了一个例子。");
 }
 
-/// 装了任务执行者：Kind 第一个请求的 system 以派任务说明结尾。
+/// Kind 的身份只说一次，系统提示无工作目录、无编程助手底座；任务规则只留非重复项。
 #[tokio::test]
-async fn the_kind_system_prompt_ends_with_the_task_policy() {
+async fn the_kind_system_prompt_is_neutral_with_only_routing() {
     let fixture = Fixture::new().await;
     fixture.router.push_kind(crate::common::text_sse("好"));
     fixture
@@ -202,46 +202,46 @@ async fn the_kind_system_prompt_ends_with_the_task_policy() {
     let bodies = fixture.router.bodies(false);
     assert_eq!(bodies.len(), 1, "Kind 第一个请求");
     let system = request_system(&bodies[0]);
-    // 不再复制整份策略；只对固定块关键行和「搬走的不在」做请求体断言。
-    for fixed in [
-        "You are AIOS's coordinator",
+    assert!(
+        system.starts_with("You are Kind, the user's connector in AIOS."),
+        "Kind 身份段是 reply n 原文：{system}"
+    );
+    assert!(
+        system.contains(
+            "You start with no project and no directory; scope comes only from what the user says."
+        ),
+        "身份段要写没有目录：{system}"
+    );
+    assert!(
+        system.contains("Read only until you can answer the user or state the task clearly"),
+        "路由原则要保留：{system}"
+    );
+    for absent in [
+        "Your working directory is",
+        "Use the read tool",
+        "Tokens prefixed with @",
+        "Check the [exit code",
         "call task_accept to dispatch a task",
         "Kind's understanding of what the user asked",
-        "If one message contains several unrelated things",
         "Results arrive as task_report",
         "call task_status once",
-        "Read only until you can answer",
         "Dispatch tasks that are independent",
-        "把 README 安装步骤补上",
-    ] {
-        assert!(system.contains(fixed), "固定块缺 {fixed}：{system}");
-    }
-    // 分流后：事件/skill/结果卡/删掉的条目不再常驻。
-    for moved in [
-        "load the aios-tasks skill",
-        "task_graph_propose",
-        "milestone card",
-        "program gate",
-        "When ThinAgent is blocked",
-        "When a notice says an upstream",
-        "When an appointment_wake",
-        "Before saying you never recorded",
-        "Accepting a result is only done",
-        "at most 20 characters",
+        "You are AIOS's coordinator",
     ] {
         assert!(
-            !system.contains(moved),
-            "常驻策略里不该再出现 {moved}：{system}"
+            !system.contains(absent),
+            "Kind 系统提示不该有 {absent}：{system}"
         );
     }
-    assert!(
-        system.contains("call task_status once"),
-        "固定块要有一条进度查询规则"
-    );
-    assert!(
-        system.contains("把 README 安装步骤补上"),
-        "派任务例子在规则处"
-    );
+    for kept in [
+        "If one message contains several unrelated things",
+        "Projects: the fixed block lists existing projects",
+    ] {
+        assert!(
+            system.contains(kept),
+            "非重复产品规则不能丢 {kept}：{system}"
+        );
+    }
 }
 
 /// 没装任务执行者（CLI/老测试）：不给这段说明，它提到 Kind 没有的工具。
@@ -284,8 +284,16 @@ async fn a_root_session_without_a_task_runtime_has_no_task_policy() {
         "没有任务执行者时不追加派任务说明：{system}"
     );
     assert!(
-        system.starts_with("You are AIOS's coordinator: you talk with the user, verify facts, and hand work to ThinAgent."),
-        "Kind 身份按协调者：{system}"
+        !system.contains("Your working directory is"),
+        "Kind 系统提示不写目录：{system}"
+    );
+    assert!(
+        system.starts_with("You are Kind, the user's connector in AIOS."),
+        "Kind 身份段是 reply n 原文：{system}"
+    );
+    assert!(
+        system.contains("Read only until you can answer the user or state the task clearly"),
+        "路由原则要保留：{system}"
     );
 }
 
@@ -1166,7 +1174,7 @@ async fn task_writes_reach_the_root_ws_changed_channel() {
 }
 
 #[tokio::test]
-async fn kind_first_request_has_project_rules_path_not_the_full_file() {
+async fn kind_first_request_has_no_project_rules() {
     let fixture = Fixture::new().await;
     std::fs::create_dir(fixture.cwd.path().join(".git")).unwrap();
     std::fs::write(fixture.cwd.path().join("AGENTS.md"), "KIND-PROJECT-SECRET").unwrap();
@@ -1181,13 +1189,12 @@ async fn kind_first_request_has_project_rules_path_not_the_full_file() {
     assert_eq!(bodies.len(), 1);
     let body = &bodies[0];
     assert!(
-        body.contains("Project rules are at"),
-        "Kind 固定块只有项目规则路径：{body}"
+        !body.contains("Project rules are at"),
+        "Kind 不按 cwd 给项目规则路径：{body}"
     );
-    assert!(body.contains("AGENTS.md"), "路径里带文件名：{body}");
     assert!(
         !body.contains("KIND-PROJECT-SECRET"),
-        "Kind 不拿整份项目规则：{body}"
+        "Kind 不读 cwd 的 AGENTS.md：{body}"
     );
 }
 

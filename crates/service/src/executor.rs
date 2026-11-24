@@ -1696,7 +1696,17 @@ impl TaskRuntime {
     /// 生产里进程退出由操作系统回收；测试要复现「重启后会话写者已经放开」。
     pub fn crash(&self) {
         self.shutting_down.store(true, Ordering::SeqCst);
-        self.running.lock().expect("thinagent 表锁被毒化").clear();
+        let hosts: Vec<_> = self
+            .running
+            .lock()
+            .expect("thinagent 表锁被毒化")
+            .drain()
+            .map(|(_, running)| running.host)
+            .collect();
+        // 模拟进程退出：会话写者也要立刻放锁，不能让还在收尾的 Agent 拖住重启接续。
+        for host in hosts {
+            host.agent().close_session_writer();
+        }
         self.wake();
     }
 

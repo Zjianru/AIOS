@@ -30,7 +30,7 @@ fn seed_keyring(data_dir: &std::path::Path, endpoint: &str) -> std::path::PathBu
 
 fn run_resume(
     data_dir: &std::path::Path,
-    cwd: &std::path::Path,
+    _cwd: &std::path::Path,
     id: &str,
     identity: &std::path::Path,
 ) -> std::process::Output {
@@ -45,8 +45,6 @@ fn run_resume(
             data_dir.to_str().expect("data dir 是 UTF-8"),
             "--identity",
             identity.to_str().expect("identity 是 UTF-8"),
-            "--cwd",
-            cwd.to_str().expect("cwd 是 UTF-8"),
             "你好",
         ])
         .env_remove("http_proxy")

@@ -26,7 +26,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// 交互式会话：空闲时打一行开新一轮；运行中打一行是 steer；/queue <文字> 排 follow-up；Ctrl-C 取消
-    Chat(CommonArgs),
+    Chat(ChatArgs),
     /// 跑一条消息，空闲后退出；completed 退出码 0，其余非 0
     Run(RunArgs),
     /// 起 Web 服务（HTTP POST /api + WebSocket /ws，只绑本机，带启动令牌）
@@ -101,9 +101,6 @@ struct CommonArgs {
     /// Keyring 钥匙文件位置（默认在数据目录之外的用户配置目录）
     #[arg(long)]
     identity: Option<PathBuf>,
-    /// 会话工作目录（默认当前目录）
-    #[arg(long)]
-    cwd: Option<PathBuf>,
     /// 连接 id（Keyring 里的连接；默认会话选择/上次选择/deepseek）
     #[arg(long)]
     connection: Option<String>,
@@ -125,6 +122,15 @@ struct CommonArgs {
     /// 仅开发/DoD 用：覆盖压缩保留比例（默认 0.16，必须小于阈值）
     #[arg(long)]
     compaction_retain: Option<f64>,
+}
+
+#[derive(Args)]
+struct ChatArgs {
+    #[command(flatten)]
+    common: CommonArgs,
+    /// 会话工作目录（默认当前目录）；只有 chat 是编程会话，serve/run 不接
+    #[arg(long)]
+    cwd: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -467,14 +473,10 @@ fn model_with_keyring(
 
 /// 唯一组装入口（T006.15）：这里只把 CLI 参数/env 变成普通配置数据；模型、工具集、
 /// 会话存储的构造由 agent::Agent::open 一处完成（chat/run 共用，后续服务同样走它）。
-async fn open_agent(common: &CommonArgs) -> Result<Agent, CliError> {
+async fn open_agent(common: &CommonArgs, cwd: PathBuf) -> Result<Agent, CliError> {
     let data_dir = match &common.data_dir {
         Some(path) => path.clone(),
         None => default_data_dir()?,
-    };
-    let cwd = match &common.cwd {
-        Some(path) => path.clone(),
-        None => std::env::current_dir()?,
     };
     let resume = match &common.resume {
         Some(raw) => Some(SessionId::parse(raw)?),
@@ -548,10 +550,8 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
         Some(path) => path.clone(),
         None => default_data_dir()?,
     };
-    let cwd = match &args.common.cwd {
-        Some(path) => path.clone(),
-        None => std::env::current_dir()?,
-    };
+    // Kind 没有工作目录：根会话 cwd 只做记录，固定为 $HOME，不读进程 cwd。
+    let cwd = default_home_dir()?;
     // T011.4：本进程的监控记录（process-start 先写；文件在 <数据目录>/monitor/ 下）。
     let monitor = Monitor::open(&data_dir).map_err(|error| CliError::Message(error.to_string()))?;
     // T012.5：目录先用缓存/内置快照（不等网络），后台刷新 models.dev。
@@ -751,9 +751,15 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
 }
 
 fn default_data_dir() -> Result<PathBuf, CliError> {
+    Ok(default_home_dir()?.join(".aios-dev"))
+}
+
+/// 根会话 cwd 的记录值：固定 $HOME；没有 HOME 就起不了 serve。
+fn default_home_dir() -> Result<PathBuf, CliError> {
     let home = std::env::var_os("HOME")
-        .ok_or_else(|| CliError::Message("找不到 HOME，无法确定 ~/.aios-dev".to_owned()))?;
-    Ok(PathBuf::from(home).join(".aios-dev"))
+        .filter(|home| !home.is_empty())
+        .ok_or_else(|| CliError::Message("找不到 HOME，无法确定根会话目录".to_owned()))?;
+    Ok(PathBuf::from(home))
 }
 
 /// chat 一行输入如何分派（T005.11：pending question 时下一行是答案）。
@@ -850,8 +856,12 @@ fn pending_questions_after_event(
     }
 }
 
-async fn chat(args: CommonArgs) -> Result<(), CliError> {
-    let agent = open_agent(&args).await?;
+async fn chat(args: ChatArgs) -> Result<(), CliError> {
+    let cwd = match args.cwd {
+        Some(path) => path,
+        None => std::env::current_dir()?,
+    };
+    let agent = open_agent(&args.common, cwd).await?;
     println!("session: {}", agent.id());
     println!("log: {}", agent.log_path().display());
     let mut events = agent.subscribe();
@@ -965,7 +975,7 @@ async fn chat(args: CommonArgs) -> Result<(), CliError> {
 }
 
 async fn run(args: RunArgs) -> Result<u8, CliError> {
-    let agent = open_agent(&args.common).await?;
+    let agent = open_agent(&args.common, std::env::current_dir()?).await?;
     println!("session: {}", agent.id());
     println!("log: {}", agent.log_path().display());
     let mut events = agent.subscribe();
@@ -1164,12 +1174,16 @@ fn job_completed_text(job_id: &str, status: JobStatus, detail: Option<&str>) -> 
 #[cfg(test)]
 mod tests {
     use agent::{AgentConfig, AgentEvent, CompactionOutcome, JobStatus};
+    use clap::Parser;
     use model::DEFAULT_MAX_TOKENS;
 
+    use std::path::PathBuf;
+
     use super::{
-        ChatInput, CommonArgs, classify_answer, compact_result_text, config_from_args,
-        dispatch_chat_input, is_compact_command, job_completed_text, pending_questions_after_event,
-        question_asked_text, questions_asked_text, run_should_cancel_for_question,
+        ChatInput, Cli, Command, CommonArgs, classify_answer, compact_result_text,
+        config_from_args, dispatch_chat_input, is_compact_command, job_completed_text,
+        pending_questions_after_event, question_asked_text, questions_asked_text,
+        run_should_cancel_for_question,
     };
 
     #[test]
@@ -1433,7 +1447,6 @@ mod tests {
             resume: None,
             data_dir: None,
             identity: None,
-            cwd: None,
             connection: None,
             model: None,
             effort: None,
@@ -1582,6 +1595,20 @@ mod tests {
         assert_eq!(resolved.connection.as_deref(), Some("deepseek"));
         assert_eq!(resolved.model.as_deref(), Some("deepseek-flash"));
         assert_eq!(resolved.effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn serve_no_longer_accepts_cwd_but_chat_does() {
+        assert!(
+            Cli::try_parse_from(["aios-dev", "serve", "--cwd", "/tmp"]).is_err(),
+            "serve 不该再有 --cwd"
+        );
+        let chat =
+            Cli::try_parse_from(["aios-dev", "chat", "--cwd", "/tmp"]).expect("chat 保留 --cwd");
+        match chat.command {
+            Command::Chat(args) => assert_eq!(args.cwd, Some(PathBuf::from("/tmp"))),
+            _ => panic!("chat"),
+        }
     }
 
     #[test]

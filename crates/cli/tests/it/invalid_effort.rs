@@ -40,8 +40,6 @@ async fn empty_effort_is_rejected_before_request() {
             data_dir.path().to_str().unwrap(),
             "--identity",
             identity.to_str().unwrap(),
-            "--cwd",
-            ".",
             "--effort",
             "",
             "你好",

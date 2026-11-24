@@ -205,6 +205,11 @@ pub struct AgentConfig {
     pub identity_prompt: Option<String>,
     /// Kind 只需要项目规则路径（不整份注入 AGENTS.md）；ThinAgent 全文。
     pub project_instructions_path_only: bool,
+    /// 是否把会话工作目录当工作区：系统提示带目录/读法，指令按 cwd 发现。
+    /// false = 无工作区的 Kind（D117）；ThinAgent/CLI 默认 true。
+    pub workspace_context: bool,
+    /// Kind 的读/搜工具只接受绝对路径（/ 或 ~/）；写类工具和 ThinAgent 不受影响。
+    pub absolute_paths_only: bool,
     /// 压缩模板：Kind 七样 / ThinAgent 编码模板。
     pub compaction_profile: CompactionProfile,
     /// 压缩时要额外重铺的固定块（ThinAgent 的任务书+账本）。
@@ -270,6 +275,8 @@ impl Default for AgentConfig {
             memory_flashback: None,
             identity_prompt: None,
             project_instructions_path_only: false,
+            workspace_context: true,
+            absolute_paths_only: false,
             compaction_profile: CompactionProfile::Thin,
             compaction_fixed_block: None,
             pre_compaction: None,
