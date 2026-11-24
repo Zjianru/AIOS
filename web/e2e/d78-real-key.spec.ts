@@ -96,6 +96,8 @@ test('D78 写周报：出写到哪卡，不派任务', async ({ page }) => {
     await expect(card).toBeVisible({ timeout: 180_000 });
     await expect(card).toContainText('写到哪');
     await expect(page.locator('[data-kind="task-result"]')).toHaveCount(0);
+    // 写文件没给路径时，直接是「写到哪」卡；不能先用提问卡追问素材/读者/交付。
+    await expect(page.locator('[data-kind="question"]')).toHaveCount(0);
   } finally {
     await fixture.close();
   }

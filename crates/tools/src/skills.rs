@@ -1003,4 +1003,31 @@ mod guide_tests {
             assert!(parsed.body.contains(card), "说明书漏卡 {card}");
         }
     }
+
+    #[test]
+    fn aios_tasks_skill_never_asks_instead_of_the_write_scope_card() {
+        let tasks = bundled_skills()
+            .iter()
+            .find(|skill| skill.name == "aios-tasks")
+            .expect("aios-tasks 在自带 skill 里");
+        let parsed = parse_skill(tasks.raw).expect("frontmatter 合法");
+        assert!(
+            parsed.body.contains("dispatch directly"),
+            "有原话路径要直接派"
+        );
+        assert!(
+            parsed.body.contains("confirm_write_scope"),
+            "无路径要出写到哪卡"
+        );
+        assert!(
+            parsed.body.contains("do not call") && parsed.body.contains("ask_user_question"),
+            "无路径不能用提问代替卡片"
+        );
+        assert!(
+            !parsed
+                .body
+                .contains("ask the user first and give one concrete path to approve"),
+            "旧的不合适说法要删掉"
+        );
+    }
 }

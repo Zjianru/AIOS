@@ -112,7 +112,7 @@ impl Tool for TaskUpdateTool {
                 return ToolResult::error(
                     call.id,
                     ToolFailure::plain(format!(
-                        "write_scope 不在用户原话里：{write_scope}。不要直接改；调用 propose_action，action=confirm_write_scope，details={{\"write_scope\":\"{write_scope}\",\"task_id\":\"{task_id}\"}}，让用户确认新的写入范围。"
+                        "write_scope 不在用户原话里：{write_scope}。不要直接改；先加载 aios-tasks skill，再调用 propose_action，action=confirm_write_scope，details={{\"write_scope\":\"{write_scope}\",\"task_id\":\"{task_id}\"}}，让用户确认新的写入范围。"
                     )),
                 );
             };

@@ -237,6 +237,10 @@ async fn the_kind_system_prompt_is_neutral_with_only_routing() {
     for kept in [
         "If one message contains several unrelated things",
         "Projects: the fixed block lists existing projects",
+        "Write-file requests: decide the path before anything else",
+        "call task_accept immediately with that exact raw path as write_scope",
+        "Never use ask_user_question in place of that card",
+        "load skill aios-tasks",
     ] {
         assert!(
             system.contains(kept),
@@ -276,6 +280,18 @@ async fn the_kind_system_prompt_is_neutral_with_only_routing() {
         "task_accept 说明也要有进展查询落点：{accept}"
     );
     assert!(
+        accept.contains("pass that exact raw path as write_scope and dispatch immediately"),
+        "有路径要直接派：{accept}"
+    );
+    assert!(
+        accept.contains("do not call ask_user_question"),
+        "无路径不能拿提问代替写到哪卡：{accept}"
+    );
+    assert!(
+        !accept.contains("only when the user named it"),
+        "不能再让模型以为没路径才问：{accept}"
+    );
+    assert!(
         system.contains(
             "Tokens prefixed with @ are paths the user explicitly referenced. Use the read tool when their contents are needed, and do not claim to have inspected one before reading. @\"...\" quotes a path containing spaces."
         ),
@@ -312,6 +328,13 @@ async fn the_kind_system_prompt_is_neutral_with_only_routing() {
             "{name} 的 path 要必填"
         );
     }
+    assert!(
+        schema("task_accept")["input_schema"]["properties"]["write_scope"]["description"]
+            .as_str()
+            .is_some_and(|value| value.contains("one concrete / or ~/ path you propose")),
+        "write_scope 说明要给出无路径时提议具体路径：{}",
+        schema("task_accept")["input_schema"]["properties"]["write_scope"]["description"]
+    );
     let cwd_description = |name: &str| -> &str {
         request["tools"]
             .as_array()

@@ -74,6 +74,8 @@ assert.deepEqual(splitLocalPathText('/tmp/a.html. 句号不算路径'), [
   '. 句号不算路径',
 ]);
 assert.deepEqual(splitLocalPathText('/tmp/a.html-backup 不认'), ['/tmp/a.html-backup 不认']);
+assert.deepEqual(splitLocalPathText('把这段写进 ~/Desktop/t082.md'), ['把这段写进 ~/Desktop/t082.md']);
+assert.deepEqual(splitLocalPathText('~/Desktop/a.md 和 /tmp/b.md'), ['~/Desktop/a.md 和 ', { path: '/tmp/b.md' }]);
 assert.deepEqual(splitLocalPathText('普通一句话，没有路径'), ['普通一句话，没有路径']);
 assert.deepEqual(splitLocalPathText(''), []);
 

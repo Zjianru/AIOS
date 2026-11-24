@@ -48,6 +48,8 @@ const MAX_PATH_LENGTH = 1024;
 /** 能开始一条路径：行首、空白、标点或中文旁边都算；紧贴字母数字/斜杠的是分数或 URL 的一段。 */
 function startsPath(text: string, index: number): boolean {
   if (index === 0) return true;
+  // `~/Desktop/a.md` 里的 `/` 是主目录路径的一部分，不是从根开始的绝对路径。
+  if (text[index - 1] === '~') return false;
   return !/[A-Za-z0-9_/\\]/.test(text[index - 1]);
 }
 

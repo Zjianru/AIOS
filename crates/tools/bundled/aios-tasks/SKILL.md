@@ -11,11 +11,11 @@ Use this when the user asks to stop a task they had you dispatch — "stop that 
 
 `task_accept` takes `write_scope`: one path. A file means only that file may change; a directory means anything under it may change. The scope is frozen into the task, and the task's write and edit calls are refused outside it. Omit it only for a read-only investigation.
 
-- If the user named the file or directory, pass it as `write_scope` and dispatch directly.
-- If you inferred the path or cannot find it, ask the user first and give one concrete path to approve. Do not dispatch until they answer.
+- If the user's message already contains a path starting with / or ~/ (including a `~/...` path), pass that exact raw path as `write_scope` and dispatch directly. Do not ask what to write or whether to proceed, and do not wait for the body text; the task can be dispatched before the text arrives.
+- If the user wants a file written but no path appears, do not call `ask_user_question` and do not dispatch. Call `propose_action` once with one `confirm_write_scope` option whose `details` are `{ "write_scope": "<one concrete / or ~/ path you propose>", "task": { ...full task_accept arguments... } }`; let the user confirm where to write. Use the project's default directory or the user's home plus a filename when no path is given.
 - The Kind conversation's directory is not the write scope. Never pass the cwd just because the work happens there.
 - Set `worktree: true` only when the user explicitly asks to work in a git worktree.
-- When a task hands back because it needs a wider scope, ask the user. After they agree, call `task_update` with `{ "task_id": "<the id task_accept returned>", "write_scope": "<path>" }`: it records a new requirement version and resumes the task with the new scope.
+- When a task hands back because it needs a wider scope, do not call `task_update` until the user agrees. When their message contains the new / or ~/ path, call `task_update` with `{ "task_id": "<the id task_accept returned>", "write_scope": "<path>" }`: it records a new requirement version and resumes the task with the new scope. If they agreed but did not say the exact path, propose `confirm_write_scope` with the `task_id`; do not use `ask_user_question` for the path.
 
 ## 用户原话（quote）
 
