@@ -340,6 +340,13 @@ impl ActionKind for MemoryAction {
             }
             Kind::Correct => {
                 let (current, title, summary, body, reason) = self.corrected(details)?;
+                if title == current.title
+                    && summary == current.summary
+                    && body == current.body
+                    && reason.is_empty()
+                {
+                    return Err("没有改任何文字".to_owned());
+                }
                 Self::check_user_words(
                     env,
                     &[

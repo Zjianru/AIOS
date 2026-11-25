@@ -1864,7 +1864,7 @@ async fn accept_deliveries_does_not_accept_a_report_that_changed_after_the_card(
     );
 }
 
-/// T083.2：项目/日历/记忆动作都登记在对应 skill 名下。
+/// 项目/日历/记忆动作都登记在对应 skill 名下。
 #[test]
 fn project_calendar_memory_actions_are_registered() {
     let directory = tempfile::tempdir().unwrap();
@@ -2227,4 +2227,71 @@ async fn appointment_pause_act_uses_the_calendar_action() {
     action.act(&details, scenario.host()).await.expect("暂停");
     let paused = store.appointment(&appointment.id).unwrap().unwrap();
     assert_eq!(paused.status, calendar::AppointmentStatus::Paused);
+}
+
+#[test]
+fn builtin_dream_appointment_card_is_reachable() {
+    let directory = tempfile::tempdir().unwrap();
+    let data_dir = directory.path();
+    let action = settings_action(data_dir, "appointment_pause");
+    let facts = action
+        .describe(
+            &json!({ "appointment_id": "builtin:dream" }),
+            &action_env(data_dir, &data_dir.join("identity.txt")),
+        )
+        .expect("内置做梦行要能出卡");
+    assert_eq!(facts[0].value, "做梦（内置）");
+    assert!(facts[1].value.contains("做梦"), "{:?}", facts[1]);
+    assert_eq!(facts[2].value, "关闭做梦");
+}
+
+/// 直接 action_act 带 details 也不能绕过彻底删/更正的原话核。
+#[tokio::test]
+async fn direct_action_act_still_checks_memory_words() {
+    let scenario = scenario(vec![skill_script()], Arc::new(ActionRegistry::empty())).await;
+    let data_dir = scenario.data_dir.clone();
+    scenario
+        .host
+        .append_user_message_for_test("忘掉这条，改成记错了")
+        .await
+        .expect("用户原话");
+    let store = memory::MemoryStore::open(data_dir.join("memory.sqlite")).unwrap();
+    let item = store
+        .write(
+            memory::types::WriteOp::Remember {
+                title: "旧标题".to_owned(),
+                summary: "旧摘要".to_owned(),
+                body: "旧正文".to_owned(),
+                source_kind: "user".to_owned(),
+                source_ref: "test".to_owned(),
+            },
+            &memory::types::WriteContext::user(),
+        )
+        .unwrap()
+        .item
+        .expect("条目");
+    let forget = scenario
+        .host
+        .dispatch(Call::ActionAct(service::ActionActRequest {
+            action: "memory_forget".to_owned(),
+            details: json!({ "id": item.id }),
+        }));
+    assert!(forget.await.is_err(), "没有彻底删原话不能彻底删");
+    assert_eq!(
+        store.item(&item.id).unwrap().expect("还在").status,
+        "active",
+        "被拒绝后不能删"
+    );
+    let correct = scenario
+        .host
+        .dispatch(Call::ActionAct(service::ActionActRequest {
+            action: "memory_correct".to_owned(),
+            details: json!({ "id": item.id, "title": "Kind 改的" }),
+        }));
+    assert!(correct.await.is_err(), "Kind 改的文字不能直接更正");
+    assert_eq!(
+        store.item(&item.id).unwrap().expect("还在").title,
+        "旧标题",
+        "被拒绝后不能改"
+    );
 }

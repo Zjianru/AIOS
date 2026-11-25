@@ -89,7 +89,46 @@ impl ActionKind for AppointmentAction {
     }
 
     fn describe(&self, details: &Value, _env: &ActionEnv<'_>) -> Result<Vec<CardFact>, String> {
-        let appointment = self.appointment(&Self::id(details)?)?;
+        let id = Self::id(details)?;
+        if id == "builtin:dream" {
+            let settings = memory::MemoryStore::open(self.data_dir.join("memory.sqlite"))
+                .map_err(|error| format!("记忆库读不出来：{error}"))?
+                .dream_settings()
+                .map_err(|error| format!("做梦设置读不出来：{error}"))?;
+            let (fact, action) = match self.kind {
+                CalendarActionKind::Pause => (
+                    format!(
+                        "做梦{} → 做梦关",
+                        if settings.enabled { "开" } else { "关" }
+                    ),
+                    "关闭做梦",
+                ),
+                CalendarActionKind::Resume => (
+                    format!(
+                        "做梦{} → 做梦开",
+                        if settings.enabled { "开" } else { "关" }
+                    ),
+                    "打开做梦",
+                ),
+                CalendarActionKind::RunNow => ("立即整理一次".to_owned(), "立刻整理"),
+                CalendarActionKind::Cancel => return Err("做梦是内置行，不能取消".to_owned()),
+            };
+            return Ok(vec![
+                CardFact {
+                    name: "约定".to_owned(),
+                    value: "做梦（内置）".to_owned(),
+                },
+                CardFact {
+                    name: "状态".to_owned(),
+                    value: fact,
+                },
+                CardFact {
+                    name: "动作".to_owned(),
+                    value: action.to_owned(),
+                },
+            ]);
+        }
+        let appointment = self.appointment(&id)?;
         let (fact, action) = match self.kind {
             CalendarActionKind::Pause => (
                 format!("{} → {}", Self::status_zh(appointment.status), "已暂停"),
