@@ -1192,9 +1192,34 @@ export async function startD78KernelFixture(): Promise<KernelFixture> {
     dropProxy: async () => {},
     restoreProxy: async () => {},
     close: async () => {
-      child.kill('SIGTERM');
-      if (process.env.AIOS_DOD_KEEP !== '1') {
-        await rm(root, { recursive: true, force: true });
+      // 先等 serve 真退出，再删临时根；SIGTERM 后立刻 rm 会和还在写库的进程抢目录。
+      await new Promise<void>((resolve) => {
+        if (child.exitCode !== null || child.signalCode !== null) {
+          resolve();
+          return;
+        }
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(forceKill);
+          clearTimeout(giveUp);
+          resolve();
+        };
+        child.once('exit', finish);
+        const forceKill = setTimeout(() => child.kill('SIGKILL'), 5_000);
+        const giveUp = setTimeout(finish, 10_000);
+        child.kill('SIGTERM');
+      });
+      if (process.env.AIOS_DOD_KEEP === '1') return;
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        try {
+          await rm(root, { recursive: true, force: true });
+          return;
+        } catch (error) {
+          if (attempt === 9) throw error;
+          await new Promise((resolve) => setTimeout(resolve, 200));
+        }
       }
     },
   };
