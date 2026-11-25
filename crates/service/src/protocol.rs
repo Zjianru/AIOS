@@ -478,6 +478,16 @@ pub struct TaskReadReport {
     pub checks: Vec<TaskReadGateCheck>,
 }
 
+/// T084：任务正在等模型用量恢复的只读事实。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskReadUsageWait {
+    /// 服务端给的绝对恢复时刻（unix 毫秒）。
+    pub resume_at: i64,
+    /// 等待时冻结的连接 id。
+    pub connection: String,
+}
+
 /// T057：程序门任务页的一条命令。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -675,6 +685,9 @@ pub struct TaskReadHeader {
     /// 「待 Kind 核实，尚未接续」；送到之后横幅消失，任务仍是「被打断了」。
     #[serde(default, rename = "restartPending")]
     pub restart_pending: bool,
+    /// T084：正在等模型用量恢复；无等待为 None。
+    #[serde(default, rename = "usageWait", skip_serializing_if = "Option::is_none")]
+    pub usage_wait: Option<TaskReadUsageWait>,
     /// 当前 Attempt 最近一份报告的写入时间（unix 毫秒）；None = 这次 Attempt 还没交报告。
     /// 终态报告后执行者会立刻关掉会话，日志可能没有 turn/end：页面据此判断最后一轮不再在跑。
     #[serde(

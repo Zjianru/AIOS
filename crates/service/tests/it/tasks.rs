@@ -45,6 +45,7 @@ mod restart_tests;
 mod retained_background_tests;
 mod stop_tests;
 mod trigger_tests;
+mod usage_wait_tests;
 mod workflow_tests;
 
 struct Fixture {

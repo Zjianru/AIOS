@@ -674,6 +674,8 @@ pub enum AttemptTrigger {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         note: Option<String>,
     },
+    /// T084：模型用量到上限后的到点自动接续。
+    UsageResume,
 }
 
 /// 一条用户输入；来源目前只有用户本人。
@@ -738,6 +740,8 @@ pub enum AttemptEnd {
     Interrupted,
     /// 崩溃留下的、没开成会话的 Attempt 被收尾。
     NotOpened,
+    /// T084：这次 Attempt 让给等模型恢复时间；到点由 UsageResume 效果开新 Attempt。
+    Deferred,
 }
 
 /// ThinAgent 报的终态；`Waiting` 是执行者在 turn 结束时合成的，不是模型报的。

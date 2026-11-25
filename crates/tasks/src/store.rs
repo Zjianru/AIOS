@@ -1494,6 +1494,16 @@ impl Store {
         payload: &EffectPayload,
         now: i64,
     ) -> Result<(), TaskError> {
+        self.enqueue_effect_due_in(conn, payload, now, now)
+    }
+
+    fn enqueue_effect_due_in(
+        &self,
+        conn: &Connection,
+        payload: &EffectPayload,
+        due: i64,
+        now: i64,
+    ) -> Result<(), TaskError> {
         let seq = self.next_seq();
         conn.execute(
             "INSERT INTO effect (kind, key, value, seq, due, since) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -1508,11 +1518,131 @@ impl Store {
                 payload.key(),
                 serde_json::to_string(payload)?,
                 seq,
-                now,
+                due,
                 now
             ],
         )?;
         Ok(())
+    }
+
+    /// T084：任务进入用量等待。一个事务里结束 Attempt（Deferred）并排到点效果；
+    /// 不写报告、不排 relay，因此不会叫醒 Kind。重复调用同一等待幂等。
+    pub fn begin_usage_wait(
+        &self,
+        id: &TaskId,
+        attempt_id: AttemptId,
+        resume_at: i64,
+        connection: &str,
+        now: i64,
+    ) -> Result<(), TaskError> {
+        if connection.trim().is_empty() {
+            return Err(TaskError::EmptyConversation);
+        }
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut task = load_task_required(&transaction, id)?;
+        ensure_not_cancelled(&task)?;
+        let Some(latest) = task.latest_attempt() else {
+            return Err(TaskError::AttemptNotFound {
+                task: id.to_string(),
+                attempt: attempt_id.0,
+            });
+        };
+        if latest.id != attempt_id {
+            return Err(TaskError::AttemptEnded {
+                task: id.to_string(),
+                attempt: attempt_id.0,
+            });
+        }
+        if latest.end == Some(AttemptEnd::Deferred) {
+            return self
+                .enqueue_effect_due_in(
+                    &transaction,
+                    &EffectPayload::UsageResume {
+                        task_id: id.clone(),
+                        attempt_id,
+                        resume_at,
+                        connection: connection.to_owned(),
+                    },
+                    resume_at,
+                    now,
+                )
+                .and_then(|()| transaction.commit().map_err(TaskError::from));
+        }
+        if latest.ended_at.is_some() || latest.end.is_some() {
+            return Err(TaskError::AttemptEnded {
+                task: id.to_string(),
+                attempt: attempt_id.0,
+            });
+        }
+        if task.reports.iter().any(|report| report.state.is_terminal()) {
+            return Err(TaskError::AttemptEnded {
+                task: id.to_string(),
+                attempt: attempt_id.0,
+            });
+        }
+        let attempt = task
+            .runs
+            .iter_mut()
+            .flat_map(|run| run.attempts.iter_mut())
+            .find(|attempt| attempt.id == attempt_id)
+            .expect("上面已核对最新 Attempt");
+        attempt.end = Some(AttemptEnd::Deferred);
+        attempt.ended_at = Some(now);
+        save_task(Some(self), &transaction, &task)?;
+        self.enqueue_effect_due_in(
+            &transaction,
+            &EffectPayload::UsageResume {
+                task_id: id.clone(),
+                attempt_id,
+                resume_at,
+                connection: connection.to_owned(),
+            },
+            resume_at,
+            now,
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// 读一条还在的效果载荷；没有返回 None。
+    pub fn pending_effect(
+        &self,
+        kind: EffectKind,
+        key: &str,
+    ) -> Result<Option<EffectPayload>, TaskError> {
+        let conn = self.lock()?;
+        let value = conn
+            .query_row(
+                "SELECT value FROM effect WHERE kind = ?1 AND key = ?2",
+                params![kind.as_str(), key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        value
+            .map(|value| serde_json::from_str(&value).map_err(TaskError::from))
+            .transpose()
+    }
+
+    /// T084：席位满时泵需要把 UsageResume 的 due 排除在可醒时间外，等 release_seat 叫醒。
+    pub fn next_effect_due_excluding(&self, kind: EffectKind) -> Result<Option<i64>, TaskError> {
+        let conn = self.lock()?;
+        conn.query_row(
+            "SELECT MIN(due) FROM effect WHERE kind <> ?1",
+            params![kind.as_str()],
+            |row| row.get(0),
+        )
+        .map_err(TaskError::from)
+    }
+
+    pub fn next_effect_due_of(&self, kind: EffectKind) -> Result<Option<i64>, TaskError> {
+        let conn = self.lock()?;
+        conn.query_row(
+            "SELECT MIN(due) FROM effect WHERE kind = ?1",
+            params![kind.as_str()],
+            |row| row.get(0),
+        )
+        .map_err(TaskError::from)
     }
 
     /// 领一条到期的效果（同一种类里按队列位置最先的到期行）。
@@ -1542,6 +1672,22 @@ impl Store {
         conn.query_row("SELECT MIN(due) FROM effect", [], |row| row.get(0))
             .optional()
             .map_err(TaskError::from)
+    }
+
+    /// 测试钩子：把一条未领效果的 due 拨到指定时刻（不新增生产定时器）。
+    #[doc(hidden)]
+    pub fn reschedule_effect(
+        &self,
+        kind: EffectKind,
+        key: &str,
+        due: i64,
+    ) -> Result<(), TaskError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "UPDATE effect SET due = ?3 WHERE kind = ?1 AND key = ?2",
+            params![kind.as_str(), key, due],
+        )?;
+        Ok(())
     }
 
     /// 撤掉一条还没领的效果（换轮/停止时作废旧到点）。

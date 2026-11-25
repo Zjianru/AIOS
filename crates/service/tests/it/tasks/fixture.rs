@@ -32,6 +32,8 @@ pub(super) struct RouterState {
     pub(super) thin_by_task: Mutex<HashMap<String, VecDeque<String>>>,
     /// 任务 id 要受理后才知道；测试先按标题排脚本（assignment 里也有标题）。
     pub(super) thin_by_title: Mutex<HashMap<String, VecDeque<String>>>,
+    /// 先让 ThinAgent 吃一次 HTTP 错误（T084 用量等待测试）；字段是状态码 + Retry-After。
+    pub(super) thin_errors: Mutex<VecDeque<(u16, Option<String>)>>,
 
     pub(super) bodies: Mutex<Vec<(bool, String)>>,
     pub(super) unexpected: Mutex<Vec<(bool, String)>>,
@@ -57,6 +59,7 @@ impl Router {
                 thin: Mutex::new(VecDeque::new()),
                 thin_by_task: Mutex::new(HashMap::new()),
                 thin_by_title: Mutex::new(HashMap::new()),
+                thin_errors: Mutex::new(VecDeque::new()),
                 bodies: Mutex::new(Vec::new()),
                 unexpected: Mutex::new(Vec::new()),
                 thin_delay: Mutex::new(None),
@@ -175,6 +178,14 @@ impl Router {
         self.state.kind.lock().unwrap().push_back(body.into());
     }
 
+    pub(super) fn push_thin_error(&self, status: u16, retry_after: Option<&str>) {
+        self.state
+            .thin_errors
+            .lock()
+            .unwrap()
+            .push_back((status, retry_after.map(str::to_owned)));
+    }
+
     pub(super) fn push_thin(&self, body: impl Into<String>) {
         self.state.thin.lock().unwrap().push_back(body.into());
     }
@@ -240,6 +251,17 @@ impl Respond for Router {
             !body.contains("\"name\":\"task_accept\"") && body.contains("\"name\":\"task_report\"");
         self.state.bodies.lock().unwrap().push((thin, body.clone()));
         // 多任务同时跑：先按 assignment 的 task_id、再按标题取这个任务的脚本；没有就落到公共队列。
+        if thin
+            && let Some((status, retry_after)) = self.state.thin_errors.lock().unwrap().pop_front()
+        {
+            let mut template = ResponseTemplate::new(status).set_body_json(serde_json::json!({
+                "error": {"type": "rate_limit_error", "message": "用量上限"}
+            }));
+            if let Some(retry_after) = retry_after {
+                template = template.insert_header("retry-after", retry_after);
+            }
+            return template;
+        }
         let per_task = if thin {
             self.take_thin_script(&body)
         } else {

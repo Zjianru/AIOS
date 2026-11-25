@@ -4,6 +4,9 @@
 //! 时间一律由调用方传入 unix 毫秒，库内不读时钟。
 
 #[cfg(test)]
+mod usage_wait_tests;
+
+#[cfg(test)]
 mod origin_tests;
 
 #[cfg(test)]

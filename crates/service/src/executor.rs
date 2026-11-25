@@ -35,7 +35,7 @@ use crate::protocol::{
     GateJudgeRequest, GateJudgeResponse, GateVerdictView, ServiceEvent, StopMode,
     TaskContinueRequest, TaskContinueResponse, TaskInterruptResponse, TaskReadHeader,
     TaskReadReport, TaskReadReportOrigin, TaskReadReportState, TaskReadRequest, TaskReadResponse,
-    TaskSayRequest, TaskSayResponse, TaskStopResponse,
+    TaskReadUsageWait, TaskSayRequest, TaskSayResponse, TaskStopResponse,
 };
 use crate::root::RootSessionOptions;
 use crate::session_host::ServiceHost;
@@ -64,6 +64,8 @@ mod missing_tool_policy_tests;
 mod program_gate_tests;
 #[cfg(test)]
 mod title_limit_tests;
+#[cfg(test)]
+mod usage_wait_tests;
 
 /// 任务库文件名（数据目录下）。
 pub const TASKS_DB_FILE: &str = "tasks.sqlite";
@@ -175,6 +177,8 @@ const BACKGROUND_STOPPED_NOTE: &str = "这些命令跑过 30 分钟被停了";
 
 /// 确认接续后给 ThinAgent 的第一条输入（照 DSH RECOVERY_NOTE，换成 AIOS 的话；spec v1）。
 const RESUME_NOTE: &str = "AIOS 在这个任务进行中重启了。先看当前的文件和状态再继续；已经做完的外部动作不要再做一遍。把原来的任务做完，然后用 task_report 上报。";
+/// T084：模型用量到点自动续跑的第一条输入（D82/05 篇第 10 节）。
+const USAGE_RESUME_NOTE: &str = "上一轮因为临时原因中断，从断处继续。";
 
 /// 重启汇报里一份最近报告最多带多少字（spec v1：last_report ≤ 300）。
 const RESTART_REPORT_CHARS: usize = 300;
@@ -1100,6 +1104,7 @@ impl TaskRuntime {
                     && self.store.restart_pending(&task.id).map_err(|error| {
                         ServiceError::TaskUnavailable(format!("重启汇报的状态读不出来：{error}"))
                     })?,
+                usage_wait: self.task_usage_wait(&task),
                 reported_at: latest_report
                     .filter(|report| {
                         matches!(
@@ -1123,6 +1128,31 @@ impl TaskRuntime {
             currency: Some(settings.currency),
             ledger,
         })
+    }
+
+    /// T084：当前用量等待的只读事实；最新 Attempt 已 Deferred 且 UsageResume 还在才算。
+    fn task_usage_wait(&self, task: &Task) -> Option<TaskReadUsageWait> {
+        let attempt = task.latest_attempt()?;
+        if attempt.end != Some(AttemptEnd::Deferred) {
+            return None;
+        }
+        let key = format!("usage-resume:{}:{}", task.id, attempt.id.0);
+        match self
+            .store
+            .pending_effect(tasks::EffectKind::UsageResume, &key)
+            .ok()
+            .flatten()?
+        {
+            tasks::EffectPayload::UsageResume {
+                resume_at,
+                connection,
+                ..
+            } => Some(TaskReadUsageWait {
+                resume_at,
+                connection,
+            }),
+            _ => None,
+        }
     }
 
     /// 任务要求版本给页面的只读视图；子任务/门/里程碑标继承来源=总任务标题。
@@ -1710,6 +1740,28 @@ impl TaskRuntime {
         self.wake();
     }
 
+    /// 测试钩子：把用量等待的 due 拨到现在，测泵到点续跑（不新增生产定时器）。
+    #[doc(hidden)]
+    pub fn reschedule_usage_wait_for_test(&self, task_id: &str) -> Result<(), String> {
+        let task = self
+            .store
+            .task(&TaskId::from(task_id.to_owned()))
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "找不到任务".to_owned())?;
+        let attempt = task
+            .latest_attempt()
+            .ok_or_else(|| "任务没有 Attempt".to_owned())?;
+        if attempt.end != Some(AttemptEnd::Deferred) {
+            return Err("任务不在用量等待".to_owned());
+        }
+        let key = format!("usage-resume:{}:{}", task.id, attempt.id.0);
+        self.store
+            .reschedule_effect(EffectKind::UsageResume, &key, Self::now())
+            .map_err(|error| error.to_string())?;
+        self.wake();
+        Ok(())
+    }
+
     /// 测试钩子：把等后台的上限调短；生产恒为 30 分钟。
     #[doc(hidden)]
     pub fn set_background_limit_ms(&self, millis: i64) {
@@ -1747,7 +1799,26 @@ impl TaskRuntime {
             .calendar
             .as_ref()
             .and_then(|store| store.next_wake_at().ok().flatten());
-        let effect_due = self.store.next_effect_due().ok().flatten();
+        let other_effect_due = self
+            .store
+            .next_effect_due_excluding(EffectKind::UsageResume)
+            .ok()
+            .flatten();
+        // 席位满时不把 UsageResume 的 due 当可醒时间：效果留库，等 release_seat 叫醒。
+        let usage_due = self
+            .has_launch_room()
+            .then(|| {
+                self.store
+                    .next_effect_due_of(EffectKind::UsageResume)
+                    .ok()
+                    .flatten()
+            })
+            .flatten();
+        let effect_due = match (other_effect_due, usage_due) {
+            (Some(left), Some(right)) => Some(left.min(right)),
+            (Some(at), None) | (None, Some(at)) => Some(at),
+            (None, None) => None,
+        };
         match (calendar_due, effect_due) {
             (Some(left), Some(right)) => Some(left.min(right)),
             (Some(at), None) | (None, Some(at)) => Some(at),
@@ -1868,6 +1939,23 @@ impl TaskRuntime {
                 if self.shutting_down.load(Ordering::SeqCst) {
                     return;
                 }
+                // 用量到点：席位满不领，等 release_seat 叫醒；全局暂停不领。
+                if !self.exec_paused.load(Ordering::SeqCst) && self.has_launch_room() {
+                    match self
+                        .store
+                        .claim_effect(EffectKind::UsageResume, Self::now())
+                    {
+                        Ok(Some(claim)) => {
+                            worked = true;
+                            self.deliver_usage_resume(claim).await;
+                        }
+                        Ok(None) => {}
+                        Err(error) => eprintln!("用量等待到点领取失败：{error}"),
+                    }
+                }
+                if self.shutting_down.load(Ordering::SeqCst) {
+                    return;
+                }
                 // 等后台的 30 分钟到点；到点杀命令、投说明、再合成等待。
                 match self
                     .store
@@ -1929,6 +2017,97 @@ impl TaskRuntime {
             }
             self.pump_wakes.fetch_add(1, Ordering::SeqCst);
         }
+    }
+
+    /// T084：用量到点后走现有 open_resume 开新 Attempt；席位/会话没让出就留效果等叫醒。
+    async fn deliver_usage_resume(self: &Arc<Self>, claim: EffectClaim) {
+        let EffectPayload::UsageResume {
+            task_id,
+            attempt_id,
+            ..
+        } = &claim.payload
+        else {
+            self.finish_or_fail(&claim, Err("usage-resume 载荷不是 usage-resume".to_owned()));
+            return;
+        };
+        let task_id = task_id.clone();
+        let attempt_id = *attempt_id;
+        let task = match self.store.task(&task_id) {
+            Ok(Some(task)) => task,
+            Ok(None) => {
+                self.finish_or_fail(&claim, Ok(()));
+                return;
+            }
+            Err(error) => {
+                self.finish_or_fail(&claim, Err(error.to_string()));
+                return;
+            }
+        };
+        if task.cancelled_message().is_some() {
+            self.finish_or_fail(&claim, Ok(()));
+            return;
+        }
+        let Some(attempt) = task.latest_attempt().cloned() else {
+            self.finish_or_fail(&claim, Ok(()));
+            return;
+        };
+        if attempt.id != attempt_id || attempt.end != Some(AttemptEnd::Deferred) {
+            self.finish_or_fail(&claim, Ok(()));
+            return;
+        }
+        if self.shutting_down.load(Ordering::SeqCst) || !self.has_launch_room() {
+            return;
+        }
+        let opened = match self
+            .open_resume(
+                &task,
+                &attempt,
+                AttemptTrigger::UsageResume,
+                SlotKind::Wake,
+                Vec::new(),
+            )
+            .await
+        {
+            Ok(opened) => opened,
+            Err(ResumeBlock::Later) => return,
+            Err(ResumeBlock::AlreadyStarted) => {
+                self.finish_or_fail(&claim, Ok(()));
+                return;
+            }
+            Err(ResumeBlock::PackageMissing) | Err(ResumeBlock::NoSession(_)) => {
+                // 会话/任务包接不上：效果收掉，任务交给现有缺项/失败事实；不无限重试。
+                self.finish_or_fail(&claim, Ok(()));
+                return;
+            }
+        };
+        let request_id = format!("usage-resume:{task_id}:{}", opened.attempt_id.0);
+        let sent = opened
+            .host
+            .send_message(
+                &request_id,
+                UserMessage::text(USAGE_RESUME_NOTE),
+                DeliveryMode::Steer,
+            )
+            .await;
+        if let Err(error) = sent {
+            opened.host.shutdown().await;
+            self.forget_running(opened.host.agent().id().as_str());
+            best_effort(
+                "用量续跑说明没送出去的 Attempt 没收尾",
+                self.store.end_attempt(
+                    &task_id,
+                    opened.attempt_id,
+                    Self::now(),
+                    AttemptEnd::NotOpened,
+                ),
+            );
+            self.release_seat(task_id.as_str());
+            self.finish_or_fail(&claim, Err(format!("用量续跑说明没送进任务会话：{error}")));
+            return;
+        }
+        self.finish_or_fail(&claim, Ok(()));
+        self.notify_changed(&task_id);
+        self.wake();
     }
 
     /// 把一条 restart Steer 进 Kind 根会话：汇报这次启动打断、还没接续的任务，出接续卡。

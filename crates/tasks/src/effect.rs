@@ -22,6 +22,8 @@ pub enum EffectKind {
     BackgroundLimit,
     /// T077：取消后立即掐断在跑的宿主；key 是任务 id。
     Cancel,
+    /// T084：模型用量到点自动接续；key 是 usage-resume:<task>:<attempt>。
+    UsageResume,
 }
 
 impl EffectKind {
@@ -35,6 +37,7 @@ impl EffectKind {
             Self::AppointmentWake => "appointment-wake",
             Self::BackgroundLimit => "background-limit",
             Self::Cancel => "cancel",
+            Self::UsageResume => "usage-resume",
         }
     }
 
@@ -49,7 +52,8 @@ impl EffectKind {
             | Self::Restart
             | Self::AppointmentWake
             | Self::BackgroundLimit
-            | Self::Cancel => (2_000, 60_000),
+            | Self::Cancel
+            | Self::UsageResume => (2_000, 60_000),
         }
     }
 
@@ -129,6 +133,13 @@ pub enum EffectPayload {
     Cancel {
         task_id: TaskId,
     },
+    /// T084：到点自动开新 Attempt；恢复时刻就是效果的 due。
+    UsageResume {
+        task_id: TaskId,
+        attempt_id: AttemptId,
+        resume_at: i64,
+        connection: String,
+    },
 }
 
 impl EffectPayload {
@@ -145,6 +156,7 @@ impl EffectPayload {
             Self::AppointmentWake { .. } => EffectKind::AppointmentWake,
             Self::BackgroundLimit { .. } => EffectKind::BackgroundLimit,
             Self::Cancel { .. } => EffectKind::Cancel,
+            Self::UsageResume { .. } => EffectKind::UsageResume,
         }
     }
 
@@ -169,6 +181,11 @@ impl EffectPayload {
             Self::Restart { boot_id, .. } => boot_id.to_string(),
             Self::AppointmentWake { run_id, .. } => run_id.to_string(),
             Self::Cancel { task_id } => task_id.to_string(),
+            Self::UsageResume {
+                task_id,
+                attempt_id,
+                ..
+            } => format!("usage-resume:{task_id}:{}", attempt_id.0),
         }
     }
 }

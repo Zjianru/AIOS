@@ -200,7 +200,8 @@ impl TaskRuntime {
             | EffectPayload::Restart { .. }
             | EffectPayload::AppointmentWake { .. }
             | EffectPayload::BackgroundLimit { .. }
-            | EffectPayload::Cancel { .. } => {
+            | EffectPayload::Cancel { .. }
+            | EffectPayload::UsageResume { .. } => {
                 return Err("relay 载荷不是 relay".to_owned());
             }
         };
@@ -431,7 +432,8 @@ impl TaskRuntime {
             | EffectPayload::Restart { .. }
             | EffectPayload::AppointmentWake { .. }
             | EffectPayload::BackgroundLimit { .. }
-            | EffectPayload::Cancel { .. } => Err("relay 载荷不是 relay".to_owned()),
+            | EffectPayload::Cancel { .. }
+            | EffectPayload::UsageResume { .. } => Err("relay 载荷不是 relay".to_owned()),
         }
     }
 
@@ -441,7 +443,7 @@ impl TaskRuntime {
         task_id: &TaskId,
         attempt_id: AttemptId,
         conversation: &SessionId,
-        _outcome: agent::TurnOutcome,
+        outcome: agent::TurnOutcome,
     ) {
         let Ok(Some(task)) = self.store.task(task_id) else {
             return;
@@ -466,6 +468,36 @@ impl TaskRuntime {
         }) {
             self.release_seat(task_id.as_str());
             self.cancel_background_limit(attempt_id);
+            return;
+        }
+        if let agent::TurnOutcome::Error {
+            resume_at_ms: Some(resume_at),
+            ..
+        } = outcome
+            && self
+                .store
+                .begin_usage_wait(
+                    task_id,
+                    attempt_id,
+                    resume_at,
+                    &task.model.connection,
+                    Self::now(),
+                )
+                .is_ok()
+        {
+            // 用量等待不写报告、不排 relay：Kind 不跑这一轮；卡/页头走 task-changed + task-read。
+            self.cancel_background_limit(attempt_id);
+            let running = self
+                .running
+                .lock()
+                .expect("thinagent 表锁被毒化")
+                .remove(conversation.as_str());
+            if let Some(entry) = running {
+                entry.host.shutdown().await;
+            }
+            self.session_relinquished.notify_waiters();
+            self.release_seat(task_id.as_str());
+            self.notify_changed(task_id);
             return;
         }
         // 用户自己停下这一轮：不算 ThinAgent 没上报，不合成 waiting，Attempt 留着接着做。
