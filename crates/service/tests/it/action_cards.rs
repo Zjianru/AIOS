@@ -1863,3 +1863,368 @@ async fn accept_deliveries_does_not_accept_a_report_that_changed_after_the_card(
         "不能接受新报告"
     );
 }
+
+/// T083.2：项目/日历/记忆动作都登记在对应 skill 名下。
+#[test]
+fn project_calendar_memory_actions_are_registered() {
+    let directory = tempfile::tempdir().unwrap();
+    let data_dir = directory.path();
+    let registry = ActionRegistry::settings(data_dir.to_path_buf(), None);
+    for (name, skill) in [
+        ("project_update", "aios-tasks"),
+        ("appointment_pause", "aios-calendar"),
+        ("appointment_resume", "aios-calendar"),
+        ("appointment_run_now", "aios-calendar"),
+        ("memory_delete", "aios-memory"),
+        ("memory_forget", "aios-memory"),
+        ("memory_restore", "aios-memory"),
+        ("memory_correct", "aios-memory"),
+        ("memory_pin", "aios-memory"),
+        ("memory_dream_settings", "aios-memory"),
+        ("memory_permit", "aios-memory"),
+        ("memory_resolve_replace", "aios-memory"),
+        ("memory_resolve_about_draft", "aios-memory"),
+    ] {
+        let action = registry
+            .get(name)
+            .unwrap_or_else(|| panic!("没登记 {name}"));
+        assert_eq!(action.skill(), skill, "{name}");
+    }
+}
+
+#[test]
+fn project_update_describes_before_and_after() {
+    let directory = tempfile::tempdir().unwrap();
+    let data_dir = directory.path();
+    let projects = tasks::ProjectStore::open(data_dir.join(tasks::PROJECTS_DB_FILE)).unwrap();
+    let project = projects
+        .create(
+            tasks::NewProject {
+                name: "旧名字".to_owned(),
+                goal: "旧目标".to_owned(),
+                dir: None,
+            },
+            T0,
+        )
+        .unwrap();
+    let action = settings_action(data_dir, "project_update");
+    let details = action
+        .details(&json!({
+            "id": project.id,
+            "name": "新名字",
+            "goal": "新目标",
+            "dir": null,
+        }))
+        .expect("可以改项目");
+    let facts = action
+        .describe(
+            &details,
+            &action_env(data_dir, &data_dir.join("identity.txt")),
+        )
+        .expect("事实行");
+    assert_eq!(facts[0].name, "名字");
+    assert_eq!(facts[0].value, "旧名字 → 新名字");
+    assert_eq!(facts[1].value, "旧目标 → 新目标");
+}
+
+#[test]
+fn appointment_pause_describes_status() {
+    let directory = tempfile::tempdir().unwrap();
+    let data_dir = directory.path();
+    let store = calendar::CalendarStore::open(data_dir.join("calendar.sqlite")).unwrap();
+    let appointment = store
+        .create_appointment(calendar::NewAppointment {
+            title: "每天对稿".to_owned(),
+            condition: "每天对稿".to_owned(),
+            schedule: calendar::Schedule {
+                rule: "FREQ=DAILY".to_owned(),
+                timezone: "Asia/Shanghai".to_owned(),
+                start_at: T0,
+            },
+            binding: calendar::Binding::Kind,
+            watch: None,
+            cycle: None,
+            duration_minutes: None,
+        })
+        .unwrap();
+    let action = settings_action(data_dir, "appointment_pause");
+    let facts = action
+        .describe(
+            &json!({ "appointment_id": appointment.id }),
+            &action_env(data_dir, &data_dir.join("identity.txt")),
+        )
+        .expect("可以暂停");
+    assert_eq!(facts[0].value, "每天对稿");
+    assert!(facts[1].value.contains("进行中 → 已暂停"), "{:?}", facts[1]);
+    assert_eq!(facts[2].value, "暂停这条约定");
+}
+
+/// memory_delete 移隔离区；memory_forget 只有用户说彻底删才出卡。
+#[tokio::test]
+async fn memory_delete_and_forget_are_distinct() {
+    let scenario = scenario(vec![skill_script()], Arc::new(ActionRegistry::empty())).await;
+    let data_dir = scenario.data_dir.clone();
+    scenario
+        .host
+        .append_user_message_for_test("忘掉这条；另一条彻底删")
+        .await
+        .expect("用户原话");
+    let conversation = scenario.host.info().session_id.expect("根会话");
+    let identity = data_dir.join("identity.txt");
+    let env = ActionEnv {
+        data_dir: &data_dir,
+        identity: Some(&identity),
+        events: &[],
+        conversation: Some(&conversation),
+    };
+    let store = memory::MemoryStore::open(data_dir.join("memory.sqlite")).unwrap();
+    let remember = |title: &str| {
+        store
+            .write(
+                memory::types::WriteOp::Remember {
+                    title: title.to_owned(),
+                    summary: format!("{title} 的摘要"),
+                    body: format!("{title} 的正文"),
+                    source_kind: "user".to_owned(),
+                    source_ref: "test".to_owned(),
+                },
+                &memory::types::WriteContext::user(),
+            )
+            .unwrap()
+            .item
+            .expect("条目")
+    };
+    let delete_item = remember("忘掉的");
+    let forget_item = remember("彻底删的");
+    let delete = settings_action(&data_dir, "memory_delete");
+    let delete_details = delete
+        .details(&json!({ "id": delete_item.id }))
+        .expect("delete details");
+    let delete_facts = delete.describe(&delete_details, &env).expect("delete 卡");
+    assert_eq!(delete_facts[0].value, "忘掉的");
+    assert!(
+        delete_facts[1].value.contains("7 天"),
+        "{:?}",
+        delete_facts[1]
+    );
+    let forgot = settings_action(&data_dir, "memory_forget");
+    let forget_details = forgot
+        .details(&json!({ "id": forget_item.id }))
+        .expect("forget details");
+    let forget_facts = forgot.describe(&forget_details, &env).expect("forget 卡");
+    assert_eq!(forget_facts[0].name, "彻底删，不能恢复");
+    assert_eq!(forget_facts[0].value, "彻底删的");
+    assert_eq!(delete.name(), "memory_delete");
+    assert_eq!(forgot.name(), "memory_forget");
+}
+
+/// memory_correct 的更正文字必须逐字来自用户消息。
+#[test]
+fn memory_correct_requires_the_users_words() {
+    let directory = tempfile::tempdir().unwrap();
+    let data_dir = directory.path();
+    let store = memory::MemoryStore::open(data_dir.join("memory.sqlite")).unwrap();
+    let item = store
+        .write(
+            memory::types::WriteOp::Remember {
+                title: "旧标题".to_owned(),
+                summary: "旧摘要".to_owned(),
+                body: "旧正文".to_owned(),
+                source_kind: "user".to_owned(),
+                source_ref: "test".to_owned(),
+            },
+            &memory::types::WriteContext::user(),
+        )
+        .unwrap()
+        .item
+        .expect("条目");
+    let action = settings_action(data_dir, "memory_correct");
+    let details = action
+        .details(&json!({
+            "id": item.id,
+            "title": "新标题",
+            "summary": "旧摘要",
+            "body": "旧正文",
+            "reason": "用户说的",
+        }))
+        .expect("details");
+    // 没有会话日志，原话核对必拒。
+    let error = action
+        .describe(
+            &details,
+            &action_env(data_dir, &data_dir.join("identity.txt")),
+        )
+        .expect_err("没有用户原话不能更正");
+    assert!(error.contains("memory_note"), "{error}");
+}
+
+/// 删除=移隔离区仍能找回；彻底删=从库里消失。
+#[tokio::test]
+async fn memory_delete_quarantines_and_forget_removes() {
+    let scenario = scenario(vec![skill_script()], Arc::new(ActionRegistry::empty())).await;
+    let data_dir = scenario.data_dir.clone();
+    let store = memory::MemoryStore::open(data_dir.join("memory.sqlite")).unwrap();
+    let remember = |title: &str| {
+        store
+            .write(
+                memory::types::WriteOp::Remember {
+                    title: title.to_owned(),
+                    summary: format!("{title} 摘要"),
+                    body: format!("{title} 正文"),
+                    source_kind: "user".to_owned(),
+                    source_ref: "test".to_owned(),
+                },
+                &memory::types::WriteContext::user(),
+            )
+            .unwrap()
+            .item
+            .expect("条目")
+    };
+    let quarantined = remember("进隔离区");
+    let purged = remember("彻底消失");
+    let delete = settings_action(&data_dir, "memory_delete");
+    let details = delete
+        .details(&json!({ "id": quarantined.id }))
+        .expect("delete");
+    delete.act(&details, scenario.host()).await.expect("删除");
+    let stored = store.item(&quarantined.id).unwrap().expect("隔离区还留着");
+    assert_eq!(stored.status, "quarantine", "删除要移进隔离区");
+    let forgot = settings_action(&data_dir, "memory_forget");
+    let details = forgot.details(&json!({ "id": purged.id })).expect("forget");
+    forgot.act(&details, scenario.host()).await.expect("彻底删");
+    let forgotten = store.item(&purged.id).unwrap().expect("留无明文 tombstone");
+    assert_eq!(forgotten.status, "forgotten");
+    assert!(forgotten.title.is_empty() && forgotten.body.is_empty());
+}
+
+/// 更正文字全在用户原话里时通过；memory_pin 第一行是判断对象。
+#[tokio::test]
+async fn memory_correct_accepts_user_words_and_pin_is_a_judgment() {
+    let scenario = scenario(vec![skill_script()], Arc::new(ActionRegistry::empty())).await;
+    let data_dir = scenario.data_dir.clone();
+    scenario
+        .host
+        .append_user_message_for_test("更正成：周五对稿；理由是记错了；再帮我把这条笔记定下来")
+        .await
+        .expect("用户原话");
+    let conversation = scenario.host.info().session_id.expect("根会话");
+    let identity = data_dir.join("identity.txt");
+    let env = ActionEnv {
+        data_dir: &data_dir,
+        identity: Some(&identity),
+        events: &[],
+        conversation: Some(&conversation),
+    };
+    let store = memory::MemoryStore::open(data_dir.join("memory.sqlite")).unwrap();
+    let item = store
+        .write(
+            memory::types::WriteOp::Remember {
+                title: "旧标题".to_owned(),
+                summary: "旧摘要".to_owned(),
+                body: "旧正文".to_owned(),
+                source_kind: "user".to_owned(),
+                source_ref: "test".to_owned(),
+            },
+            &memory::types::WriteContext::user(),
+        )
+        .unwrap()
+        .item
+        .expect("条目");
+    let correct = settings_action(&data_dir, "memory_correct");
+    let details = correct
+        .details(&json!({
+            "id": item.id,
+            "title": "周五对稿",
+            "summary": "旧摘要",
+            "body": "旧正文",
+            "reason": "记错了",
+        }))
+        .expect("details");
+    let facts = correct.describe(&details, &env).expect("原话通过");
+    assert!(
+        facts[0].value.contains("旧标题 → 周五对稿"),
+        "{:?}",
+        facts[0]
+    );
+
+    let note = store
+        .write(
+            memory::types::WriteOp::Note {
+                title: "一条笔记".to_owned(),
+                summary: "笔记摘要".to_owned(),
+                body: "笔记正文".to_owned(),
+                source_kind: "kind".to_owned(),
+                source_ref: "test".to_owned(),
+            },
+            &memory::types::WriteContext::kind(),
+        )
+        .unwrap()
+        .item
+        .expect("笔记");
+    let pin = settings_action(&data_dir, "memory_pin");
+    let details = pin.details(&json!({ "id": note.id })).expect("details");
+    let facts = pin.describe(&details, &env).expect("定下来");
+    assert_eq!(facts[0].name, "这是你的判断");
+    assert!(facts[0].value.contains("一条笔记"), "{}", facts[0].value);
+}
+
+#[test]
+fn memory_dream_settings_and_permit_describe_the_change() {
+    let directory = tempfile::tempdir().unwrap();
+    let data_dir = directory.path();
+    let action = settings_action(data_dir, "memory_dream_settings");
+    let details = action
+        .details(&json!({ "enabled": false, "interval_hours": 12 }))
+        .expect("details");
+    let facts = action
+        .describe(
+            &details,
+            &action_env(data_dir, &data_dir.join("identity.txt")),
+        )
+        .expect("设置");
+    assert!(facts[0].value.contains("开 → 关"), "{:?}", facts[0]);
+    assert!(
+        facts[1].value.contains("24 小时 → 12 小时"),
+        "{:?}",
+        facts[1]
+    );
+    let permit = settings_action(data_dir, "memory_permit");
+    let details = permit.details(&json!({ "allow": true })).expect("details");
+    let facts = permit
+        .describe(
+            &details,
+            &action_env(data_dir, &data_dir.join("identity.txt")),
+        )
+        .expect("许可");
+    assert_eq!(facts[0].name, "观察许可");
+    assert!(facts[0].value.contains("暂不允许 → 允许"), "{:?}", facts[0]);
+}
+
+#[tokio::test]
+async fn appointment_pause_act_uses_the_calendar_action() {
+    let scenario = scenario(vec![skill_script()], Arc::new(ActionRegistry::empty())).await;
+    let data_dir = scenario.data_dir.clone();
+    let store = calendar::CalendarStore::open(data_dir.join("calendar.sqlite")).unwrap();
+    let appointment = store
+        .create_appointment(calendar::NewAppointment {
+            title: "暂停我".to_owned(),
+            condition: "暂停我".to_owned(),
+            schedule: calendar::Schedule {
+                rule: "FREQ=DAILY".to_owned(),
+                timezone: "Asia/Shanghai".to_owned(),
+                start_at: T0,
+            },
+            binding: calendar::Binding::Kind,
+            watch: None,
+            cycle: None,
+            duration_minutes: None,
+        })
+        .unwrap();
+    let action = settings_action(&data_dir, "appointment_pause");
+    let details = action
+        .details(&json!({ "appointment_id": appointment.id }))
+        .expect("details");
+    action.act(&details, scenario.host()).await.expect("暂停");
+    let paused = store.appointment(&appointment.id).unwrap().unwrap();
+    assert_eq!(paused.status, calendar::AppointmentStatus::Paused);
+}

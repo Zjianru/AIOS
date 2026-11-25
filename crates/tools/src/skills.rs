@@ -1005,6 +1005,45 @@ mod guide_tests {
     }
 
     #[test]
+    fn project_calendar_memory_skills_list_their_actions() {
+        let skills = bundled_skills();
+        for (name, actions) in [
+            ("aios-tasks", vec!["project_update"]),
+            (
+                "aios-calendar",
+                vec![
+                    "appointment_pause",
+                    "appointment_resume",
+                    "appointment_run_now",
+                ],
+            ),
+            (
+                "aios-memory",
+                vec![
+                    "memory_delete",
+                    "memory_forget",
+                    "memory_restore",
+                    "memory_correct",
+                    "memory_pin",
+                    "memory_dream_settings",
+                    "memory_permit",
+                    "memory_resolve_replace",
+                    "memory_resolve_about_draft",
+                ],
+            ),
+        ] {
+            let skill = skills
+                .iter()
+                .find(|skill| skill.name == name)
+                .unwrap_or_else(|| panic!("缺 skill {name}"));
+            let parsed = parse_skill(skill.raw).expect("frontmatter 合法");
+            for action in actions {
+                assert!(parsed.body.contains(action), "{name} 漏了 {action}");
+            }
+        }
+    }
+
+    #[test]
     fn aios_tasks_skill_lists_the_task_actions() {
         let tasks = bundled_skills()
             .iter()

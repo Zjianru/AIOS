@@ -5,10 +5,13 @@
 //! 登记，不碰卡片和提议工具的代码。
 
 mod appointments;
+mod calendar_actions;
 mod cancel_tasks;
 mod confirm_write_scope;
 mod create_project;
 mod mask;
+mod memory_actions;
+mod project_actions;
 mod resume_task;
 mod select_model;
 mod set_paused;
@@ -154,6 +157,45 @@ impl ActionRegistry {
             data_dir.clone(),
         )));
         registry.register(Arc::new(task_actions::GateJudgeAction::new(
+            data_dir.clone(),
+        )));
+        registry.register(Arc::new(project_actions::ProjectUpdateAction::new(
+            data_dir.clone(),
+        )));
+        registry.register(Arc::new(calendar_actions::AppointmentAction::pause(
+            data_dir.clone(),
+        )));
+        registry.register(Arc::new(calendar_actions::AppointmentAction::resume(
+            data_dir.clone(),
+        )));
+        registry.register(Arc::new(calendar_actions::AppointmentAction::run_now(
+            data_dir.clone(),
+        )));
+        registry.register(Arc::new(memory_actions::MemoryAction::delete(
+            data_dir.clone(),
+        )));
+        registry.register(Arc::new(memory_actions::MemoryAction::forget(
+            data_dir.clone(),
+        )));
+        registry.register(Arc::new(memory_actions::MemoryAction::restore(
+            data_dir.clone(),
+        )));
+        registry.register(Arc::new(memory_actions::MemoryAction::correct(
+            data_dir.clone(),
+        )));
+        registry.register(Arc::new(memory_actions::MemoryAction::pin(
+            data_dir.clone(),
+        )));
+        registry.register(Arc::new(memory_actions::MemoryAction::dream_settings(
+            data_dir.clone(),
+        )));
+        registry.register(Arc::new(memory_actions::MemoryAction::permit(
+            data_dir.clone(),
+        )));
+        registry.register(Arc::new(memory_actions::MemoryAction::resolve_replace(
+            data_dir.clone(),
+        )));
+        registry.register(Arc::new(memory_actions::MemoryAction::resolve_about_draft(
             data_dir.clone(),
         )));
         registry.register(Arc::new(appointments::CreateAppointmentAction));
