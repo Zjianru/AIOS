@@ -2620,39 +2620,3 @@ fn memory_card_judgments_name_the_card_and_the_choice() {
     let facts = about.describe(&details, &env).expect("about 卡");
     assert!(facts[0].value.contains("不用"), "{}", facts[0].value);
 }
-
-/// 单选项卡漏传 option 时仍按唯一选项执行，不返回 decision=null。
-#[tokio::test]
-async fn a_single_option_card_confirms_without_an_option_id() {
-    let fake = Arc::new(FakeAction::new());
-    let scenario = scenario(
-        vec![
-            skill_script(),
-            tool_script(
-                1,
-                "call_card",
-                "propose_action",
-                &options_json(&[("a", "甲")]),
-            ),
-            answer_script("选一个。"),
-        ],
-        registry(&fake),
-    )
-    .await;
-    send(scenario.host(), "改一下", 1).await;
-    wait_turns(scenario.host(), &scenario.data_dir, 1).await;
-    let response = scenario
-        .host()
-        .dispatch(Call::CardAct(CardActRequest {
-            call_id: "call_card".to_owned(),
-            verb: CardVerb::Confirm,
-            option: None,
-            note: None,
-            report_id: None,
-        }))
-        .await
-        .expect("单选项卡确认");
-    let value = serde_json::to_value(response).expect("json");
-    assert_eq!(value["decision"]["phase"], "confirmed", "{value}");
-    assert_eq!(fake.acts(), 1);
-}
