@@ -88,15 +88,9 @@ fn wait_fact_lives_while_the_resume_effect_is_pending() {
             connection: "deepseek".to_owned(),
         })
     );
-    assert!(
-        runtime
-            .store
-            .task(&task.id)
-            .unwrap()
-            .unwrap()
-            .reports
-            .is_empty()
-    );
+    let stored = runtime.store.task(&task.id).unwrap().unwrap();
+    assert_eq!(stored.reports.len(), 1, "保留一条 waiting 报告");
+    assert_eq!(stored.reports[0].state, ReportState::Waiting);
 }
 
 #[test]
@@ -166,7 +160,8 @@ fn turn_ended_with_long_429_creates_the_wait_without_relay_or_host() {
         stored.latest_attempt().and_then(|attempt| attempt.end),
         Some(AttemptEnd::Deferred)
     );
-    assert!(stored.reports.is_empty(), "用量等待不写报告，也不叫醒 Kind");
+    assert_eq!(stored.reports.len(), 1, "保留一条 waiting 报告");
+    assert_eq!(stored.reports[0].state, ReportState::Waiting);
     assert_eq!(
         runtime.task_usage_wait(&stored),
         Some(crate::protocol::TaskReadUsageWait {

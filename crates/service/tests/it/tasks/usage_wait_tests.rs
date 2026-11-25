@@ -35,7 +35,13 @@ async fn long_429_enters_usage_wait_and_resumes_at_due() {
     .await;
 
     let stored = store.task(&task.id).unwrap().unwrap();
-    assert!(stored.reports.is_empty(), "用量等待不写报告，不叫醒 Kind");
+    assert_eq!(stored.reports.len(), 1, "保留一条 waiting 报告");
+    assert_eq!(stored.reports[0].state, ReportState::Waiting);
+    assert_eq!(
+        fixture.router.bodies(false).len(),
+        kind_requests,
+        "没有 relay，Kind 不应为等待报告多跑一轮"
+    );
     assert_eq!(
         fixture.router.bodies(false).len(),
         kind_requests,

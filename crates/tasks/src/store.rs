@@ -1581,6 +1581,20 @@ impl Store {
                 attempt: attempt_id.0,
             });
         }
+        // 报告结构不变；只写 waiting 报告，不排 relay，因此不会叫醒 Kind。
+        let report_id = ReportId::from(generate_id(&transaction)?);
+        task.reports.push(Report {
+            id: report_id,
+            attempt_id,
+            state: ReportState::Waiting,
+            origin: ReportOrigin::Executor,
+            summary: "模型用量到上限，等恢复时间后自动接着做".to_owned(),
+            question: None,
+            at: now,
+            version: task.requirement_version(),
+            checks: Vec::new(),
+            changed_count: None,
+        });
         let attempt = task
             .runs
             .iter_mut()

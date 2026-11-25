@@ -1,4 +1,4 @@
-//! 用量等待事务（Attempt Deferred + UsageResume，不写报告/不排 relay）。
+//! 用量等待事务（Attempt Deferred + waiting 报告 + UsageResume，不排 relay）。
 
 use std::path::PathBuf;
 
@@ -45,7 +45,8 @@ fn usage_wait_ends_the_attempt_and_enqueues_one_usage_resume_effect() {
         stored.latest_attempt().and_then(|attempt| attempt.end),
         Some(AttemptEnd::Deferred)
     );
-    assert!(stored.reports.is_empty(), "用量等待不写报告");
+    assert_eq!(stored.reports.len(), 1, "保留一条 waiting 报告");
+    assert_eq!(stored.reports[0].state, ReportState::Waiting);
 
     let key = format!("usage-resume:{}:{}", task.id, attempt.0);
     assert_eq!(
@@ -64,7 +65,7 @@ fn usage_wait_ends_the_attempt_and_enqueues_one_usage_resume_effect() {
     assert_eq!(
         store.next_effect_due_of(EffectKind::Relay).unwrap(),
         None,
-        "用量等待不写报告、不排 relay"
+        "用量等待不排 relay，不会叫醒 Kind"
     );
 
     // 重复写同一等待：不新增报告，效果仍只有一条。
