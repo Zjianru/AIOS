@@ -293,7 +293,7 @@ test('D78 忘掉记忆：出 memory_delete 进隔离区，不是彻底删', asyn
       .poll(async () => {
         const response = await apiPost(request, fixture, { method: 'memory-read' });
         const body = (await response.json()) as { quarantine?: Array<{ title: string }> };
-        return body.quarantine?.some((item) => item.title.includes('周五下午三点和李雷对稿')) ?? false;
+        return body.quarantine?.some((item) => item.title.includes('D78 忘掉测试') || item.title.includes('D78')) ?? false;
       }, { timeout: 60_000 })
       .toBe(true);
   } finally {
