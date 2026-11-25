@@ -1780,10 +1780,10 @@ async fn accept_deliveries_act_accepts_through_the_same_store_path() {
         )
         .expect("报告");
     let action = settings_action(&data_dir, "accept_deliveries");
-    let outcome = action
-        .act(&json!({ "task_ids": [task.id.as_str()] }), scenario.host())
-        .await
-        .expect("接受");
+    let details = action
+        .details(&json!({ "task_ids": [task.id.as_str()] }))
+        .expect("钉住报告");
+    let outcome = action.act(&details, scenario.host()).await.expect("接受");
     assert!(outcome.summary.contains("接受"), "{}", outcome.summary);
     assert!(
         !store

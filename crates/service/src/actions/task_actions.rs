@@ -405,6 +405,23 @@ impl AcceptDeliveriesAction {
         self.current_picks(&ids)
     }
 
+    /// act 只接受提议时钉住的 picks；没有钉住就不执行，避免拿当前报告顶替卡上的报告。
+    fn pinned_picks(&self, details: &Value) -> Result<Vec<crate::work::WorkPick>, String> {
+        let Some(value) = details
+            .as_object()
+            .and_then(|object| object.get("picks"))
+            .filter(|value| !value.is_null())
+        else {
+            return Err("卡片上的报告已经变了，或者没有钉住，请重新出卡".to_owned());
+        };
+        let picks: Vec<crate::work::WorkPick> = serde_json::from_value(value.clone())
+            .map_err(|error| format!("details.picks 不合法：{error}"))?;
+        if picks.is_empty() {
+            return Err("details.picks 必须至少有一项".to_owned());
+        }
+        Ok(picks)
+    }
+
     fn check_still_current(&self, picks: &[crate::work::WorkPick]) -> Result<(), String> {
         let store = task_store(&self.data_dir)?;
         for pick in picks {
@@ -475,7 +492,7 @@ impl ActionKind for AcceptDeliveriesAction {
         host: &'a RootHost,
     ) -> ActionFuture<'a, Result<ActionOutcome, String>> {
         Box::pin(async move {
-            let picks = self.picks(details)?;
+            let picks = self.pinned_picks(details)?;
             self.check_still_current(&picks)?;
             let response = host
                 .accept_many(&TaskAcceptManyRequest { picks })
