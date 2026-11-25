@@ -13,6 +13,7 @@ mod resume_task;
 mod select_model;
 mod set_paused;
 mod start_task_graph;
+mod task_actions;
 mod update_gate_commands;
 mod update_task_requirement;
 
@@ -140,6 +141,19 @@ impl ActionRegistry {
             update_gate_commands::UpdateGateCommandsAction::new(data_dir.clone()),
         ));
         registry.register(Arc::new(create_project::CreateProjectAction::new(
+            data_dir.clone(),
+        )));
+        registry.register(Arc::new(task_actions::TaskInterruptAction::new(
+            data_dir.clone(),
+        )));
+        registry.register(Arc::new(task_actions::TaskSayAction::new(data_dir.clone())));
+        registry.register(Arc::new(task_actions::TaskSetProjectAction::new(
+            data_dir.clone(),
+        )));
+        registry.register(Arc::new(task_actions::AcceptDeliveriesAction::new(
+            data_dir.clone(),
+        )));
+        registry.register(Arc::new(task_actions::GateJudgeAction::new(
             data_dir.clone(),
         )));
         registry.register(Arc::new(appointments::CreateAppointmentAction));

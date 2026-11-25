@@ -1005,6 +1005,29 @@ mod guide_tests {
     }
 
     #[test]
+    fn aios_tasks_skill_lists_the_task_actions() {
+        let tasks = bundled_skills()
+            .iter()
+            .find(|skill| skill.name == "aios-tasks")
+            .expect("aios-tasks 在自带 skill 里");
+        let parsed = parse_skill(tasks.raw).expect("frontmatter 合法");
+        for action in [
+            "task_interrupt",
+            "task_say",
+            "task_set_project",
+            "accept_deliveries",
+            "gate_judge",
+        ] {
+            assert!(parsed.body.contains(action), "SKILL.md 漏了 {action}");
+        }
+        assert!(parsed.body.contains("这是你的判断"), "判断卡要写对象");
+        assert!(
+            parsed.body.contains("update_task_requirement"),
+            "task_say 拒绝要指改要求"
+        );
+    }
+
+    #[test]
     fn aios_tasks_skill_never_asks_instead_of_the_write_scope_card() {
         let tasks = bundled_skills()
             .iter()

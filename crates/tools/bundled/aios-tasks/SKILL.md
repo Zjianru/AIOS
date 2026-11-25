@@ -1,11 +1,21 @@
 ---
 name: aios-tasks
-description: Stop a running task, hold and resume new tasks globally, create projects, assign a task or graph to a project, offer to continue tasks a restart interrupted, choose or widen a writing task's write scope, and propose ordered task graphs. mode=now cancels the current Attempt immediately; mode=after_report lets it finish the current step, report once, then end.
+description: Stop or interrupt a running task, hold and resume new tasks globally, create projects, assign a task or graph to a project, speak in a task conversation, accept delivered results, judge a user milestone, offer to continue tasks a restart interrupted, choose or widen a writing task's write scope, and propose ordered task graphs. mode=now cancels the current Attempt immediately; mode=after_report lets it finish the current step, report once, then end.
 ---
 
 # AIOS tasks
 
 Use this when the user asks to stop a task they had you dispatch — "stop that task", "别查了", "把它停了" — or to hold new tasks — "暂停新任务", "先别开新的", "继续跑" — or when you dispatch a writing task or its write scope needs to change. Do not call it otherwise; work that is still useful should keep going.
+
+## Task actions from a confirmation card
+
+The user decides on the card; you only propose it. Load this skill first, then call `propose_action` once with the exact action and details:
+
+- `task_interrupt`: `{ "task_id": "<id>" }`. Stops the task's current turn without closing the task or writing an Attempt end.
+- `task_say`: `{ "task_id": "<id>", "text": "<the user's words, verbatim>" }`. The program checks `text` against the user's typed messages; if it is not there, do not invent or rewrite it — tell the user that changing the requirement needs `update_task_requirement`.
+- `task_set_project`: `{ "task_id": "<id>", "project_id": "<project id>" | null }` (`null` = personal). The card shows the before → after project.
+- `accept_deliveries`: `{ "task_ids": ["<id>", ...] }`. This is a judgment card: its first fact is 「这是你的判断：接受…的交付」. Only the user's confirmation accepts; you never accept for them.
+- `gate_judge`: `{ "gate_task": "<id>", "gate_report": "<candidate report id>", "conclusion": "pass" | "needs_fix", "note": "<user's words when fixing>" }`. Use this only for a user-judged milestone, never a program gate; the first fact is 「这是你的判断：判…通过/不通过」.
 
 ## Writing tasks and the write scope
 
@@ -43,7 +53,7 @@ When the user wants to check something before the next step (「改完找个独�
 
 - one subtask with `milestone: true`, no `write_scope`, and `after` exactly one index: the step it checks;
 - the checked step's other downstream steps wait until the user passes the milestone;
-- only the user decides on the milestone result card (通过 / 需修正); you have no tool that passes or fixes it.
+- only the user decides on the milestone result card (通过 / 需修正); when they tell you their decision, propose `gate_judge` with their conclusion and words. Never choose the verdict yourself.
 
 When the user sends a milestone back needing fixes, call `task_continue` once with the checked task's id and the user's words as `note`. Do not dispatch the checked task again and do not change its requirement or write scope: it continues in the original requirement as a new Attempt, and the milestone reruns automatically when the new result arrives. The user still decides the new result.
 
@@ -71,7 +81,7 @@ When the user's message carries a result card and asks for a change, call `propo
 - Label the option "改任务要求". The card fills in the before → after and version lines; do not write those yourself.
 - After the user confirms, the same task starts a new Attempt (version N+1); the old acceptance stays in history.
 - If the message only asks a question about the result, answer it directly and do not show a card.
-- Accepting a result is only done by the user on the card: never accept for them and never say it has been accepted.
+- When the user asks you to accept a delivered result, propose `accept_deliveries`; never accept for them or say it has been accepted before the card is confirmed.
 
 ## Stop now
 
@@ -123,4 +133,4 @@ The fixed block lists the projects by id, name, goal and default directory. A ta
 - When the user names a directory, pass it as cwd; otherwise omit cwd and the project's default directory is used, then the Kind conversation directory. A project default directory that does not exist is an error; report it and ask, do not fall back silently.
 - When the user explicitly asks to create a project, call project_create with name, goal, optional dir. It creates immediately and returns a receipt; a duplicate name returns an error and creates nothing.
 - When you infer a new project from repeated conversation, call propose_action once with one option, action: "create_project", and details: { "name": ..., "goal": ..., "dir": ... }. The user confirms on the card; if the name already exists when they confirm, the action says it was already created.
-- You have no tool that changes a task's project. When the user asks to re-assign one, tell them to use the project selector on the task card.
+- When the user asks to re-assign a task to another project (or back to personal), propose_action once with action `task_set_project` and details `{ "task_id": "<id>", "project_id": "<project id>" | null }`; the card shows the before → after project and only the user's confirmation changes it.

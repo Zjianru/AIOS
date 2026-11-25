@@ -1529,3 +1529,268 @@ fn update_gate_commands_card_shows_before_after_and_version() {
         .expect_err("普通任务不是程序门");
     assert!(error.contains("不是程序门"), "{error}");
 }
+
+/// T083.1：五个任务动作都登记在 aios-tasks 名下。
+#[test]
+fn task_actions_are_registered_under_aios_tasks() {
+    let directory = tempfile::tempdir().unwrap();
+    let data_dir = directory.path();
+    let registry = ActionRegistry::settings(data_dir.to_path_buf(), None);
+    for name in [
+        "task_interrupt",
+        "task_say",
+        "task_set_project",
+        "accept_deliveries",
+        "gate_judge",
+    ] {
+        let action = registry
+            .get(name)
+            .unwrap_or_else(|| panic!("没登记 {name}"));
+        assert_eq!(action.skill(), "aios-tasks", "{name}");
+    }
+}
+
+/// T083.1：中断卡事实行写任务、状态、动作。
+#[test]
+fn task_interrupt_describes_the_task_and_action() {
+    let directory = tempfile::tempdir().unwrap();
+    let data_dir = directory.path();
+    let store = task_store(data_dir);
+    let task = seed_task(&store, data_dir, "正在跑");
+    store.begin_attempt(&task.id, T0 + 1).expect("Attempt");
+    let action = settings_action(data_dir, "task_interrupt");
+    let facts = action
+        .describe(
+            &json!({ "task_id": task.id.as_str() }),
+            &action_env(data_dir, &data_dir.join("identity.txt")),
+        )
+        .expect("可以中断");
+    assert_eq!(facts[0].name, "任务");
+    assert_eq!(facts[0].value, "正在跑");
+    assert!(facts[1].value.contains("在跑"), "{:?}", facts[1]);
+    assert_eq!(facts[2].value, "停下当前这一轮");
+}
+
+/// T083.1：改归属卡事实行写清任务、旧项目 → 新项目。
+#[test]
+fn task_set_project_describes_before_and_after() {
+    let directory = tempfile::tempdir().unwrap();
+    let data_dir = directory.path();
+    let store = task_store(data_dir);
+    let task = seed_task(&store, data_dir, "归错项目");
+    let projects = tasks::ProjectStore::open(data_dir.join(tasks::PROJECTS_DB_FILE)).unwrap();
+    let old = projects
+        .create(
+            tasks::NewProject {
+                name: "旧项目".to_owned(),
+                goal: "旧".to_owned(),
+                dir: None,
+            },
+            T0,
+        )
+        .unwrap();
+    let new = projects
+        .create(
+            tasks::NewProject {
+                name: "新项目".to_owned(),
+                goal: "新".to_owned(),
+                dir: None,
+            },
+            T0 + 1,
+        )
+        .unwrap();
+    store.set_project(&task.id, Some(&old.id)).unwrap();
+    let action = settings_action(data_dir, "task_set_project");
+    let facts = action
+        .describe(
+            &json!({ "task_id": task.id.as_str(), "project_id": new.id }),
+            &action_env(data_dir, &data_dir.join("identity.txt")),
+        )
+        .expect("可以改归属");
+    assert_eq!(facts[0].name, "任务");
+    assert_eq!(facts[0].value, "归错项目");
+    assert_eq!(facts[1].name, "项目");
+    assert_eq!(facts[1].value, "旧项目 → 新项目");
+}
+
+/// T083.1：接受交付的第一条事实是判断卡对象，后面列报告与版本。
+#[test]
+fn accept_deliveries_starts_with_the_judgment_and_report() {
+    let directory = tempfile::tempdir().unwrap();
+    let data_dir = directory.path();
+    let store = task_store(data_dir);
+    let task = seed_task(&store, data_dir, "写好的结果");
+    let attempt = store.begin_attempt(&task.id, T0 + 1).expect("Attempt");
+    let report = store
+        .record_report(
+            &task.id,
+            attempt,
+            tasks::NewReport {
+                state: tasks::ReportState::Ready,
+                origin: tasks::ReportOrigin::Agent,
+                summary: "结果如下".to_owned(),
+                question: None,
+            },
+            T0 + 2,
+        )
+        .expect("报告");
+    let action = settings_action(data_dir, "accept_deliveries");
+    let facts = action
+        .describe(
+            &json!({ "task_ids": [task.id.as_str()] }),
+            &action_env(data_dir, &data_dir.join("identity.txt")),
+        )
+        .expect("可以接受");
+    assert_eq!(facts[0].name, "这是你的判断");
+    assert!(facts[0].value.contains("写好的结果"), "{}", facts[0].value);
+    assert!(
+        facts[0].value.contains(report.as_str()),
+        "判断对象要带报告 id：{}",
+        facts[0].value
+    );
+    assert!(facts[1].value.contains("第 1 版"), "{}", facts[1].value);
+}
+
+/// T083.1：门判定第一条事实写清门和通过/不通过。
+#[test]
+fn gate_judge_starts_with_the_judgment_object() {
+    let directory = tempfile::tempdir().unwrap();
+    let data_dir = directory.path();
+    let store = task_store(data_dir);
+    let draft = |title: &str| tasks::NewTask {
+        quote: None,
+        quote_source: None,
+        kind_note: None,
+        project_id: None,
+        cwd_source: None,
+        title: title.to_owned(),
+        requirement: "把事做完".to_owned(),
+        dod: "有结果".to_owned(),
+        cwd: data_dir.to_path_buf(),
+        conversation: tasks::ConversationId::new("kind-session"),
+        model: tasks::ModelChoice {
+            connection: "deepseek".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            effort_wanted: "high".to_owned(),
+        },
+        tools: service::THIN_TOOLS.map(str::to_owned).to_vec(),
+    };
+    let root = store
+        .create_graph(
+            tasks::NewGraph {
+                root: draft("总任务"),
+                subtasks: vec![
+                    tasks::NewSubtask {
+                        task: draft("被把关"),
+                        policy: tasks::TaskPolicy::default(),
+                        after: Vec::new(),
+                        milestone: false,
+                        program_gate: Vec::new(),
+                    },
+                    tasks::NewSubtask {
+                        task: draft("看结果"),
+                        policy: tasks::TaskPolicy::default(),
+                        after: vec![0],
+                        milestone: true,
+                        program_gate: Vec::new(),
+                    },
+                ],
+            },
+            T0,
+        )
+        .unwrap();
+    let gate = store.children(&root.id).unwrap()[1].clone();
+    let action = settings_action(data_dir, "gate_judge");
+    let facts = action
+        .describe(
+            &json!({
+                "gate_task": gate.id.as_str(),
+                "gate_report": "report-1",
+                "conclusion": "pass",
+                "note": null,
+            }),
+            &action_env(data_dir, &data_dir.join("identity.txt")),
+        )
+        .expect("可以判门");
+    assert_eq!(facts[0].name, "这是你的判断");
+    assert!(facts[0].value.contains("看结果"), "{}", facts[0].value);
+    assert!(facts[0].value.contains("通过"), "{}", facts[0].value);
+    assert_eq!(facts[1].value, "看结果");
+    assert_eq!(facts[2].value, "report-1");
+}
+
+/// T083.1：task_say.text 只能逐字来自用户消息；改写拒绝并提示改要求。
+#[tokio::test]
+async fn task_say_checks_the_users_words() {
+    let scenario = scenario(vec![skill_script()], Arc::new(ActionRegistry::empty())).await;
+    let data_dir = scenario.data_dir.clone();
+    let store = task_store(&data_dir);
+    let task = seed_task(&store, &data_dir, "对稿");
+    scenario
+        .host
+        .append_user_message_for_test("把「周五下午对稿」这句说给任务")
+        .await
+        .expect("追加用户消息");
+    let conversation = scenario.host.info().session_id.expect("根会话");
+    let identity = data_dir.join("identity.txt");
+    let env = ActionEnv {
+        data_dir: &data_dir,
+        identity: Some(&identity),
+        events: &[],
+        conversation: Some(&conversation),
+    };
+    let action = settings_action(&data_dir, "task_say");
+    let facts = action
+        .describe(
+            &json!({ "task_id": task.id.as_str(), "text": "周五下午对稿" }),
+            &env,
+        )
+        .expect("原话通过");
+    assert_eq!(facts[0].name, "原话");
+    assert_eq!(facts[0].value, "周五下午对稿");
+    assert_eq!(facts[2].value, "任务对话");
+    let error = action
+        .describe(
+            &json!({ "task_id": task.id.as_str(), "text": "周五下午对稿（Kind 改写）" }),
+            &env,
+        )
+        .expect_err("改写拒绝");
+    assert!(error.contains("update_task_requirement"), "{error}");
+}
+
+/// T083.1：accept_deliveries act 走页面同一份 accept_many，点后任务关闭。
+#[tokio::test]
+async fn accept_deliveries_act_accepts_through_the_same_store_path() {
+    let scenario = scenario(vec![skill_script()], Arc::new(ActionRegistry::empty())).await;
+    let data_dir = scenario.data_dir.clone();
+    let store = task_store(&data_dir);
+    let task = seed_task(&store, &data_dir, "待接受");
+    let attempt = store.begin_attempt(&task.id, T0 + 1).expect("Attempt");
+    store
+        .record_report(
+            &task.id,
+            attempt,
+            tasks::NewReport {
+                state: tasks::ReportState::Ready,
+                origin: tasks::ReportOrigin::Agent,
+                summary: "结果".to_owned(),
+                question: None,
+            },
+            T0 + 2,
+        )
+        .expect("报告");
+    let action = settings_action(&data_dir, "accept_deliveries");
+    let outcome = action
+        .act(&json!({ "task_ids": [task.id.as_str()] }), scenario.host())
+        .await
+        .expect("接受");
+    assert!(outcome.summary.contains("接受"), "{}", outcome.summary);
+    assert!(
+        !store
+            .task(&task.id)
+            .unwrap()
+            .unwrap()
+            .acceptances
+            .is_empty()
+    );
+}
