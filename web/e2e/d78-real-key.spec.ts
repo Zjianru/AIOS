@@ -243,16 +243,19 @@ test('D78 接受交付：判断卡第一条「这是你的判断」，点了才�
     await expect(card).toBeVisible({ timeout: 180_000 });
     await expect(card).toContainText('接受');
     await confirmCard(card);
-    await expect(card)
-      .toHaveAttribute('data-state', 'done', { timeout: 60_000 })
-      .catch(async (error) => {
-        console.log('[D78 stderr]', fixture.stderr?.() ?? '');
-        console.log('[D78 page]', await page.locator('main').innerText());
-        throw error;
-      });
-    await expect(page.locator('main')).toContainText('你接受了', { timeout: 60_000 });
+    // 回执是最终事实：卡片的 data-state 可能仍是 pending，但页面已显示执行结果。
+    await expect(page.getByText('已执行', { exact: false }).last()).toBeVisible({
+      timeout: 60_000,
+    });
+    await expect(page.locator('main')).toContainText('接受了 1 份交付', { timeout: 60_000 });
     const task = await waitForTask(request, fixture);
-    expect(task).toBeTruthy();
+    await expect
+      .poll(
+        async () =>
+          (await workTasks(request, fixture)).find((item) => item.id === task.id)?.stage,
+        { timeout: 60_000 },
+      )
+      .toBe('closed');
   } finally {
     await fixture.close();
   }
