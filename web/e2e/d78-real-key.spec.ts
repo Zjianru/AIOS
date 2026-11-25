@@ -203,7 +203,7 @@ test('D78 改任务归属：判断卡写清项目，点了任务真的换项目'
     expect(created.ok()).toBeTruthy();
     const project = (await created.json()) as { project: { id: string } };
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind');
-    await send(page, '派一个只读调查任务，去看 README 第一行');
+    await send(page, `派一个只读调查任务，去看 ${fixture.homeDir}/README.md 第一行`);
     await expect(page.locator('[data-kind="task-result"]').last()).toBeVisible({ timeout: 180_000 });
     const task = await waitForTask(request, fixture);
     expect(task.projectId, '用户没说项目时任务应是个人，不能被自动归到唯一项目').toBeUndefined();
