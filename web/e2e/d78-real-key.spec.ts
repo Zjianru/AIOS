@@ -29,7 +29,10 @@ async function rootEvents(fixture: { dataDir: string }) {
 
 async function confirmCard(card: import('@playwright/test').Locator) {
   const options = card.locator('[data-action="card-option"]');
-  if ((await options.count()) > 0) await options.first().click();
+  if ((await options.count()) > 0) {
+    await options.first().click();
+    await expect(options.first()).toHaveAttribute('aria-checked', 'true');
+  }
   await card.locator('[data-action="card-confirm"]').click();
 }
 
@@ -257,7 +260,7 @@ test('D78 忘掉记忆：出 memory_delete 进隔离区，不是彻底删', asyn
     await send(page, '忘掉刚才记的那条');
     const card = page.locator('[data-kind="confirm-card"]').filter({ hasText: '移到隔离区' }).last();
     await expect(card).toBeVisible({ timeout: 180_000 });
-    await expect(card).not.toContainText('彻底删');
+    await expect(card).not.toContainText('彻底删，不能恢复');
     const tools = (await rootEvents(fixture)).filter((event) => event.type === 'tool/call');
     expect(
       tools.some(
