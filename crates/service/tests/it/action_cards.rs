@@ -1795,7 +1795,7 @@ async fn accept_deliveries_act_accepts_through_the_same_store_path() {
     );
 }
 
-/// T083.1 审计修复：卡上钉住 R1 后来了 R2，确认/act 不能接受 R2。
+/// 审计修复：卡上钉住 R1 后来了 R2，确认/act 不能接受 R2。
 #[tokio::test]
 async fn accept_deliveries_does_not_accept_a_report_that_changed_after_the_card() {
     let scenario = scenario(vec![skill_script()], Arc::new(ActionRegistry::empty())).await;
