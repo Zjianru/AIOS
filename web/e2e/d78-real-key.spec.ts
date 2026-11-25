@@ -27,6 +27,12 @@ async function rootEvents(fixture: { dataDir: string }) {
     .map((line) => JSON.parse(line) as { type: string; data?: any });
 }
 
+async function confirmCard(card: import('@playwright/test').Locator) {
+  const options = card.locator('[data-action="card-option"]');
+  if ((await options.count()) > 0) await options.first().click();
+  await card.locator('[data-action="card-confirm"]').click();
+}
+
 async function waitAnswer(page: import('@playwright/test').Page) {
   await expect(page.getByRole('button', { name: /已完成|已派出|停下了/ }).last()).toBeVisible({
     timeout: 180_000,
@@ -202,7 +208,7 @@ test('D78 改任务归属：判断卡写清项目，点了任务真的换项目'
     const card = page.locator('[data-kind="confirm-card"]').filter({ hasText: 'D78 改归属项目' }).last();
     await expect(card).toBeVisible({ timeout: 180_000 });
     await expect(card).toContainText('项目');
-    await card.locator('[data-action="card-confirm"]').click();
+    await confirmCard(card);
     await expect(card).toHaveAttribute('data-state', 'done', { timeout: 60_000 });
     await expect
       .poll(
@@ -231,7 +237,7 @@ test('D78 接受交付：判断卡第一条「这是你的判断」，点了才�
     const card = page.locator('[data-kind="confirm-card"]').filter({ hasText: '这是你的判断' }).last();
     await expect(card).toBeVisible({ timeout: 180_000 });
     await expect(card).toContainText('接受');
-    await card.locator('[data-action="card-confirm"]').click();
+    await confirmCard(card);
     await expect(card).toHaveAttribute('data-state', 'done', { timeout: 60_000 });
     await expect(page.locator('main')).toContainText('你接受了', { timeout: 60_000 });
     const task = await waitForTask(request, fixture);
@@ -267,13 +273,13 @@ test('D78 忘掉记忆：出 memory_delete 进隔离区，不是彻底删', asyn
           String(event.data?.arguments ?? '').includes('memory_forget'),
       ),
     ).toBeFalsy();
-    await card.locator('[data-action="card-confirm"]').click();
+    await confirmCard(card);
     await expect(card).toHaveAttribute('data-state', 'done', { timeout: 60_000 });
     await expect
       .poll(async () => {
         const response = await apiPost(request, fixture, { method: 'memory-read' });
         const body = (await response.json()) as { quarantine?: Array<{ title: string }> };
-        return body.quarantine?.some((item) => item.title.includes('D78 忘掉测试')) ?? false;
+        return body.quarantine?.some((item) => item.title.includes('周五下午三点和李雷对稿')) ?? false;
       }, { timeout: 60_000 })
       .toBe(true);
   } finally {
