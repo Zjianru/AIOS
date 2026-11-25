@@ -554,6 +554,16 @@ impl TaskRuntime {
             return Err("这个任务还没开跑，不能接着做".to_owned());
         };
         // T053：按上游当前可放行报告交接（需重评时拿到的是新结果）。
+        if task.is_stopped()
+            || task
+                .latest_attempt()
+                .is_some_and(|attempt| attempt.end == Some(AttemptEnd::Deferred))
+        {
+            best_effort(
+                "提前继续时删用量效果",
+                self.store.clear_usage_wait(&task.id),
+            );
+        }
         let handoffs = self
             .store
             .current_handoffs(&task)
@@ -1096,9 +1106,7 @@ impl TaskRuntime {
                 attempts: task.runs.iter().map(|run| run.attempts.len() as u64).sum(),
                 running,
                 background_running,
-                stopped: task
-                    .latest_attempt()
-                    .is_some_and(|attempt| attempt.end == Some(AttemptEnd::Stopped)),
+                stopped: task.is_stopped(),
                 interrupted: task.is_interrupted(),
                 restart_pending: task.is_interrupted()
                     && self.store.restart_pending(&task.id).map_err(|error| {
@@ -2043,7 +2051,7 @@ impl TaskRuntime {
                 return;
             }
         };
-        if task.cancelled_message().is_some() {
+        if task.cancelled_message().is_some() || task.is_stopped() {
             self.finish_or_fail(&claim, Ok(()));
             return;
         }
@@ -2243,6 +2251,16 @@ impl TaskRuntime {
         if task.cancelled_message().is_some() {
             self.finish_or_fail(claim, Ok(()));
             return None;
+        }
+        if task.is_stopped()
+            || task
+                .latest_attempt()
+                .is_some_and(|attempt| attempt.end == Some(AttemptEnd::Deferred))
+        {
+            best_effort(
+                "任务对话提前继续时删用量效果",
+                self.store.clear_usage_wait(&task.id),
+            );
         }
         let (trigger, slot) = match mode {
             ResumeMode::Say => (AttemptTrigger::UserMessage, SlotKind::Person),
@@ -4425,6 +4443,32 @@ Kind 的补充（不算用户要求）：{note_text}"
         let Some(attempt) = task.latest_attempt() else {
             return Ok(not_running());
         };
+        if attempt.end == Some(AttemptEnd::Deferred) && !task.is_stopped() {
+            // 用量等待没有在跑宿主：追加 stops、删到点效果；Deferred 本身不改写。
+            match self.store.stop_usage_wait(&id, attempt.id, Self::now()) {
+                Ok(true) => {
+                    self.notify_changed(&id);
+                    self.wake();
+                    let stage = self.store.stage(&id).map_err(|error| {
+                        ServiceError::TaskUnavailable(format!("阶段读不出来：{error}"))
+                    })?;
+                    return Ok(TaskStopResponse {
+                        stopped: true,
+                        stage: stage_key(stage).to_owned(),
+                        message: format!(
+                            "已立即停：任务 {task_id}（阶段：{}）。",
+                            stage_label(stage)
+                        ),
+                    });
+                }
+                Ok(false) => return Ok(not_running()),
+                Err(error) => {
+                    return Err(ServiceError::TaskUnavailable(format!(
+                        "停止没写进任务库：{error}"
+                    )));
+                }
+            }
+        }
         if attempt.ended_at.is_some() {
             // 报告后保留的后台命令，立即停/Kind task_stop 都能停。
             if let Some((conversation, turn)) = self.retained_background(&id)

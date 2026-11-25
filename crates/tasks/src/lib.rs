@@ -35,11 +35,11 @@ pub use stage::Stage;
 pub use store::{BootScan, GateJudgeOutcome, SCHEMA_VERSION, StopAttempt, Store};
 pub use task::{
     AcceptBatch, AcceptOutcome, Acceptance, AppointmentOrigin, AppointmentRole, Arrangement,
-    Attempt, AttemptEnd, AttemptTrigger, CANCELLED_MESSAGE, Cancellation, CancellationReason,
-    CancellationSource, Confirmation, ContinueCause, GateCandidate, GateCheck, GateCheckOutcome,
-    GateCommand, GateConclusion, GateVerdict, Handoff, Input, InputAttachment, InputSource,
-    MilestoneGate, MissingItem, ModelChoice, Need, NewGraph, NewInput, NewReport, NewSubtask,
-    NewTask, ProgramGateOutcome, QuoteSource, Report, ReportOrigin, ReportState,
+    Attempt, AttemptEnd, AttemptStop, AttemptTrigger, CANCELLED_MESSAGE, Cancellation,
+    CancellationReason, CancellationSource, Confirmation, ContinueCause, GateCandidate, GateCheck,
+    GateCheckOutcome, GateCommand, GateConclusion, GateVerdict, Handoff, Input, InputAttachment,
+    InputSource, MilestoneGate, MissingItem, ModelChoice, Need, NewGraph, NewInput, NewReport,
+    NewSubtask, NewTask, ProgramGateOutcome, QuoteSource, Report, ReportOrigin, ReportState,
     RequirementVersion, RoundEnd, Run, SayOutcome, Task, TaskCancellation, TaskPolicy,
     VerdictSource, VersionSource, Worktree, validate_gate_commands,
 };

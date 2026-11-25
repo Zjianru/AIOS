@@ -649,6 +649,9 @@ pub struct Attempt {
     pub started_at: i64,
     pub ended_at: Option<i64>,
     pub end: Option<AttemptEnd>,
+    /// 用量等待中的停止标记：只追加，不改 end/时间/会话。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stops: Vec<AttemptStop>,
 }
 
 /// 一次 Attempt 是怎么开始的。
@@ -742,6 +745,14 @@ pub enum AttemptEnd {
     NotOpened,
     /// 这次 Attempt 让给等模型恢复时间；到点由 UsageResume 效果开新 Attempt。
     Deferred,
+}
+
+/// 用量等待中用户停止的控制标记；只追加，不参与 AttemptEnd。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct AttemptStop {
+    pub at: i64,
+    pub reason: String,
 }
 
 /// ThinAgent 报的终态；`Waiting` 是执行者在 turn 结束时合成的，不是模型报的。
@@ -1076,6 +1087,13 @@ impl Task {
             .iter()
             .flat_map(|run| run.attempts.iter())
             .find(|attempt| attempt.id == id)
+    }
+
+    /// 任务现在的「停了没有」唯一判断：最新 Attempt 以 stopped 结束，或有 stops 标记。
+    pub fn is_stopped(&self) -> bool {
+        self.latest_attempt().is_some_and(|attempt| {
+            attempt.end == Some(AttemptEnd::Stopped) || !attempt.stops.is_empty()
+        })
     }
 
     /// 最近的 Attempt 以 interrupted 结束、之后没有新的 Attempt：任务「被打断了」。

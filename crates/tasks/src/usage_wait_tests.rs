@@ -133,3 +133,101 @@ fn terminal_report_and_non_latest_attempt_are_refused() {
         "非最新 Attempt 不能转成用量等待"
     );
 }
+
+#[test]
+fn stop_usage_wait_appends_a_marker_and_removes_only_the_effect() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path().join("tasks.sqlite")).unwrap();
+    let task = store.create_task(draft(), T0).unwrap();
+    let _ = store.claim_effect(EffectKind::Launch, T0).unwrap();
+    let attempt = store.begin_attempt(&task.id, T0 + 1).unwrap();
+    store
+        .begin_usage_wait(&task.id, attempt, T0 + 20_000, "deepseek", T0 + 2)
+        .unwrap();
+    assert_eq!(store.task(&task.id).unwrap().unwrap().reports.len(), 1);
+
+    assert!(store.stop_usage_wait(&task.id, attempt, T0 + 3).unwrap());
+    let stored = store.task(&task.id).unwrap().unwrap();
+    let latest = stored.latest_attempt().unwrap();
+    assert_eq!(latest.end, Some(AttemptEnd::Deferred), "不改写 Deferred");
+    assert_eq!(latest.ended_at, Some(T0 + 2), "不改写结束时间");
+    assert_eq!(latest.stops.len(), 1, "只追加 stops");
+    assert_eq!(stored.reports.len(), 1, "报告不改");
+    assert!(stored.is_stopped());
+    assert_eq!(store.stage(&task.id).unwrap(), Stage::NeedsConditions);
+    let key = format!("usage-resume:{}:{}", task.id, attempt.0);
+    assert!(
+        store
+            .pending_effect(EffectKind::UsageResume, &key)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        store
+            .begin_followup_with_handoffs(
+                &task.id,
+                AttemptTrigger::UsageResume,
+                Vec::new(),
+                T0 + 4,
+            )
+            .unwrap(),
+        None,
+        "停止标记后到点自动续跑不能再开 Attempt"
+    );
+}
+
+#[test]
+fn clear_usage_wait_is_for_early_continue_and_changes_no_task_facts() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path().join("tasks.sqlite")).unwrap();
+    let task = store.create_task(draft(), T0).unwrap();
+    let _ = store.claim_effect(EffectKind::Launch, T0).unwrap();
+    let attempt = store.begin_attempt(&task.id, T0 + 1).unwrap();
+    store
+        .begin_usage_wait(&task.id, attempt, T0 + 20_000, "deepseek", T0 + 2)
+        .unwrap();
+    let before = store.task(&task.id).unwrap().unwrap();
+    assert!(store.clear_usage_wait(&task.id).unwrap());
+    let after = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(before.reports.len(), after.reports.len());
+    assert_eq!(
+        after.latest_attempt().unwrap().end,
+        Some(AttemptEnd::Deferred)
+    );
+    assert!(!after.is_stopped());
+    let key = format!("usage-resume:{}:{}", task.id, attempt.0);
+    assert!(
+        store
+            .pending_effect(EffectKind::UsageResume, &key)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn cancel_removes_the_usage_resume_effect_without_rewriting_the_attempt() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path().join("tasks.sqlite")).unwrap();
+    let task = store.create_task(draft(), T0).unwrap();
+    let _ = store.claim_effect(EffectKind::Launch, T0).unwrap();
+    let attempt = store.begin_attempt(&task.id, T0 + 1).unwrap();
+    store
+        .begin_usage_wait(&task.id, attempt, T0 + 20_000, "deepseek", T0 + 2)
+        .unwrap();
+    store
+        .cancel(&task.id, CancellationSource::User, None, T0 + 3)
+        .unwrap();
+    let key = format!("usage-resume:{}:{}", task.id, attempt.0);
+    assert!(
+        store
+            .pending_effect(EffectKind::UsageResume, &key)
+            .unwrap()
+            .is_none()
+    );
+    let stored = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(
+        stored.latest_attempt().unwrap().end,
+        Some(AttemptEnd::Deferred)
+    );
+    assert!(stored.cancelled.is_some());
+}

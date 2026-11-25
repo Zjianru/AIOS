@@ -175,3 +175,106 @@ fn turn_ended_with_long_429_creates_the_wait_without_relay_or_host() {
         "等待事实不能排 relay"
     );
 }
+
+#[tokio::test]
+async fn due_resume_without_a_session_completes_the_effect_and_keeps_the_wait_facts() {
+    let (directory, runtime) = runtime();
+    let task = runtime
+        .store
+        .create_task(draft(directory.path().to_path_buf()), T0)
+        .unwrap();
+    let launch = runtime
+        .store
+        .claim_effect(EffectKind::Launch, T0)
+        .unwrap()
+        .unwrap();
+    runtime.store.complete_effect(&launch).unwrap();
+    let attempt = runtime.store.begin_attempt(&task.id, T0 + 1).unwrap();
+    let resume_at = T0 + 40_000;
+    runtime
+        .store
+        .begin_usage_wait(&task.id, attempt, resume_at, "deepseek", T0 + 2)
+        .unwrap();
+    let claim = runtime
+        .store
+        .claim_effect(EffectKind::UsageResume, resume_at)
+        .unwrap()
+        .expect("到点效果");
+    runtime.deliver_usage_resume(claim).await;
+    let stored = runtime.store.task(&task.id).unwrap().unwrap();
+    assert_eq!(
+        stored.latest_attempt().and_then(|attempt| attempt.end),
+        Some(AttemptEnd::Deferred),
+        "接不上会话不改写 Deferred"
+    );
+    assert_eq!(stored.reports.len(), 1, "等待报告还在");
+    let key = format!("usage-resume:{}:{}", task.id, attempt.0);
+    assert!(
+        runtime
+            .store
+            .pending_effect(EffectKind::UsageResume, &key)
+            .unwrap()
+            .is_none(),
+        "NoSession 后效果收掉，不无限重试"
+    );
+}
+
+#[tokio::test]
+async fn due_resume_with_a_missing_package_ends_the_new_attempt_and_completes_the_effect() {
+    let (directory, runtime) = runtime();
+    let task = runtime
+        .store
+        .create_task(draft(directory.path().to_path_buf()), T0)
+        .unwrap();
+    let launch = runtime
+        .store
+        .claim_effect(EffectKind::Launch, T0)
+        .unwrap()
+        .unwrap();
+    runtime.store.complete_effect(&launch).unwrap();
+    let conversation = session::SessionId::generate();
+    let attempt = runtime
+        .store
+        .begin_attempt_with(&task.id, T0 + 1, AttemptTrigger::Launch, Vec::new())
+        .unwrap();
+    runtime
+        .store
+        .attach_session(
+            &task.id,
+            attempt,
+            ConversationId::new(conversation.as_str()),
+        )
+        .unwrap();
+    let resume_at = T0 + 40_000;
+    runtime
+        .store
+        .begin_usage_wait(&task.id, attempt, resume_at, "deepseek", T0 + 2)
+        .unwrap();
+    runtime
+        .store
+        .record_package_check(&task.id, vec![MissingItem::new("缺执行目录").unwrap()])
+        .unwrap();
+    let claim = runtime
+        .store
+        .claim_effect(EffectKind::UsageResume, resume_at)
+        .unwrap()
+        .expect("到点效果");
+    runtime.deliver_usage_resume(claim).await;
+    let stored = runtime.store.task(&task.id).unwrap().unwrap();
+    let latest = stored.latest_attempt().unwrap();
+    assert_eq!(
+        latest.end,
+        Some(AttemptEnd::NotOpened),
+        "缺项的新 Attempt 要收尾"
+    );
+    assert!(!stored.missing.is_empty());
+    let key = format!("usage-resume:{}:{}", task.id, attempt.0);
+    assert!(
+        runtime
+            .store
+            .pending_effect(EffectKind::UsageResume, &key)
+            .unwrap()
+            .is_none(),
+        "PackageMissing 后效果收掉"
+    );
+}

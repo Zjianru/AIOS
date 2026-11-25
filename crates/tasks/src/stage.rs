@@ -65,10 +65,7 @@ impl Task {
             // 待检查排在已停止后面：停止一旦落下，结果就定死，不被旧报告盖过。
             Some(ReportState::Ready) => {}
         }
-        if self
-            .latest_attempt()
-            .is_some_and(|attempt| attempt.end == Some(AttemptEnd::Stopped))
-        {
+        if self.is_stopped() {
             return Stage::NeedsConditions;
         }
         if self

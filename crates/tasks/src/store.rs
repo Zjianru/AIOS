@@ -17,12 +17,12 @@ use crate::effect::{
 use crate::id::{AttemptId, BootId, ConversationId, InputId, ReportId, TaskId};
 use crate::ledger::{LedgerNote, LedgerNoteCounts, LedgerNoteKind, NewLedgerNote};
 use crate::task::{
-    AcceptBatch, AcceptOutcome, Acceptance, Arrangement, Attempt, AttemptEnd, AttemptTrigger,
-    Cancellation, CancellationReason, CancellationSource, Confirmation, FrozenPolicy,
-    GateCandidate, GateConclusion, GateVerdict, Handoff, Input, InputAttachment, InputSource,
-    MilestoneGate, MissingItem, Need, NewGraph, NewInput, NewReport, NewSubtask, NewTask, Report,
-    ReportOrigin, ReportState, RequirementVersion, Run, SayOutcome, Task, TaskCancellation,
-    TaskPolicy, VerdictSource, VersionSource, Worktree, resolve_write_scope,
+    AcceptBatch, AcceptOutcome, Acceptance, Arrangement, Attempt, AttemptEnd, AttemptStop,
+    AttemptTrigger, Cancellation, CancellationReason, CancellationSource, Confirmation,
+    FrozenPolicy, GateCandidate, GateConclusion, GateVerdict, Handoff, Input, InputAttachment,
+    InputSource, MilestoneGate, MissingItem, Need, NewGraph, NewInput, NewReport, NewSubtask,
+    NewTask, Report, ReportOrigin, ReportState, RequirementVersion, Run, SayOutcome, Task,
+    TaskCancellation, TaskPolicy, VerdictSource, VersionSource, Worktree, resolve_write_scope,
 };
 
 /// 任务库 schema 版本；比这新的库拒绝打开。
@@ -1197,6 +1197,13 @@ impl Store {
             "DELETE FROM effect WHERE kind = ?1 AND key = ?2",
             params![EffectKind::Launch.as_str(), task.id.as_str()],
         )?;
+        connection.execute(
+            "DELETE FROM effect WHERE kind = ?1 AND key LIKE ?2",
+            params![
+                EffectKind::UsageResume.as_str(),
+                format!("usage-resume:{}:%", task.id)
+            ],
+        )?;
         self.enqueue_effect_in(
             connection,
             &EffectPayload::Cancel {
@@ -1619,6 +1626,73 @@ impl Store {
         Ok(())
     }
 
+    /// 用量等待中停止：在同一个 Attempt 追加 stops，删掉 UsageResume；不改 end/时间/会话/报告。
+    pub fn stop_usage_wait(
+        &self,
+        id: &TaskId,
+        attempt_id: AttemptId,
+        now: i64,
+    ) -> Result<bool, TaskError> {
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut task = load_task_required(&transaction, id)?;
+        ensure_not_cancelled(&task)?;
+        let Some(latest) = task.latest_attempt().cloned() else {
+            return Err(TaskError::AttemptNotFound {
+                task: id.to_string(),
+                attempt: attempt_id.0,
+            });
+        };
+        if latest.id != attempt_id || latest.end != Some(AttemptEnd::Deferred) {
+            transaction.commit()?;
+            return Ok(false);
+        }
+        if !latest.stops.is_empty() {
+            transaction.commit()?;
+            return Ok(false);
+        }
+        let attempt = task
+            .runs
+            .iter_mut()
+            .flat_map(|run| run.attempts.iter_mut())
+            .find(|attempt| attempt.id == attempt_id)
+            .expect("上面已核对最新 Attempt");
+        attempt.stops.push(AttemptStop {
+            at: now,
+            reason: "已停止".to_owned(),
+        });
+        let key = format!("usage-resume:{id}:{}", attempt_id.0);
+        transaction.execute(
+            "DELETE FROM effect WHERE kind = ?1 AND key = ?2",
+            params![EffectKind::UsageResume.as_str(), key],
+        )?;
+        save_task(Some(self), &transaction, &task)?;
+        transaction.commit()?;
+        Ok(true)
+    }
+
+    /// 用户提前继续：只删尚未领取的 UsageResume，不写停止标记、不改 Attempt 事实。
+    pub fn clear_usage_wait(&self, id: &TaskId) -> Result<bool, TaskError> {
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let task = load_task_required(&transaction, id)?;
+        let Some(attempt) = task.latest_attempt() else {
+            transaction.commit()?;
+            return Ok(false);
+        };
+        if attempt.end != Some(AttemptEnd::Deferred) {
+            transaction.commit()?;
+            return Ok(false);
+        }
+        let key = format!("usage-resume:{id}:{}", attempt.id.0);
+        let removed = transaction.execute(
+            "DELETE FROM effect WHERE kind = ?1 AND key = ?2",
+            params![EffectKind::UsageResume.as_str(), key],
+        )?;
+        transaction.commit()?;
+        Ok(removed > 0)
+    }
+
     /// 读一条还在的效果载荷；没有返回 None。
     pub fn pending_effect(
         &self,
@@ -1807,6 +1881,7 @@ impl Store {
             started_at: now,
             ended_at: None,
             end: None,
+            stops: Vec::new(),
         };
         if let Some(run) = task.runs.last_mut() {
             run.attempts.push(attempt);
@@ -1932,6 +2007,15 @@ impl Store {
         let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut task = load_task_required(&transaction, id)?;
         ensure_not_cancelled(&task)?;
+        // 停止标记落下后，到点自动续跑不能再开 Attempt；用户主动接着做不受影响。
+        if trigger == AttemptTrigger::UsageResume
+            && task
+                .latest_attempt()
+                .is_some_and(|attempt| !attempt.stops.is_empty())
+        {
+            transaction.commit()?;
+            return Ok(None);
+        }
         let Some(attempt_id) = begin_followup_attempt(&mut task, trigger, handoffs, now) else {
             transaction.commit()?;
             return Ok(None);
@@ -2700,6 +2784,7 @@ fn begin_followup_attempt(
         started_at: now,
         ended_at: None,
         end: None,
+        stops: Vec::new(),
     };
     match task.runs.last_mut() {
         Some(run) => run.attempts.push(attempt),
