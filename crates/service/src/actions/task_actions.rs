@@ -387,6 +387,59 @@ impl AcceptDeliveriesAction {
         Ok(picks)
     }
 
+    fn parse_picks(value: &Value) -> Result<Vec<crate::work::WorkPick>, String> {
+        let Some(items) = value.as_array() else {
+            return Err("details.picks 必须是数组".to_owned());
+        };
+        let mut picks = Vec::with_capacity(items.len());
+        for item in items {
+            let Some(object) = item.as_object() else {
+                return Err("details.picks 里每项必须是对象".to_owned());
+            };
+            let task_id = object
+                .get("task_id")
+                .or_else(|| object.get("taskId"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| "details.picks 缺 task_id".to_owned())?;
+            let report_id = object
+                .get("report_id")
+                .or_else(|| object.get("reportId"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| "details.picks 缺 report_id".to_owned())?;
+            let version = object
+                .get("version")
+                .and_then(Value::as_u64)
+                .and_then(|version| u32::try_from(version).ok())
+                .ok_or_else(|| "details.picks 缺 version".to_owned())?;
+            picks.push(crate::work::WorkPick {
+                task_id: task_id.to_owned(),
+                report_id: report_id.to_owned(),
+                version,
+            });
+        }
+        if picks.is_empty() {
+            return Err("details.picks 必须至少有一项".to_owned());
+        }
+        Ok(picks)
+    }
+
+    fn picks_json(picks: &[crate::work::WorkPick]) -> Value {
+        json!(
+            picks
+                .iter()
+                .map(|pick| json!({
+                    "task_id": pick.task_id,
+                    "report_id": pick.report_id,
+                    "version": pick.version,
+                }))
+                .collect::<Vec<_>>()
+        )
+    }
+
     /// details.picks 是提议那一刻钉住的报告；没有时按 task_ids 解析当前报告（旧卡/直接调用）。
     fn picks(&self, details: &Value) -> Result<Vec<crate::work::WorkPick>, String> {
         if let Some(value) = details
@@ -394,12 +447,7 @@ impl AcceptDeliveriesAction {
             .and_then(|object| object.get("picks"))
             .filter(|value| !value.is_null())
         {
-            let picks: Vec<crate::work::WorkPick> = serde_json::from_value(value.clone())
-                .map_err(|error| format!("details.picks 不合法：{error}"))?;
-            if picks.is_empty() {
-                return Err("details.picks 必须至少有一项".to_owned());
-            }
-            return Ok(picks);
+            return Self::parse_picks(value);
         }
         let ids = self.task_ids(details)?;
         self.current_picks(&ids)
@@ -414,12 +462,7 @@ impl AcceptDeliveriesAction {
         else {
             return Err("卡片上的报告已经变了，或者没有钉住，请重新出卡".to_owned());
         };
-        let picks: Vec<crate::work::WorkPick> = serde_json::from_value(value.clone())
-            .map_err(|error| format!("details.picks 不合法：{error}"))?;
-        if picks.is_empty() {
-            return Err("details.picks 必须至少有一项".to_owned());
-        }
-        Ok(picks)
+        Self::parse_picks(value)
     }
 
     fn check_still_current(&self, picks: &[crate::work::WorkPick]) -> Result<(), String> {
@@ -454,11 +497,11 @@ impl ActionKind for AcceptDeliveriesAction {
             .is_some()
         {
             let picks = self.picks(raw)?;
-            return Ok(json!({ "picks": picks }));
+            return Ok(json!({ "picks": Self::picks_json(&picks) }));
         }
         let ids = self.task_ids(raw)?;
         let picks = self.current_picks(&ids)?;
-        Ok(json!({ "picks": picks }))
+        Ok(json!({ "picks": Self::picks_json(&picks) }))
     }
 
     fn describe(&self, details: &Value, _env: &ActionEnv<'_>) -> Result<Vec<CardFact>, String> {

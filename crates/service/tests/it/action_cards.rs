@@ -1820,7 +1820,7 @@ async fn accept_deliveries_does_not_accept_a_report_that_changed_after_the_card(
     let details = action
         .details(&json!({ "task_ids": [task.id.as_str()] }))
         .expect("钉住报告");
-    let first = details["picks"][0]["reportId"]
+    let first = details["picks"][0]["report_id"]
         .as_str()
         .expect("报告 id")
         .to_owned();
