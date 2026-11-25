@@ -126,6 +126,7 @@ impl ProposeActionTool {
                     .filter(|text| !text.is_empty())
                     .map(str::to_owned),
                 facts,
+                details,
             });
         }
         Ok(ToolResult::success_with_meta(

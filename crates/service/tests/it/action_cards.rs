@@ -1794,3 +1794,72 @@ async fn accept_deliveries_act_accepts_through_the_same_store_path() {
             .is_empty()
     );
 }
+
+/// T083.1 审计修复：卡上钉住 R1 后来了 R2，确认/act 不能接受 R2。
+#[tokio::test]
+async fn accept_deliveries_does_not_accept_a_report_that_changed_after_the_card() {
+    let scenario = scenario(vec![skill_script()], Arc::new(ActionRegistry::empty())).await;
+    let data_dir = scenario.data_dir.clone();
+    let store = task_store(&data_dir);
+    let task = seed_task(&store, &data_dir, "卡上钉报告");
+    let attempt = store.begin_attempt(&task.id, T0 + 1).expect("Attempt");
+    store
+        .record_report(
+            &task.id,
+            attempt,
+            tasks::NewReport {
+                state: tasks::ReportState::Ready,
+                origin: tasks::ReportOrigin::Agent,
+                summary: "R1".to_owned(),
+                question: None,
+            },
+            T0 + 2,
+        )
+        .expect("R1");
+    let action = settings_action(&data_dir, "accept_deliveries");
+    let details = action
+        .details(&json!({ "task_ids": [task.id.as_str()] }))
+        .expect("钉住报告");
+    let first = details["picks"][0]["reportId"]
+        .as_str()
+        .expect("报告 id")
+        .to_owned();
+    let facts = action
+        .describe(
+            &details,
+            &action_env(&data_dir, &data_dir.join("identity.txt")),
+        )
+        .expect("可以接受");
+    assert!(facts[0].value.contains(&first), "{}", facts[0].value);
+    store
+        .end_attempt(&task.id, attempt, T0 + 3, tasks::AttemptEnd::Reported)
+        .expect("结束第 1 次");
+    let attempt2 = store.begin_attempt(&task.id, T0 + 4).expect("第 2 次");
+    store
+        .record_report(
+            &task.id,
+            attempt2,
+            tasks::NewReport {
+                state: tasks::ReportState::Ready,
+                origin: tasks::ReportOrigin::Agent,
+                summary: "R2".to_owned(),
+                question: None,
+            },
+            T0 + 5,
+        )
+        .expect("R2");
+    let error = action
+        .act(&details, scenario.host())
+        .await
+        .expect_err("卡上的报告已变，不能接受");
+    assert!(error.contains("已经变了"), "{error}");
+    assert!(
+        store
+            .task(&task.id)
+            .unwrap()
+            .unwrap()
+            .acceptances
+            .is_empty(),
+        "不能接受新报告"
+    );
+}

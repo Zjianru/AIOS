@@ -57,6 +57,9 @@ pub(crate) struct CardMetaOption {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub facts: Vec<CardFact>,
+    /// 提议时校验/规范化后的 details；确认卡用它，不用模型原参数，避免卡上的对象和执行对象脱节。
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub details: Value,
 }
 
 /// 一条被接受的提议（重开页面、点按钮都从日志读回它）。
@@ -501,19 +504,22 @@ impl RootHost {
                 "这个动作现在不可用",
             )));
         };
-        let details = match kind.details(&option.details) {
+        let meta_option = proposal
+            .meta
+            .options
+            .iter()
+            .find(|meta| meta.id == option.id);
+        let raw_details = meta_option
+            .map(|meta| &meta.details)
+            .filter(|details| !details.is_null())
+            .unwrap_or(&option.details);
+        let details = match kind.details(raw_details) {
             Ok(details) => details,
             Err(reason) => {
                 return Ok(Some(failed_decision(proposal, option, &reason)));
             }
         };
-        let facts = proposal
-            .meta
-            .options
-            .iter()
-            .find(|meta| meta.id == option.id)
-            .map(|meta| meta.facts.as_slice())
-            .unwrap_or(&[]);
+        let facts = meta_option.map(|meta| meta.facts.as_slice()).unwrap_or(&[]);
         let session_id = self.info().session_id;
         let env = ActionEnv {
             data_dir: &self.options.data_dir,

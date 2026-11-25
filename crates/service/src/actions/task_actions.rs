@@ -370,7 +370,7 @@ impl AcceptDeliveriesAction {
         Ok(out)
     }
 
-    fn picks(&self, ids: &[String]) -> Result<Vec<crate::work::WorkPick>, String> {
+    fn current_picks(&self, ids: &[String]) -> Result<Vec<crate::work::WorkPick>, String> {
         let store = task_store(&self.data_dir)?;
         let mut picks = Vec::new();
         for id in ids {
@@ -386,6 +386,38 @@ impl AcceptDeliveriesAction {
         }
         Ok(picks)
     }
+
+    /// details.picks 是提议那一刻钉住的报告；没有时按 task_ids 解析当前报告（旧卡/直接调用）。
+    fn picks(&self, details: &Value) -> Result<Vec<crate::work::WorkPick>, String> {
+        if let Some(value) = details
+            .as_object()
+            .and_then(|object| object.get("picks"))
+            .filter(|value| !value.is_null())
+        {
+            let picks: Vec<crate::work::WorkPick> = serde_json::from_value(value.clone())
+                .map_err(|error| format!("details.picks 不合法：{error}"))?;
+            if picks.is_empty() {
+                return Err("details.picks 必须至少有一项".to_owned());
+            }
+            return Ok(picks);
+        }
+        let ids = self.task_ids(details)?;
+        self.current_picks(&ids)
+    }
+
+    fn check_still_current(&self, picks: &[crate::work::WorkPick]) -> Result<(), String> {
+        let store = task_store(&self.data_dir)?;
+        for pick in picks {
+            let report = store
+                .releasable_report(&TaskId::from(pick.task_id.as_str()))
+                .map_err(|error| format!("报告读不出来：{error}"))?
+                .ok_or_else(|| "卡片上的报告已经变了，请重新出卡".to_owned())?;
+            if report.id.as_str() != pick.report_id || report.version != pick.version {
+                return Err("卡片上的报告已经变了，请重新出卡".to_owned());
+            }
+        }
+        Ok(())
+    }
 }
 
 impl ActionKind for AcceptDeliveriesAction {
@@ -398,12 +430,23 @@ impl ActionKind for AcceptDeliveriesAction {
     }
 
     fn details(&self, raw: &Value) -> Result<Value, String> {
-        Ok(json!({ "task_ids": self.task_ids(raw)? }))
+        if raw
+            .as_object()
+            .and_then(|object| object.get("picks"))
+            .filter(|value| !value.is_null())
+            .is_some()
+        {
+            let picks = self.picks(raw)?;
+            return Ok(json!({ "picks": picks }));
+        }
+        let ids = self.task_ids(raw)?;
+        let picks = self.current_picks(&ids)?;
+        Ok(json!({ "picks": picks }))
     }
 
     fn describe(&self, details: &Value, _env: &ActionEnv<'_>) -> Result<Vec<CardFact>, String> {
-        let ids = self.task_ids(details)?;
-        let picks = self.picks(&ids)?;
+        let picks = self.picks(details)?;
+        self.check_still_current(&picks)?;
         let store = task_store(&self.data_dir)?;
         let mut first = Vec::new();
         let mut facts = Vec::new();
@@ -432,8 +475,8 @@ impl ActionKind for AcceptDeliveriesAction {
         host: &'a RootHost,
     ) -> ActionFuture<'a, Result<ActionOutcome, String>> {
         Box::pin(async move {
-            let ids = self.task_ids(details)?;
-            let picks = self.picks(&ids)?;
+            let picks = self.picks(details)?;
+            self.check_still_current(&picks)?;
             let response = host
                 .accept_many(&TaskAcceptManyRequest { picks })
                 .await
