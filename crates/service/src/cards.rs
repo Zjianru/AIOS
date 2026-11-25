@@ -492,9 +492,17 @@ impl RootHost {
         option_id: Option<&str>,
         events: &[session::Event],
     ) -> Result<Option<session::CardDecision>, ServiceError> {
-        let Some(option) =
-            option_id.and_then(|id| proposal.args.options.iter().find(|option| option.id == id))
-        else {
+        let option = option_id
+            .and_then(|id| proposal.args.options.iter().find(|option| option.id == id))
+            .or_else(|| {
+                // 单选项卡没有歧义：客户端漏传 option 时按唯一选项执行，避免卡永远 pending。
+                if proposal.args.options.len() == 1 {
+                    proposal.args.options.first()
+                } else {
+                    None
+                }
+            });
+        let Some(option) = option else {
             return Ok(None);
         };
         let Some(kind) = self.options.actions.get(&option.action) else {

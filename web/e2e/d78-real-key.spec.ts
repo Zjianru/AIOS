@@ -82,9 +82,9 @@ test('D78 有项目问候：不提项目', async ({ page, request }) => {
 test('D78 绝对 README：可读', async ({ page }) => {
   const fixture = await startD78KernelFixture();
   try {
-    const readme = path.resolve(fixture.dataDir, '..', 'work');
+    const readme = path.join(fixture.homeDir!, 'README.md');
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind');
-    await send(page, '帮我看下 ' + readme + '/README.md');
+    await send(page, '帮我看下 ' + readme);
     await expect(page.getByText('D78-README-OK', { exact: false }).last()).toBeVisible({
       timeout: 180_000,
     });
@@ -228,6 +228,8 @@ test('D78 改任务归属：判断卡写清项目，点了任务真的换项目'
 test('D78 接受交付：判断卡第一条「这是你的判断」，点了才接受', async ({ page, request }) => {
   const fixture = await startD78KernelFixture();
   try {
+    page.on('console', (message) => console.log('[D78 console]', message.type(), message.text()));
+    page.on('pageerror', (error) => console.log('[D78 pageerror]', String(error)));
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind');
     await send(page, '派一个只读调查任务，去看 README 第一行，交回结果');
     const result = page
@@ -241,7 +243,13 @@ test('D78 接受交付：判断卡第一条「这是你的判断」，点了才�
     await expect(card).toBeVisible({ timeout: 180_000 });
     await expect(card).toContainText('接受');
     await confirmCard(card);
-    await expect(card).toHaveAttribute('data-state', 'done', { timeout: 60_000 });
+    await expect(card)
+      .toHaveAttribute('data-state', 'done', { timeout: 60_000 })
+      .catch(async (error) => {
+        console.log('[D78 stderr]', fixture.stderr?.() ?? '');
+        console.log('[D78 page]', await page.locator('main').innerText());
+        throw error;
+      });
     await expect(page.locator('main')).toContainText('你接受了', { timeout: 60_000 });
     const task = await waitForTask(request, fixture);
     expect(task).toBeTruthy();
