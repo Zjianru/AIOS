@@ -197,6 +197,7 @@ test('D78 改任务归属：判断卡写清项目，点了任务真的换项目'
     await send(page, '派一个只读调查任务，去看 README 第一行');
     await expect(page.locator('[data-kind="task-result"]').last()).toBeVisible({ timeout: 180_000 });
     const task = await waitForTask(request, fixture);
+    expect(task.projectId, '用户没说项目时任务应是个人，不能被自动归到唯一项目').toBeUndefined();
     await send(page, '把刚才这个任务改到项目「D78 改归属项目」');
     const card = page.locator('[data-kind="confirm-card"]').filter({ hasText: 'D78 改归属项目' }).last();
     await expect(card).toBeVisible({ timeout: 180_000 });
@@ -220,12 +221,9 @@ test('D78 接受交付：判断卡第一条「这是你的判断」，点了才�
   try {
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind');
     await send(page, '派一个只读调查任务，去看 README 第一行，交回结果');
-    await expect
-      .poll(async () => {
-        const text = await page.locator('main').innerText();
-        return text.includes('待你核') || text.includes('你接受了');
-      }, { timeout: 180_000 })
-      .toBeTruthy();
+    const result = page.locator('[data-kind="task-result"][data-state="review"]').last();
+    await expect(result).toBeVisible({ timeout: 180_000 });
+    await expect(result.locator('[data-kind="task-accept"]')).toBeVisible({ timeout: 120_000 });
     await send(page, '接受这个交付');
     const card = page.locator('[data-kind="confirm-card"]').filter({ hasText: '这是你的判断' }).last();
     await expect(card).toBeVisible({ timeout: 180_000 });

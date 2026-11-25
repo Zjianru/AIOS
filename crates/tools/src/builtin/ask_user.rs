@@ -20,7 +20,7 @@ impl Tool for AskUserQuestionTool {
     }
 
     fn description(&self) -> &str {
-        "Ask the user a concise question when you need confirmation, a choice, or missing information before proceeding."
+        "Ask the user a concise question when you need confirmation, a choice, or missing information before proceeding. Exception: when the user asks to write a file/document and has not given a path, do not ask for content, audience or format first — load aios-tasks and offer the confirm_write_scope card. Only ask content questions after the user named a path."
     }
 
     fn parameters(&self) -> &Value {

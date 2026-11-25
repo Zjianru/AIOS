@@ -243,6 +243,8 @@ async fn the_kind_system_prompt_is_neutral_with_only_routing() {
         "Projects: the fixed block lists existing projects",
         "On a greeting or simple opener, do not enumerate your capabilities",
         "do not proactively mention projects, the project list, ThinAgent, or file paths",
+        "Secrets: never repeat, quote, paraphrase, or copy a key/token/password",
+        "never auto-assign the only project",
     ] {
         assert!(
             !system.contains("You have no tool to change a task's project"),
@@ -341,6 +343,31 @@ async fn the_kind_system_prompt_is_neutral_with_only_routing() {
         "write_scope 说明要含路径照抄、无路径出卡、有路径缺正文要问：{}",
         schema("task_accept")["input_schema"]["properties"]["write_scope"]["description"]
     );
+    let ask_description = request["tools"]
+        .as_array()
+        .expect("tools 数组")
+        .iter()
+        .find(|tool| tool["name"] == "ask_user_question")
+        .and_then(|tool| tool["description"].as_str())
+        .unwrap_or("");
+    assert!(
+        ask_description.contains("confirm_write_scope")
+            && ask_description.contains("has not given a path"),
+        "无路径写文件时 ask_user_question 要让位给写到哪卡：{ask_description}"
+    );
+    let accept_description = request["tools"]
+        .as_array()
+        .expect("tools 数组")
+        .iter()
+        .find(|tool| tool["name"] == "task_accept")
+        .and_then(|tool| tool["description"].as_str())
+        .unwrap_or("");
+    assert!(
+        accept_description.contains("gave no path")
+            && accept_description.contains("confirm_write_scope"),
+        "task_accept 说明要写无路径直接出卡：{accept_description}"
+    );
+
     let cwd_description = |name: &str| -> &str {
         request["tools"]
             .as_array()
@@ -362,8 +389,9 @@ async fn the_kind_system_prompt_is_neutral_with_only_routing() {
             .expect("project 说明");
         assert!(
             project.contains("default directory does not exist")
-                && project.contains("tell the user"),
-            "{name} 的 project 说明要写默认目录不存在怎么办：{project}"
+                && project.contains("tell the user")
+                && project.contains("auto-assign"),
+            "{name} 的 project 说明要写默认目录不存在、不能自动归唯一项目：{project}"
         );
         let cwd = cwd_description(name);
         assert!(
