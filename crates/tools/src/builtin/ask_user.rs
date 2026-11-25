@@ -20,7 +20,7 @@ impl Tool for AskUserQuestionTool {
     }
 
     fn description(&self) -> &str {
-        "Ask the user a concise question when you need confirmation, a choice, or missing information before proceeding. Exception: when the user asks to write a file/document and has not given a path, do not ask for content, audience or format first — load aios-tasks and offer the confirm_write_scope card. Only ask content questions after the user named a path."
+        "Ask the user a concise question when you need confirmation, a choice, or missing information before proceeding."
     }
 
     fn parameters(&self) -> &Value {
@@ -78,5 +78,21 @@ impl Tool for AskUserQuestionTool {
                 meta: None,
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn description_is_shared_and_has_no_kind_only_write_exception() {
+        let description = AskUserQuestionTool::new().description().to_owned();
+        assert!(!description.contains("confirm_write_scope"));
+        assert!(!description.contains("aios-tasks"));
+        assert_eq!(
+            description,
+            "Ask the user a concise question when you need confirmation, a choice, or missing information before proceeding."
+        );
     }
 }

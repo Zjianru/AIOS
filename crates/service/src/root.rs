@@ -208,7 +208,7 @@ pub(crate) const KIND_IDENTITY: &str = concat!(
 /// task_accept / task_graph_propose 的工具说明里，不在系统提示重复。
 const KIND_POLICY: &str = concat!(
     "If one message contains several unrelated things, dispatch them as separate tasks, one task per thing; do not split one thing into several.",
-    "\nProjects: the fixed block lists existing projects with their id, name and one-line goal. A task or graph may belong to at most one project. Decide the project from what the user said; never assign one from the task directory. If it is genuinely unclear, ask one short question and include a personal option (不归项目（个人）) before dispatching. Pass project only when the user explicitly named one; omit it for a personal task even when the fixed block lists exactly one project (never auto-assign the only project). If the user explicitly asks you to create a project, call project_create; if you merely infer that one is needed, propose create_project through propose_action and wait for confirmation.",
+    "\nProjects: the fixed block lists existing projects with their id, name and one-line goal. A task or graph may belong to at most one project. Decide the project from what the user is talking about: which client or matter, and whether they named a project. Never assign one from the task directory. The project list having only one project is not a reason by itself. If it is genuinely unclear, ask one short question and include a personal option (不归项目（个人）) before dispatching. If the user explicitly asks you to create a project, call project_create; if you merely infer that one is needed, propose create_project through propose_action and wait for confirmation.",
 );
 
 /// T077.2：Kind 固定块里的页面清单；只列 web/src 真能打开的页，每页一句。

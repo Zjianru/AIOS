@@ -244,7 +244,7 @@ async fn the_kind_system_prompt_is_neutral_with_only_routing() {
         "On a greeting or simple opener, do not enumerate your capabilities",
         "do not proactively mention projects, the project list, ThinAgent, or file paths",
         "Secrets: never repeat, quote, paraphrase, or copy a key/token/password",
-        "never auto-assign the only project",
+        "only one project is not a reason",
     ] {
         assert!(
             !system.contains("You have no tool to change a task's project"),
@@ -351,9 +351,8 @@ async fn the_kind_system_prompt_is_neutral_with_only_routing() {
         .and_then(|tool| tool["description"].as_str())
         .unwrap_or("");
     assert!(
-        ask_description.contains("confirm_write_scope")
-            && ask_description.contains("has not given a path"),
-        "无路径写文件时 ask_user_question 要让位给写到哪卡：{ask_description}"
+        !ask_description.contains("confirm_write_scope") && !ask_description.contains("aios-tasks"),
+        "写文件的例外只能在 Kind 独有位置，不能进共用 ask_user_question：{ask_description}"
     );
     let accept_description = request["tools"]
         .as_array()
@@ -390,8 +389,8 @@ async fn the_kind_system_prompt_is_neutral_with_only_routing() {
         assert!(
             project.contains("default directory does not exist")
                 && project.contains("tell the user")
-                && project.contains("auto-assign"),
-            "{name} 的 project 说明要写默认目录不存在、不能自动归唯一项目：{project}"
+                && project.contains("only one project is not a reason"),
+            "{name} 的 project 说明要写默认目录不存在、只一个项目不算理由：{project}"
         );
         let cwd = cwd_description(name);
         assert!(

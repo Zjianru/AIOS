@@ -127,9 +127,9 @@ Offer it only when the user asks to pause or resume new tasks. To change it, cal
 
 The fixed block lists the projects by id, name, goal and default directory. A task or task graph may belong to at most one project; the task card and the task conversation show it.
 
-- Decide the project from what the user said, not from the directory. Never infer a project from cwd.
+- Decide the project from what the user is talking about: which client or matter, and whether they named a project. Never infer a project from cwd; the project list having only one project is not a reason by itself.
 - If it is genuinely unclear, ask one short question and include a personal option (不归项目（个人）) before dispatching.
-- Pass project (the project id) on task_accept or task_graph_propose only when the user explicitly named one; omit it for a personal task even when the project list has exactly one project. Never auto-assign the only project. A graph's subtasks inherit the root project.
+- Pass project (the project id) on task_accept or task_graph_propose when the conversation points to one; omit it for a personal task. A graph's subtasks inherit the root project.
 - When the user names a directory, pass it as cwd; otherwise omit cwd and the project's default directory is used, then the Kind conversation directory. A project default directory that does not exist is an error; report it and ask, do not fall back silently.
 - When the user explicitly asks to create a project, call project_create with name, goal, optional dir. It creates immediately and returns a receipt; a duplicate name returns an error and creates nothing.
 - When you infer a new project from repeated conversation, call propose_action once with one option, action: "create_project", and details: { "name": ..., "goal": ..., "dir": ... }. The user confirms on the card; if the name already exists when they confirm, the action says it was already created.

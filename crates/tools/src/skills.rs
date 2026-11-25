@@ -1096,6 +1096,24 @@ mod guide_tests {
     }
 
     #[test]
+    fn aios_tasks_project_rule_follows_d113() {
+        let tasks = bundled_skills()
+            .iter()
+            .find(|skill| skill.name == "aios-tasks")
+            .expect("aios-tasks 在自带 skill 里");
+        let parsed = parse_skill(tasks.raw).expect("frontmatter 合法");
+        assert!(
+            parsed.body.contains("which client or matter")
+                && parsed.body.contains("only one project is not a reason"),
+            "项目归属要从用户聊的客户/事情判断，不能因为只有一个项目就归"
+        );
+        assert!(
+            parsed.body.contains("不归项目（个人）"),
+            "拿不准要问并带个人选项"
+        );
+    }
+
+    #[test]
     fn aios_tasks_skill_never_asks_instead_of_the_write_scope_card() {
         let tasks = bundled_skills()
             .iter()
