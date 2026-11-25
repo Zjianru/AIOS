@@ -1530,7 +1530,7 @@ fn update_gate_commands_card_shows_before_after_and_version() {
     assert!(error.contains("不是程序门"), "{error}");
 }
 
-/// T083.1：五个任务动作都登记在 aios-tasks 名下。
+/// 五个任务动作都登记在 aios-tasks 名下。
 #[test]
 fn task_actions_are_registered_under_aios_tasks() {
     let directory = tempfile::tempdir().unwrap();
@@ -1550,7 +1550,7 @@ fn task_actions_are_registered_under_aios_tasks() {
     }
 }
 
-/// T083.1：中断卡事实行写任务、状态、动作。
+/// 中断卡事实行写任务、状态、动作。
 #[test]
 fn task_interrupt_describes_the_task_and_action() {
     let directory = tempfile::tempdir().unwrap();
@@ -1571,7 +1571,7 @@ fn task_interrupt_describes_the_task_and_action() {
     assert_eq!(facts[2].value, "停下当前这一轮");
 }
 
-/// T083.1：改归属卡事实行写清任务、旧项目 → 新项目。
+/// 改归属卡事实行写清任务、旧项目 → 新项目。
 #[test]
 fn task_set_project_describes_before_and_after() {
     let directory = tempfile::tempdir().unwrap();
@@ -1613,7 +1613,7 @@ fn task_set_project_describes_before_and_after() {
     assert_eq!(facts[1].value, "旧项目 → 新项目");
 }
 
-/// T083.1：接受交付的第一条事实是判断卡对象，后面列报告与版本。
+/// 接受交付的第一条事实是判断卡对象，后面列报告与版本。
 #[test]
 fn accept_deliveries_starts_with_the_judgment_and_report() {
     let directory = tempfile::tempdir().unwrap();
@@ -1651,7 +1651,7 @@ fn accept_deliveries_starts_with_the_judgment_and_report() {
     assert!(facts[1].value.contains("第 1 版"), "{}", facts[1].value);
 }
 
-/// T083.1：门判定第一条事实写清门和通过/不通过。
+/// 门判定第一条事实写清门和通过/不通过。
 #[test]
 fn gate_judge_starts_with_the_judgment_object() {
     let directory = tempfile::tempdir().unwrap();
@@ -1719,7 +1719,7 @@ fn gate_judge_starts_with_the_judgment_object() {
     assert_eq!(facts[2].value, "report-1");
 }
 
-/// T083.1：task_say.text 只能逐字来自用户消息；改写拒绝并提示改要求。
+/// task_say.text 只能逐字来自用户消息；改写拒绝并提示改要求。
 #[tokio::test]
 async fn task_say_checks_the_users_words() {
     let scenario = scenario(vec![skill_script()], Arc::new(ActionRegistry::empty())).await;
@@ -1758,7 +1758,7 @@ async fn task_say_checks_the_users_words() {
     assert!(error.contains("update_task_requirement"), "{error}");
 }
 
-/// T083.1：accept_deliveries act 走页面同一份 accept_many，点后任务关闭。
+/// accept_deliveries act 走页面同一份 accept_many，点后任务关闭。
 #[tokio::test]
 async fn accept_deliveries_act_accepts_through_the_same_store_path() {
     let scenario = scenario(vec![skill_script()], Arc::new(ActionRegistry::empty())).await;
