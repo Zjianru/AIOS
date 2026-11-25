@@ -2540,3 +2540,83 @@ async fn keyring_relocate_act_moves_the_identity_file() {
         .view();
     assert_eq!(view.key_file.path, moved);
 }
+
+/// 替换卡和关于你草稿卡：第一行是判断对象，写清卡名和选哪边。
+#[test]
+fn memory_card_judgments_name_the_card_and_the_choice() {
+    let directory = tempfile::tempdir().unwrap();
+    let data_dir = directory.path();
+    let store = memory::MemoryStore::open(data_dir.join("memory.sqlite")).unwrap();
+    let old = store
+        .write(
+            memory::types::WriteOp::Remember {
+                title: "旧偏好".to_owned(),
+                summary: "旧摘要".to_owned(),
+                body: "旧正文".to_owned(),
+                source_kind: "user".to_owned(),
+                source_ref: "test".to_owned(),
+            },
+            &memory::types::WriteContext::user(),
+        )
+        .unwrap()
+        .item
+        .expect("旧条目");
+    let mut write = memory::types::MemoryWrite::new(memory::types::WriteOp::Note {
+        title: "新偏好".to_owned(),
+        summary: "新摘要".to_owned(),
+        body: "新正文".to_owned(),
+        source_kind: "kind".to_owned(),
+        source_ref: "test".to_owned(),
+    });
+    write.relation = Some(memory::types::RelationDecision::Contradict {
+        target: old.id,
+        reason: "和旧偏好矛盾".to_owned(),
+    });
+    let replace_card = match store.write_with_relation(write, &memory::types::WriteContext::kind())
+    {
+        Err(memory::WriteError::NeedsCard { card, .. }) => card.card_ref,
+        other => panic!("应该出替换卡：{other:?}"),
+    };
+    let about_card = store
+        .draft_about(
+            "关于你草稿",
+            vec![memory::types::AboutEdit {
+                op: "add".to_owned(),
+                about_id: None,
+                old: None,
+                text: Some("喜欢周五对稿".to_owned()),
+            }],
+        )
+        .unwrap()
+        .card_ref;
+    let identity = data_dir.join("identity.txt");
+    let env = action_env(data_dir, &identity);
+
+    let replace = settings_action(data_dir, "memory_resolve_replace");
+    let details = replace
+        .details(&json!({ "card": replace_card, "replace": true }))
+        .expect("replace details");
+    let facts = replace.describe(&details, &env).expect("replace 卡");
+    assert_eq!(facts[0].name, "这是你的判断");
+    assert!(facts[0].value.contains(&replace_card), "{}", facts[0].value);
+    assert!(facts[0].value.contains("替换旧的"), "{}", facts[0].value);
+    let details = replace
+        .details(&json!({ "card": replace_card, "replace": false }))
+        .expect("replace details");
+    let facts = replace.describe(&details, &env).expect("replace 卡");
+    assert!(facts[0].value.contains("两条都留"), "{}", facts[0].value);
+
+    let about = settings_action(data_dir, "memory_resolve_about_draft");
+    let details = about
+        .details(&json!({ "card": about_card, "save": true }))
+        .expect("about details");
+    let facts = about.describe(&details, &env).expect("about 卡");
+    assert_eq!(facts[0].name, "这是你的判断");
+    assert!(facts[0].value.contains(&about_card), "{}", facts[0].value);
+    assert!(facts[0].value.contains("保存"), "{}", facts[0].value);
+    let details = about
+        .details(&json!({ "card": about_card, "save": false }))
+        .expect("about details");
+    let facts = about.describe(&details, &env).expect("about 卡");
+    assert!(facts[0].value.contains("不用"), "{}", facts[0].value);
+}

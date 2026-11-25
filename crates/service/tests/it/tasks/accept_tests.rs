@@ -245,6 +245,10 @@ async fn the_kind_system_prompt_is_neutral_with_only_routing() {
         "do not proactively mention projects, the project list, ThinAgent, or file paths",
     ] {
         assert!(
+            !system.contains("You have no tool to change a task's project"),
+            "项目改归属由 task_set_project 承担，提示不能再声称没有工具"
+        );
+        assert!(
             system.contains(kept),
             "非重复产品规则不能丢 {kept}：{system}"
         );

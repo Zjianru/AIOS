@@ -1005,6 +1005,24 @@ mod guide_tests {
     }
 
     #[test]
+    fn aios_guide_uses_d118_for_page_actions() {
+        let guide = bundled_skills()
+            .iter()
+            .find(|skill| skill.name == "aios-guide")
+            .expect("aios-guide 自带 skill");
+        let parsed = parse_skill(guide.raw).expect("frontmatter 合法");
+        assert!(parsed.body.contains("D118"), "要写 D118 口径");
+        assert!(parsed.body.contains("这是你的判断"), "判断卡要写对象");
+        assert!(parsed.body.contains("key 值"), "key 例外要写清");
+        assert!(parsed.body.contains("要先加载对应 skill"), "先加载 skill");
+        assert!(
+            !parsed
+                .body
+                .contains("只有用户能做：在设置页建连接和填/换 key、删连接和撤销的 key 值")
+        );
+    }
+
+    #[test]
     fn project_calendar_memory_skills_list_their_actions() {
         let skills = bundled_skills();
         for (name, actions) in [

@@ -143,7 +143,7 @@ impl Tool for ProposeActionTool {
     }
 
     fn description(&self) -> &str {
-        "Show the user one optional action card under this answer. Call only as the skill that names the actions instructs, once per turn."
+        "Show the user one optional action card under this answer. Load the matching skill first (aios-tasks, aios-calendar, aios-memory or aios-settings), then call this only as that skill instructs, once per turn."
     }
 
     fn parameters(&self) -> &Value {
