@@ -1525,7 +1525,7 @@ impl Store {
         Ok(())
     }
 
-    /// T084：任务进入用量等待。一个事务里结束 Attempt（Deferred）并排到点效果；
+    /// 任务进入用量等待。一个事务里结束 Attempt（Deferred）并排到点效果；
     /// 不写报告、不排 relay，因此不会叫醒 Kind。重复调用同一等待幂等。
     pub fn begin_usage_wait(
         &self,
@@ -1624,7 +1624,7 @@ impl Store {
             .transpose()
     }
 
-    /// T084：席位满时泵需要把 UsageResume 的 due 排除在可醒时间外，等 release_seat 叫醒。
+    /// 席位满时泵需要把 UsageResume 的 due 排除在可醒时间外，等 release_seat 叫醒。
     pub fn next_effect_due_excluding(&self, kind: EffectKind) -> Result<Option<i64>, TaskError> {
         let conn = self.lock()?;
         conn.query_row(

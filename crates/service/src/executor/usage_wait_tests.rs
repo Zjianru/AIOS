@@ -1,4 +1,4 @@
-//! T084.2：用量等待只读事实和席位满时的泵睡眠。
+//! 用量等待只读事实和席位满时的泵睡眠。
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};

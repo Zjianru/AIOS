@@ -478,7 +478,7 @@ pub struct TaskReadReport {
     pub checks: Vec<TaskReadGateCheck>,
 }
 
-/// T084：任务正在等模型用量恢复的只读事实。
+/// 任务正在等模型用量恢复的只读事实。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskReadUsageWait {
@@ -685,7 +685,7 @@ pub struct TaskReadHeader {
     /// 「待 Kind 核实，尚未接续」；送到之后横幅消失，任务仍是「被打断了」。
     #[serde(default, rename = "restartPending")]
     pub restart_pending: bool,
-    /// T084：正在等模型用量恢复；无等待为 None。
+    /// 正在等模型用量恢复；无等待为 None。
     #[serde(default, rename = "usageWait", skip_serializing_if = "Option::is_none")]
     pub usage_wait: Option<TaskReadUsageWait>,
     /// 当前 Attempt 最近一份报告的写入时间（unix 毫秒）；None = 这次 Attempt 还没交报告。

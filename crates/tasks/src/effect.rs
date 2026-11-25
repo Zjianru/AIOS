@@ -22,7 +22,7 @@ pub enum EffectKind {
     BackgroundLimit,
     /// T077：取消后立即掐断在跑的宿主；key 是任务 id。
     Cancel,
-    /// T084：模型用量到点自动接续；key 是 usage-resume:<task>:<attempt>。
+    /// 模型用量到点自动接续；key 是 usage-resume:<task>:<attempt>。
     UsageResume,
 }
 
@@ -133,7 +133,7 @@ pub enum EffectPayload {
     Cancel {
         task_id: TaskId,
     },
-    /// T084：到点自动开新 Attempt；恢复时刻就是效果的 due。
+    /// 到点自动开新 Attempt；恢复时刻就是效果的 due。
     UsageResume {
         task_id: TaskId,
         attempt_id: AttemptId,

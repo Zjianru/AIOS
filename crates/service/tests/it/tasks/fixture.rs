@@ -32,7 +32,7 @@ pub(super) struct RouterState {
     pub(super) thin_by_task: Mutex<HashMap<String, VecDeque<String>>>,
     /// 任务 id 要受理后才知道；测试先按标题排脚本（assignment 里也有标题）。
     pub(super) thin_by_title: Mutex<HashMap<String, VecDeque<String>>>,
-    /// 先让 ThinAgent 吃一次 HTTP 错误（T084 用量等待测试）；字段是状态码 + Retry-After。
+    /// 先让 ThinAgent 吃一次 HTTP 错误（用量等待测试）；字段是状态码 + Retry-After。
     pub(super) thin_errors: Mutex<VecDeque<(u16, Option<String>)>>,
 
     pub(super) bodies: Mutex<Vec<(bool, String)>>,

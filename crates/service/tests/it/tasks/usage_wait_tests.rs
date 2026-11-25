@@ -1,4 +1,4 @@
-//! T084.2：长 429 进用量等待，到点由泵开新 Attempt（服务端真任务运行时、假模型）。
+//! 长 429 进用量等待，到点由泵开新 Attempt（服务端真任务运行时、假模型）。
 
 use std::time::Duration;
 
@@ -18,7 +18,7 @@ async fn wait_until(label: &str, mut check: impl FnMut() -> bool) {
 #[tokio::test]
 async fn long_429_enters_usage_wait_and_resumes_at_due() {
     let fixture = Fixture::new().await;
-    // 第一个 ThinAgent 请求就吃 11 秒后的 429（超过 T084.1 的 10 秒门限）。
+    // 第一个 ThinAgent 请求就吃 11 秒后的 429（超过 的 10 秒门限）。
     fixture.router.push_thin_error(429, Some("11"));
     let task = fixture.accept(false).await;
     let kind_requests = fixture.router.bodies(false).len();

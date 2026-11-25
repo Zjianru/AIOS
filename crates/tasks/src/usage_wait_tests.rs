@@ -1,4 +1,4 @@
-//! T084：用量等待事务（Attempt Deferred + UsageResume，不写报告/不排 relay）。
+//! 用量等待事务（Attempt Deferred + UsageResume，不写报告/不排 relay）。
 
 use std::path::PathBuf;
 

@@ -177,7 +177,7 @@ const BACKGROUND_STOPPED_NOTE: &str = "这些命令跑过 30 分钟被停了";
 
 /// 确认接续后给 ThinAgent 的第一条输入（照 DSH RECOVERY_NOTE，换成 AIOS 的话；spec v1）。
 const RESUME_NOTE: &str = "AIOS 在这个任务进行中重启了。先看当前的文件和状态再继续；已经做完的外部动作不要再做一遍。把原来的任务做完，然后用 task_report 上报。";
-/// T084：模型用量到点自动续跑的第一条输入（D82/05 篇第 10 节）。
+/// 模型用量到点自动续跑的第一条输入（D82/05 篇第 10 节）。
 const USAGE_RESUME_NOTE: &str = "上一轮因为临时原因中断，从断处继续。";
 
 /// 重启汇报里一份最近报告最多带多少字（spec v1：last_report ≤ 300）。
@@ -1130,7 +1130,7 @@ impl TaskRuntime {
         })
     }
 
-    /// T084：当前用量等待的只读事实；最新 Attempt 已 Deferred 且 UsageResume 还在才算。
+    /// 当前用量等待的只读事实；最新 Attempt 已 Deferred 且 UsageResume 还在才算。
     fn task_usage_wait(&self, task: &Task) -> Option<TaskReadUsageWait> {
         let attempt = task.latest_attempt()?;
         if attempt.end != Some(AttemptEnd::Deferred) {
@@ -2019,7 +2019,7 @@ impl TaskRuntime {
         }
     }
 
-    /// T084：用量到点后走现有 open_resume 开新 Attempt；席位/会话没让出就留效果等叫醒。
+    /// 用量到点后走现有 open_resume 开新 Attempt；席位/会话没让出就留效果等叫醒。
     async fn deliver_usage_resume(self: &Arc<Self>, claim: EffectClaim) {
         let EffectPayload::UsageResume {
             task_id,
