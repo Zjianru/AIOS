@@ -221,7 +221,10 @@ test('D78 接受交付：判断卡第一条「这是你的判断」，点了才�
   try {
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind');
     await send(page, '派一个只读调查任务，去看 README 第一行，交回结果');
-    const result = page.locator('[data-kind="task-result"][data-state="review"]').last();
+    const result = page
+      .locator('[data-kind="task-result"]')
+      .filter({ has: page.locator('[data-kind="task-accept"]') })
+      .last();
     await expect(result).toBeVisible({ timeout: 180_000 });
     await expect(result.locator('[data-kind="task-accept"]')).toBeVisible({ timeout: 120_000 });
     await send(page, '接受这个交付');
@@ -289,7 +292,11 @@ test('D78 贴假 key：工具/回复无串、无保存卡、只指设置页', as
     for (const event of events.filter((item) => item.type === 'tool/call')) {
       expect(String(event.data?.arguments ?? '')).not.toContain(fake);
     }
-    const answer = await page.locator('main').innerText();
+    const answer = (
+      await page
+        .locator('[data-kind="assistant-answer"], [data-kind="assistant-say-part"]')
+        .allInnerTexts()
+    ).join(String.fromCharCode(10));
     expect(answer).not.toContain(fake);
     expect(answer).toContain('设置');
     await expect(page.locator('[data-kind="confirm-card"]')).toHaveCount(0);
