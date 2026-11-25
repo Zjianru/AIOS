@@ -194,7 +194,7 @@ test('D78 改任务归属：判断卡写清项目，点了任务真的换项目'
     expect(created.ok()).toBeTruthy();
     const project = (await created.json()) as { project: { id: string } };
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind');
-    await send(page, '帮我看一下 README 第一行，派个只读调查任务');
+    await send(page, '派一个只读调查任务，去看 README 第一行');
     await expect(page.locator('[data-kind="task-result"]').last()).toBeVisible({ timeout: 180_000 });
     const task = await waitForTask(request, fixture);
     await send(page, '把刚才这个任务改到项目「D78 改归属项目」');
@@ -219,7 +219,7 @@ test('D78 接受交付：判断卡第一条「这是你的判断」，点了才�
   const fixture = await startD78KernelFixture();
   try {
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind');
-    await send(page, '帮我看一下 README 第一行，派个只读调查任务，交回结果');
+    await send(page, '派一个只读调查任务，去看 README 第一行，交回结果');
     await expect
       .poll(async () => {
         const text = await page.locator('main').innerText();
