@@ -148,6 +148,7 @@ export async function startKernelFixture(
     options.taskResult === 'handback' ||
     options.taskResult === 'seats' ||
     options.taskResult === 'two' ||
+    options.taskResult === 'usageWait' ||
     options.taskResult === 'pretext' ||
     options.t029Restart !== undefined ||
     options.t030 !== undefined ||

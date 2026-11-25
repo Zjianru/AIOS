@@ -74,6 +74,7 @@ export function restartRouteFile(options: FixtureOptions): string | null {
 export function taskResultRouteFile(options: FixtureOptions): string | null {
   const scenario = options.taskResult;
   if (!scenario || scenario === 'missing' || scenario === 'bad-json') return null;
+  if (scenario === 'usageWait') return 't024-routes-usage-wait.json';
  // ：三份新场景各有自己的路由文件；其余沿用 的。
   if (
     scenario === 'say' ||

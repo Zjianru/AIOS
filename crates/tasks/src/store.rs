@@ -1532,8 +1532,8 @@ impl Store {
         Ok(())
     }
 
-    /// 任务进入用量等待。一个事务里结束 Attempt（Deferred）并排到点效果；
-    /// 不写报告、不排 relay，因此不会叫醒 Kind。重复调用同一等待幂等。
+    /// 任务进入用量等待。一个事务里写 waiting 报告、结束 Attempt（Deferred）并排到点效果；
+    /// 不排 relay，因此不会叫醒 Kind。重复调用同一等待幂等。
     pub fn begin_usage_wait(
         &self,
         id: &TaskId,

@@ -203,9 +203,14 @@ async fn handle(mut stream: TcpStream, shared: Arc<Mutex<Shared>>) -> std::io::R
         .await;
     };
     match call {
-        ReplayCall::Throw { status, body } => {
+        ReplayCall::Throw {
+            status,
+            headers,
+            body,
+        } => {
             let body = body.to_string().into_bytes();
-            write_response(&mut stream, status, "application/json", body).await
+            write_response_with_headers(&mut stream, status, "application/json", &headers, body)
+                .await
         }
         ReplayCall::Stream(records) => {
             let frames = substitute_memory_id(
@@ -436,14 +441,28 @@ async fn write_response(
     content_type: &str,
     body: Vec<u8>,
 ) -> std::io::Result<()> {
+    write_response_with_headers(stream, status, content_type, &[], body).await
+}
+
+async fn write_response_with_headers(
+    stream: &mut TcpStream,
+    status: u16,
+    content_type: &str,
+    headers: &[(String, String)],
+    body: Vec<u8>,
+) -> std::io::Result<()> {
     let reason = match status {
         200 => "OK",
         429 => "Too Many Requests",
         500 => "Internal Server Error",
         _ => "Error",
     };
+    let extra: String = headers
+        .iter()
+        .map(|(name, value)| format!("{name}: {value}\r\n"))
+        .collect();
     let head = format!(
-        "HTTP/1.1 {status} {reason}\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+        "HTTP/1.1 {status} {reason}\r\ncontent-type: {content_type}\r\n{extra}content-length: {}\r\nconnection: close\r\n\r\n",
         body.len()
     );
     stream.write_all(head.as_bytes()).await?;

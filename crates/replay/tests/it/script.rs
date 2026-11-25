@@ -97,7 +97,7 @@ fn bare_override_replaces_the_whole_script() {
         &override_path,
         serde_json::to_string(&serde_json::json!([
             {"kind": "stream", "records": [{"type": "text-chunks", "time0": 1, "index": 0, "dt": [], "texts": ["替换"]}]},
-            {"kind": "throw", "status": 429, "body": {"error": {"message": "太频繁"}}},
+            {"kind": "throw", "status": 429, "headers": {"retry-after": "11"}, "body": {"error": {"message": "太频繁"}}},
             {"kind": "hang"}
         ]))
         .expect("覆盖文件"),
@@ -105,10 +105,17 @@ fn bare_override_replaces_the_whole_script() {
     .expect("写覆盖");
     let script = ReplayScript::from_log_with_override(&log, Some(&override_path)).expect("读覆盖");
     assert_eq!(script.len(), 3);
-    assert!(matches!(
-        &script.calls[1],
-        ReplayCall::Throw { status: 429, .. }
-    ));
+    match &script.calls[1] {
+        ReplayCall::Throw {
+            status,
+            headers,
+            body: _,
+        } => {
+            assert_eq!(*status, 429);
+            assert_eq!(headers, &vec![("retry-after".to_owned(), "11".to_owned())]);
+        }
+        other => panic!("第二条不是 throw：{other:?}"),
+    }
     assert!(matches!(script.calls[2], ReplayCall::Hang));
 }
 

@@ -16,9 +16,10 @@ pub enum ReplayError {
 pub enum ReplayCall {
     /// 正常回一段流（从日志里的紧凑记录编码成 SSE）。
     Stream(Vec<AssistantStreamRecord>),
-    /// 2xx 之前就失败：HTTP 状态和响应体。
+    /// 2xx 之前就失败：HTTP 状态、响应头和响应体。
     Throw {
         status: u16,
+        headers: Vec<(String, String)>,
         body: serde_json::Value,
     },
     /// 回一段流之后把连接断掉（流到一半断开；没有 message_stop）。
@@ -266,11 +267,27 @@ pub fn call_from_value(value: &serde_json::Value) -> Result<ReplayCall, ReplayEr
                 .unwrap_or(500);
             let status = u16::try_from(status)
                 .map_err(|_| ReplayError::Format("entry.status 超出 HTTP 状态范围".to_owned()))?;
+            let headers = value
+                .get("headers")
+                .and_then(serde_json::Value::as_object)
+                .map(|headers| {
+                    headers
+                        .iter()
+                        .filter_map(|(name, value)| {
+                            value.as_str().map(|value| (name.clone(), value.to_owned()))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
             let body = value
                 .get("body")
                 .cloned()
                 .unwrap_or_else(|| serde_json::json!({"error": {"message": "回放脚本要求失败"}}));
-            Ok(ReplayCall::Throw { status, body })
+            Ok(ReplayCall::Throw {
+                status,
+                headers,
+                body,
+            })
         }
         "hang" => Ok(ReplayCall::Hang),
         other => Err(ReplayError::Format(format!("不认识的 entry kind：{other}"))),

@@ -2,6 +2,7 @@
 
 import { Hourglass, PlugZap, Square } from 'lucide-react';
 import type { TaskReadReport } from '@/data/generated/TaskReadReport';
+import type { TaskReadUsageWait } from '@/data/generated/TaskReadUsageWait';
 import { taskStatusOf } from '@/data/taskResult';
 
 export function TaskState({
@@ -12,6 +13,7 @@ export function TaskState({
   report,
   review,
   accepted,
+  usageWait,
 }: {
   running: boolean;
   winding: boolean;
@@ -23,6 +25,8 @@ export function TaskState({
   review: boolean;
  /** 用户接受记录绑的就是当前版本和这份报告。 */
   accepted: boolean;
+ /** 正在等模型用量恢复；普通等待为 null。 */
+  usageWait: TaskReadUsageWait | null;
 }) {
   if (running) {
     return (
@@ -62,6 +66,7 @@ export function TaskState({
       report.origin,
       review ? 'review' : undefined,
       accepted,
+      usageWait,
     );
     const failed = word === '失败';
     return (

@@ -22,6 +22,7 @@ export function needsTaskState(fact: TaskResultFact): boolean {
 export function taskStateOf(
   task: TaskReadHeader,
 ): 'dispatched' | 'stopped' | 'interrupted' | 'pending' {
+  if (task.usageWait) return 'pending';
   if (task.running) return 'dispatched';
   if (task.stopped) return 'stopped';
   if (task.interrupted) return 'interrupted';
@@ -52,12 +53,22 @@ export function applyTaskCardStates(
       if (!needsTaskState(fact)) return fact;
       const task = tasks.get(fact.taskId);
       if (!task) return fact;
-      // 汇报了：结果状态由 relay 给（有结果/待你核/已接受），不在这里猜。
-      if (task.reportedAt != null) return fact;
+      const usageResumeAt = task.usageWait?.resumeAt;
+      // 普通 waiting 报告仍由 relay/任务页自己显示；只有用量等待、停止、打断
+      // 或之前有过等待行时，才用 task-read 覆盖（并负责把新 Attempt 的行清掉）。
+      if (
+        task.reportedAt != null &&
+        usageResumeAt === undefined &&
+        fact.usageResumeAt === undefined &&
+        !task.stopped &&
+        !task.interrupted
+      ) {
+        return fact;
+      }
       const state = taskStateOf(task);
-      if (state === fact.state) return fact;
+      if (state === fact.state && usageResumeAt === fact.usageResumeAt) return fact;
       changed = true;
-      return { ...fact, state };
+      return { ...fact, state, usageResumeAt };
     });
     if (!changed) return view;
     changedAny = true;

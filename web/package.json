@@ -19,6 +19,7 @@
     "test:local-file": "node scripts/local-file.test.mjs",
     "test:effort-selection": "node scripts/effort-selection.test.mjs",
     "test:task-cards": "node scripts/task-cards.test.mjs",
+    "test:usage-wait": "node --experimental-strip-types scripts/usage-wait.test.mjs",
     "test:work-groups": "node --experimental-strip-types scripts/work-groups.test.mjs",
     "test:program-messages": "node --experimental-strip-types scripts/program-messages.test.mjs",
     "test:monitor-ws": "node scripts/monitor-ws.test.mjs"

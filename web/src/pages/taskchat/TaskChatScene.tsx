@@ -42,6 +42,7 @@ import { TaskState } from './parts/state';
 import { TaskProjectPicker } from './parts/project';
 import { NO_CANVAS, NO_COUNTS, reasonOf } from './parts/helpers';
 import { subscribeRootFrames } from '@/data/liveRoot';
+import { usageResumeLine } from '@/data/usageWait.ts';
 import { reconnectDelayMs } from '@/data/reconnect';
 import { useTaskChatSideData } from './parts/useTaskChatSideData';
 import { releaseTaskSocketRefs } from './parts/taskStream';
@@ -480,6 +481,7 @@ export function TaskChatScene() {
               report: response.task.report,
               review: response.task.review,
               accepted: response.task.accepted,
+              usageWait: response.task.usageWait,
               cancelledAt: response.task.cancelledAt,
             }
           : response.task,
@@ -684,6 +686,7 @@ export function TaskChatScene() {
                 report={task.report ?? null}
                 review={task.review}
                 accepted={task.accepted}
+                usageWait={task.usageWait ?? null}
               />
             )}
             <button
@@ -704,6 +707,11 @@ export function TaskChatScene() {
               onCancel={() => void cancelTask()}
             />
           </div>
+          {task.usageWait ? (
+            <div className="mt-1 text-2 text-wait" data-kind="task-usage-wait">
+              {usageResumeLine(task.usageWait.resumeAt)}
+            </div>
+          ) : null}
           <div className="mt-1">
             <TaskProjectPicker
               task={task}

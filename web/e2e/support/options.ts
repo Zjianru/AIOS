@@ -135,6 +135,8 @@ export interface FixtureOptions {
     | 'seats'
  /// 两个任务在同一轮报回（两张结果卡、刷新同序）。
     | 'two'
+ /// 长 429 进用量等待：卡/任务页同一行，拨到 due 后新 Attempt 行消失。
+    | 'usageWait'
  /// ThinAgent 先说话再调工具（任务对话的 say 步）。
     | 'pretext';
  /// ：重启接续夹具。main 四个任务（两个被打断、一个 ready、一个待答），

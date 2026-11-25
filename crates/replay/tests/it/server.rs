@@ -66,6 +66,7 @@ async fn throw_returns_status_and_body() {
     let script = ReplayScript {
         calls: vec![ReplayCall::Throw {
             status: 429,
+            headers: vec![("retry-after".to_owned(), "11".to_owned())],
             body: serde_json::json!({"error": {"message": "太频繁"}}),
         }],
         pace_ms: None,
@@ -74,6 +75,7 @@ async fn throw_returns_status_and_body() {
     let server = start_replay_server(script).await.expect("起回放服务");
     let response = post(&format!("{}/messages", server.url())).await;
     assert_eq!(response.status(), 429);
+    assert_eq!(response.headers().get("retry-after").unwrap(), "11");
     let body = response.text().await.expect("读 body");
     assert!(body.contains("太频繁"), "body={body}");
     server.shutdown();

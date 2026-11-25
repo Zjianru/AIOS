@@ -25,6 +25,7 @@ import {
   Terminal,
 } from 'lucide-react';
 import { go } from '@/app/navigate';
+import { usageResumeLine } from '@/data/usageWait.ts';
 import { useKindStore } from '@/pages/kind/kindStore';
 import type { LucideIcon } from 'lucide-react';
 import type { TaskCardState, TaskResultSlots } from '@/data/taskResult';
@@ -275,6 +276,11 @@ export function TaskResultCardView({ envelope, slots, host }: CardViewProps<Task
           <span className="truncate">{slots.status}</span>
         </span>
       </div>
+      {slots.usageResumeAt === undefined ? null : (
+        <div className="mt-1 text-1 text-wait" data-kind="task-usage-wait">
+          {usageResumeLine(slots.usageResumeAt)}
+        </div>
+      )}
       {slots.quote && !slots.gate && !slots.programGate ? (
         <SaidLine
           text={[slots.quote.text]

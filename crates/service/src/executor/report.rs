@@ -485,7 +485,7 @@ impl TaskRuntime {
                 )
                 .is_ok()
         {
-            // 用量等待不写报告、不排 relay：Kind 不跑这一轮；卡/页头走 task-changed + task-read。
+            // 用量等待写 waiting 报告、不排 relay，所以不叫醒 Kind；卡/页头走 task-changed + task-read。
             self.cancel_background_limit(attempt_id);
             let running = self
                 .running

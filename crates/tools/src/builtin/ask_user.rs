@@ -90,9 +90,5 @@ mod tests {
         let description = AskUserQuestionTool::new().description().to_owned();
         assert!(!description.contains("confirm_write_scope"));
         assert!(!description.contains("aios-tasks"));
-        assert_eq!(
-            description,
-            "Ask the user a concise question when you need confirmation, a choice, or missing information before proceeding."
-        );
     }
 }

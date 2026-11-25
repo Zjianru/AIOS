@@ -3,6 +3,7 @@ import type { RequirementVersionView } from "./RequirementVersionView";
 import type { TaskReadGate } from "./TaskReadGate";
 import type { TaskReadGuardingGate } from "./TaskReadGuardingGate";
 import type { TaskReadReport } from "./TaskReadReport";
+import type { TaskReadUsageWait } from "./TaskReadUsageWait";
 
 export type TaskReadHeader = { id: string, title: string, requirement: string,
 /**
@@ -62,6 +63,10 @@ interrupted: boolean,
  * 「待 Kind 核实，尚未接续」；送到之后横幅消失，任务仍是「被打断了」。
  */
 restartPending: boolean,
+/**
+ * 正在等模型用量恢复；无等待为 None。
+ */
+usageWait?: TaskReadUsageWait | null,
 /**
  * 当前 Attempt 最近一份报告的写入时间（unix 毫秒）；None = 这次 Attempt 还没交报告。
  * 终态报告后执行者会立刻关掉会话，日志可能没有 turn/end：页面据此判断最后一轮不再在跑。

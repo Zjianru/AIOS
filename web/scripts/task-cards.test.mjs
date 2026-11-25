@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { foldedTaskCard, reconcileTaskCards } from '../src/pages/kind/taskCardFold.ts';
+import { applyTaskCardStates, taskStateOf } from '../src/pages/kind/taskCardState.ts';
 
 // T038 折卡的纯函数用例：派发卡 + relay 的跨轮/跨页归并。
 // 只给测试用到的字段（TurnViewData 的其它字段在折卡里不读）。
@@ -102,6 +103,33 @@ const view = (id, taskResults) => ({ id, taskResults });
   assert.equal(cards.length, 1, '重复的 relay 卡丢掉，只剩主卡');
   assert.equal(cards[0].id, 'task-report:t1:r1');
   assert.equal(cards[0].state, 'ready');
+}
+
+// 8）用量等待：task-read 的 usageWait 让派发卡变等待中并带一行；新 Attempt 清掉行。
+{
+  const dispatchCard = dispatch({ state: 'dispatched' });
+  const waiting = {
+    id: 't1',
+    title: '任务甲',
+    running: false,
+    stopped: false,
+    interrupted: false,
+    usageWait: { resumeAt: 1_800_000_000_000, connection: 'deepseek' },
+    reportedAt: 100,
+  };
+  assert.equal(taskStateOf(waiting), 'pending', '用量等待用现有等待中');
+  const applied = applyTaskCardStates([view('turn-1', [dispatchCard])], new Map([['t1', waiting]]));
+  assert.equal(applied[0].taskResults[0].state, 'pending');
+  assert.equal(applied[0].taskResults[0].usageResumeAt, 1_800_000_000_000);
+
+  const started = { ...waiting, usageWait: undefined, running: true, reportedAt: undefined };
+  const cleared = applyTaskCardStates(applied, new Map([['t1', started]]));
+  assert.equal(cleared[0].taskResults[0].state, 'dispatched', '新 Attempt 回进行中');
+  assert.equal(cleared[0].taskResults[0].usageResumeAt, undefined, '新 Attempt 行消失');
+
+  const ordinary = { ...waiting, usageWait: undefined };
+  const unchanged = applyTaskCardStates([view('turn-1', [dispatchCard])], new Map([['t1', ordinary]]));
+  assert.equal(unchanged[0].taskResults[0].usageResumeAt, undefined, '普通等待不出现等待行');
 }
 
 console.log('task-cards ok');

@@ -9,6 +9,7 @@
  */
 
 import { z } from 'zod';
+import type { TaskReadUsageWait } from './generated/TaskReadUsageWait.ts';
 import type {
   BodySlot,
   CardDefinition,
@@ -147,6 +148,8 @@ export interface TaskResultFact {
   };
   /** 这张卡最初是 task_accept 派生的派发卡（跨轮/跨页折卡时认它）。 */
   fromDispatch?: boolean;
+  /** 当前用量等待的绝对恢复时刻（毫秒）；没有等待时不出现这一行。 */
+  usageResumeAt?: number;
 }
 
 export interface TaskResultSlots {
@@ -157,6 +160,8 @@ export interface TaskResultSlots {
   status: LabelSlot;
   /** 程序用的状态键，视图按它选颜色和图标。 */
   state: TaskCardState;
+  /** 用量等待的恢复时刻（毫秒）；普通等待没有这个字段。 */
+  usageResumeAt?: number;
   summary: BodySlot;
   question?: BodySlot;
   at: number;
@@ -223,6 +228,7 @@ export const taskResultSlotsSchema = z.object({
   title: labelSlot(''),
   status: textSlot,
   state: z.enum(TASK_CARD_STATES).catch('waiting'),
+  usageResumeAt: z.number().optional(),
   summary: bodySlot,
   question: optionalBodySlot,
   at: z.number().int().catch(0),
@@ -295,11 +301,13 @@ export function taskStatusOf(
   origin: TaskReportOrigin,
   cardState?: 'review',
   accepted?: boolean,
+  usageWait?: TaskReadUsageWait | null,
 ): string {
   // 写任务当前要求版本的 ready：卡状态是「待你核」，Task 阶段仍是「待检查」。
   // T054：用户接受以后任务关闭，状态词统一「已关闭」（回执从 card/decision 回填）。
   if (accepted) return '已关闭';
   if (cardState === 'review') return '待你核';
+  if (usageWait) return '等待中';
   if (state === 'dispatching') return '派出中';
   if (state === 'dispatched') return '进行中';
   if (state === 'pending') return '等待中';
@@ -440,6 +448,7 @@ export function taskResultCardOf(
     title: fact.title,
     status,
     state,
+    ...(fact.usageResumeAt === undefined ? {} : { usageResumeAt: fact.usageResumeAt }),
     summary: fact.summary,
     ...(fact.question === undefined ? {} : { question: fact.question }),
     at: fact.at,
