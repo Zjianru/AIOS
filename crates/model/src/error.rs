@@ -76,6 +76,9 @@ pub struct ModelError {
     pub status: Option<u16>,
     /// 服务端 retry-after（毫秒，拿到才 >0）；重试层优先用它。
     pub retry_after_ms: Option<u64>,
+    /// 服务端给的绝对恢复时刻（unix 毫秒）；只从 429/402 响应头取，拿到才 >0。
+    #[doc(hidden)]
+    pub resume_at_ms: Option<i64>,
 }
 
 impl ModelError {
@@ -85,6 +88,7 @@ impl ModelError {
             message: message.into(),
             status: None,
             retry_after_ms: None,
+            resume_at_ms: None,
         }
     }
 }

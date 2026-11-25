@@ -406,7 +406,12 @@ pub enum TurnOutcome {
     Completed,
     MaxTokens,
     Aborted,
-    Error { code: String, message: String },
+    Error {
+        code: String,
+        message: String,
+        /// 服务端给的绝对恢复时刻（unix 毫秒）；只在本轮够得上任务级等待时填。
+        resume_at_ms: Option<i64>,
+    },
 }
 
 impl From<&TurnEndReason> for TurnOutcome {
@@ -420,6 +425,7 @@ impl From<&TurnEndReason> for TurnOutcome {
             TurnEndReason::Error { error } => Self::Error {
                 code: error.code.clone(),
                 message: error.message.clone(),
+                resume_at_ms: error.resume_at_ms,
             },
         }
     }

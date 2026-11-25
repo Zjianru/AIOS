@@ -3258,9 +3258,9 @@ impl TaskRuntime {
         tokio::spawn(async move {
             loop {
                 match events.recv().await {
-                    Ok(AgentEvent::TurnEnded { .. }) => {
+                    Ok(AgentEvent::TurnEnded { outcome, .. }) => {
                         runtime
-                            .turn_ended(&task_id, attempt_id, &conversation)
+                            .turn_ended(&task_id, attempt_id, &conversation, outcome)
                             .await;
                     }
                     Ok(AgentEvent::JobCompleted { .. }) => {

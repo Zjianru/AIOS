@@ -441,6 +441,7 @@ impl TaskRuntime {
         task_id: &TaskId,
         attempt_id: AttemptId,
         conversation: &SessionId,
+        _outcome: agent::TurnOutcome,
     ) {
         let Ok(Some(task)) = self.store.task(task_id) else {
             return;

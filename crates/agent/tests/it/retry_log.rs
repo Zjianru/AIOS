@@ -8,7 +8,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::common::{FINAL_TEXT_SSE, SequenceResponder, setup_agent, sse, wait_idle};
-use agent::{AgentEvent, Delivery};
+use agent::{AgentEvent, Delivery, TurnOutcome};
 use model::UserMessage;
 use serde_json::{Value, json};
 use session::{SessionId, SessionStore, TurnEndReason};
@@ -233,6 +233,7 @@ async fn max_retries_exhausted_after_five_retries() {
             error: session::LlmFailure {
                 message: "模型请求失败: SERVER: 测试错误".to_owned(),
                 code: "SERVER".to_owned(),
+                resume_at_ms: None,
             },
         }],
         "重试耗尽按最后的错误码收尾"
@@ -443,6 +444,7 @@ async fn retry_after_http_date_over_cap_is_fatal() {
     )
     .await;
     let (agent, data_dir, _cwd, id) = setup_agent(&server.uri(), ToolSet::empty()).await;
+    let mut events = agent.subscribe();
     agent
         .send(
             UserMessage::text("日期形式的 retry-after"),
@@ -469,8 +471,25 @@ async fn retry_after_http_date_over_cap_is_fatal() {
         })
         .collect();
     assert_eq!(reasons.len(), 1);
+    let TurnEndReason::Error { error } = &reasons[0] else {
+        panic!("本轮应以 RATE_LIMIT 收尾：{reasons:?}");
+    };
+    assert_eq!(error.code, "RATE_LIMIT");
     assert!(
-        matches!(&reasons[0], TurnEndReason::Error { error } if error.code == "RATE_LIMIT"),
-        "本轮以 RATE_LIMIT 收尾：{reasons:?}"
+        error.resume_at_ms.is_some_and(|at| at > 10_000),
+        "超过上限的 429 要把绝对恢复时刻带到 Agent 错误：{error:?}"
+    );
+    let mut ended = None;
+    while let Ok(event) = events.try_recv() {
+        if let AgentEvent::TurnEnded { outcome, .. } = event {
+            ended = Some(outcome);
+        }
+    }
+    let Some(TurnOutcome::Error { resume_at_ms, .. }) = ended else {
+        panic!("TurnEnded 应带错误 outcome：{ended:?}");
+    };
+    assert!(
+        resume_at_ms.is_some_and(|at| at > 10_000),
+        "TurnOutcome 也要带同一个恢复时刻：{resume_at_ms:?}"
     );
 }

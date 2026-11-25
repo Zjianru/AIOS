@@ -108,6 +108,9 @@ pub enum AbortCause {
 pub struct LlmFailure {
     pub message: String,
     pub code: String,
+    /// 服务端给的绝对恢复时刻（unix 毫秒）；只有达到任务级等待条件才填。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_at_ms: Option<i64>,
 }
 
 /// 一轮结束的原因（DSH TurnEndReasonMap 的子集：只列 AIOS 会产生的几类）。

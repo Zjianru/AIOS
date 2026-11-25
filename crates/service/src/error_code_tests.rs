@@ -216,6 +216,7 @@ fn turn_end(code: &str, message: &str) -> session::EventKind {
             error: session::LlmFailure {
                 message: message.to_owned(),
                 code: code.to_owned(),
+                resume_at_ms: None,
             },
         },
     }

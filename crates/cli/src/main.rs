@@ -1072,7 +1072,7 @@ fn handle_event(event: AgentEvent, outcome: &mut Option<TurnOutcome>) {
                 TurnOutcome::Completed => {}
                 TurnOutcome::MaxTokens => println!("[结束原因: max-tokens]"),
                 TurnOutcome::Aborted => println!("[已取消]"),
-                TurnOutcome::Error { code, message } => eprintln!("[错误 {code}] {message}"),
+                TurnOutcome::Error { code, message, .. } => eprintln!("[错误 {code}] {message}"),
             }
             *outcome = Some(ended);
         }

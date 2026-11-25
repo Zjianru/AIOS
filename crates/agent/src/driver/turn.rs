@@ -1,11 +1,16 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use session::{AbortCause, EventKind, InboxTarget, LlmFailure, TurnEndReason};
 
 use crate::capabilities::HookEvent;
 use crate::error::AgentError;
 use crate::{AgentEvent, TurnOutcome};
+use model::ErrorCode;
+
+/// 请求层单次重试上限；恢复时间比它更远才交给任务级等待。
+const TASK_RESUME_THRESHOLD_MS: i64 = 10_000;
 
 use super::step::run_step;
 use super::*;
@@ -124,6 +129,7 @@ pub(super) async fn run_turn(inner: &Arc<Inner>) -> Result<bool, AgentError> {
                 error: LlmFailure {
                     code: "UNKNOWN".to_owned(),
                     message: "turn ended without a reason".to_owned(),
+                    resume_at_ms: None,
                 },
             });
             let outcome = TurnOutcome::from(&reason);
@@ -134,6 +140,7 @@ pub(super) async fn run_turn(inner: &Arc<Inner>) -> Result<bool, AgentError> {
                 error: LlmFailure {
                     code: error.code(),
                     message: error.to_string(),
+                    resume_at_ms: task_resume_at(&error),
                 },
             };
             let outcome = TurnOutcome::from(&reason);
@@ -273,4 +280,71 @@ fn take_abort_cause(abort: &AtomicBool, cause: &Mutex<Option<AbortCause>>) -> Op
     }
     let mut slot = cause.lock().expect("agent 中断原因锁被毒化");
     Some(slot.take().unwrap_or(AbortCause::User))
+}
+
+/// 只有 429/402 对应的 RATE_LIMIT/QUOTA、且恢复时间比请求层单次上限更远时，
+/// 才把绝对时刻交给任务级等待；其它错误/时间保持 None。
+fn task_resume_at(error: &AgentError) -> Option<i64> {
+    let AgentError::Model(model_error) = error else {
+        return None;
+    };
+    if !matches!(model_error.code, ErrorCode::RateLimit | ErrorCode::Quota) {
+        return None;
+    }
+    let resume = model_error.resume_at_ms?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i64::try_from(duration.as_millis()).ok())?;
+    (resume.saturating_sub(now) > TASK_RESUME_THRESHOLD_MS).then_some(resume)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn model_error(code: ErrorCode, resume_at_ms: Option<i64>) -> AgentError {
+        let mut error = model::ModelError::new(code, "测试错误");
+        error.resume_at_ms = resume_at_ms;
+        AgentError::Model(error)
+    }
+
+    fn now_ms() -> i64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+            .try_into()
+            .unwrap()
+    }
+
+    #[test]
+    fn only_long_rate_or_quota_errors_reach_task_wait() {
+        let now = now_ms();
+        assert_eq!(
+            task_resume_at(&model_error(
+                ErrorCode::RateLimit,
+                Some(now + TASK_RESUME_THRESHOLD_MS + 1)
+            )),
+            Some(now + TASK_RESUME_THRESHOLD_MS + 1)
+        );
+        assert!(task_resume_at(&model_error(ErrorCode::Quota, Some(now + 20_000))).is_some());
+        assert!(
+            task_resume_at(&model_error(
+                ErrorCode::RateLimit,
+                Some(now + TASK_RESUME_THRESHOLD_MS)
+            ))
+            .is_none(),
+            "正好 10s 仍归请求层"
+        );
+        assert!(
+            task_resume_at(&model_error(ErrorCode::RateLimit, Some(now - 1_000))).is_none(),
+            "过去的时间不安排"
+        );
+        assert!(
+            task_resume_at(&model_error(ErrorCode::Server, Some(now + 20_000))).is_none(),
+            "5xx 不安排"
+        );
+        assert!(task_resume_at(&model_error(ErrorCode::RateLimit, None)).is_none());
+    }
 }

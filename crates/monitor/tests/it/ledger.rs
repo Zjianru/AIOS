@@ -60,6 +60,7 @@ fn ledger_records_every_event_in_order_with_severity() {
                     error: LlmFailure {
                         message: "模型失败".to_owned(),
                         code: "SERVER".to_owned(),
+                        resume_at_ms: None,
                     },
                 },
             },

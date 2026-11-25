@@ -51,6 +51,9 @@ pub(super) fn provider_error(
     let mut error = ModelError::new(code, message);
     error.status = status;
     error.retry_after_ms = retry_after_ms(headers);
+    if matches!(status, Some(429 | 402)) {
+        error.resume_at_ms = resume_at_ms(headers, error.retry_after_ms);
+    }
     error
 }
 
@@ -326,6 +329,127 @@ fn days_from_civil(year: i32, month: u32, day: u32) -> Option<i64> {
     Some(era * 146_097 + day_of_era - 719_468)
 }
 
+/// 429/402 的绝对恢复时刻：Retry-After 优先，其次 Anthropic ratelimit reset 头。
+///
+/// reset 头只在「撞满」的桶里取最晚值；没有 remaining=0 时退回所有 reset 的最晚值。
+/// 只认响应头，不读错误正文，不按供应商窗口推算。
+fn resume_at_ms(
+    headers: Option<&reqwest::header::HeaderMap>,
+    retry_after_ms: Option<u64>,
+) -> Option<i64> {
+    let now = now_ms();
+    if let Some(delay) = retry_after_ms {
+        return i64::try_from(now.saturating_add(delay)).ok();
+    }
+    let headers = headers?;
+    let now = i64::try_from(now).ok()?;
+    let mut exhausted: Vec<i64> = Vec::new();
+    let mut all: Vec<i64> = Vec::new();
+    for (reset_name, remaining_name) in [
+        (
+            "anthropic-ratelimit-requests-reset",
+            "anthropic-ratelimit-requests-remaining",
+        ),
+        (
+            "anthropic-ratelimit-tokens-reset",
+            "anthropic-ratelimit-tokens-remaining",
+        ),
+        (
+            "anthropic-ratelimit-input-tokens-reset",
+            "anthropic-ratelimit-input-tokens-remaining",
+        ),
+        (
+            "anthropic-ratelimit-output-tokens-reset",
+            "anthropic-ratelimit-output-tokens-remaining",
+        ),
+    ] {
+        let Some(reset) = headers
+            .get(reset_name)
+            .and_then(|value| value.to_str().ok())
+            .and_then(parse_rfc3339_ms)
+            .and_then(|at| i64::try_from(at).ok())
+        else {
+            continue;
+        };
+        if reset <= now {
+            continue;
+        }
+        all.push(reset);
+        if headers
+            .get(remaining_name)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .is_some_and(|remaining| remaining == 0)
+        {
+            exhausted.push(reset);
+        }
+    }
+    exhausted
+        .into_iter()
+        .max()
+        .or_else(|| all.into_iter().max())
+}
+
+/// RFC 3339（Z 或 +-HH:MM 偏移，可带小数秒）→ unix 毫秒；其它形态返回 None。
+fn parse_rfc3339_ms(text: &str) -> Option<u64> {
+    let text = text.trim();
+    let (date, rest) = text.split_once('T').or_else(|| text.split_once(' '))?;
+    let mut parts = date.split('-');
+    let year: i32 = parts.next()?.parse().ok()?;
+    let month: u32 = parts.next()?.parse().ok()?;
+    let day: u32 = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    let (clock, offset_seconds) = if let Some(clock) = rest.strip_suffix('Z') {
+        (clock, 0i64)
+    } else if let Some((clock, offset)) = rest.rsplit_once('+') {
+        (clock, parse_offset(offset)?)
+    } else if let Some((clock, offset)) = rest.rsplit_once('-') {
+        (clock, -parse_offset(offset)?)
+    } else {
+        return None;
+    };
+    let (clock, fraction_ms) = match clock.split_once('.') {
+        Some((clock, fraction)) => {
+            if fraction.is_empty() || !fraction.bytes().all(|byte| byte.is_ascii_digit()) {
+                return None;
+            }
+            let mut millis = fraction
+                .as_bytes()
+                .iter()
+                .take(3)
+                .fold(0u32, |acc, byte| acc * 10 + u32::from(byte - b'0'));
+            for _ in fraction.len().min(3)..3 {
+                millis *= 10;
+            }
+            (clock, millis)
+        }
+        None => (clock, 0),
+    };
+    let (hour, minute, second) = parse_hms(clock)?;
+    let base = i64::try_from(date_time_ms(day, month, year, hour, minute, second)?).ok()?;
+    let adjusted = base
+        .checked_add(i64::from(fraction_ms))?
+        .checked_sub(offset_seconds.checked_mul(1_000)?)?;
+    u64::try_from(adjusted).ok()
+}
+
+/// RFC 3339 的 +-HH:MM / +-HHMM 偏移 → 秒。
+fn parse_offset(text: &str) -> Option<i64> {
+    let (hours, minutes) = match text.split_once(':') {
+        Some((hours, minutes)) => (hours, minutes),
+        None if text.len() == 4 => (&text[..2], &text[2..]),
+        None => return None,
+    };
+    let hours: i64 = hours.parse().ok()?;
+    let minutes: i64 = minutes.parse().ok()?;
+    if !(0..=23).contains(&hours) || !(0..=59).contains(&minutes) {
+        return None;
+    }
+    Some(hours * 3_600 + minutes * 60)
+}
+
 /// 把 reqwest 的传输错误归类。
 pub(super) fn transport_error(source: reqwest::Error) -> ModelError {
     let code = if source.is_timeout() {
@@ -429,5 +553,119 @@ mod tests {
             None,
             "过去的日期交回本地退避（DSH 只认 >0 的 provider 延迟）"
         );
+    }
+
+    fn header_map(pairs: &[(&str, &str)]) -> reqwest::header::HeaderMap {
+        let mut map = reqwest::header::HeaderMap::new();
+        for (name, value) in pairs {
+            map.insert(
+                reqwest::header::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                reqwest::header::HeaderValue::from_str(value).unwrap(),
+            );
+        }
+        map
+    }
+
+    fn error_with(headers: &reqwest::header::HeaderMap, status: u16) -> ModelError {
+        provider_error(
+            &serde_json::json!({
+                "error": { "type": "rate_limit_error", "message": "限流" }
+            }),
+            Some(status),
+            Some(headers),
+        )
+    }
+
+    #[test]
+    fn rfc3339_parses_z_offset_and_fraction() {
+        let utc = date_time_ms(25, 11, 2026, 12, 0, 0).unwrap();
+        assert_eq!(parse_rfc3339_ms("2026-11-25T12:00:00Z"), Some(utc));
+        assert_eq!(parse_rfc3339_ms("2026-11-25T20:00:00+08:00"), Some(utc));
+        assert_eq!(
+            parse_rfc3339_ms("2026-11-25T12:00:00.250Z"),
+            Some(utc + 250)
+        );
+        assert_eq!(parse_rfc3339_ms("2026-11-25T12:00:00"), None);
+        assert_eq!(parse_rfc3339_ms("bogus"), None);
+    }
+
+    #[test]
+    fn retry_after_is_the_absolute_resume_when_present() {
+        let headers = header_map(&[("retry-after", "20")]);
+        let before = i64::try_from(now_ms()).unwrap();
+        let resume = error_with(&headers, 429)
+            .resume_at_ms
+            .expect("短/长都存绝对时刻");
+        assert!(
+            (resume - before - 20_000).abs() < 2_000,
+            "resume 应是 now+20s：{resume} vs {before}"
+        );
+    }
+
+    #[test]
+    fn retry_after_wins_over_reset_headers() {
+        let headers = header_map(&[
+            ("retry-after", "20"),
+            ("anthropic-ratelimit-requests-reset", "2099-01-01T00:00:00Z"),
+            ("anthropic-ratelimit-requests-remaining", "0"),
+        ]);
+        let before = i64::try_from(now_ms()).unwrap();
+        let resume = error_with(&headers, 429)
+            .resume_at_ms
+            .expect("Retry-After 优先");
+        assert!(
+            (resume - before - 20_000).abs() < 2_000,
+            "{resume} vs {before}"
+        );
+    }
+
+    #[test]
+    fn reset_headers_choose_the_latest_exhausted_bucket() {
+        let headers = header_map(&[
+            ("anthropic-ratelimit-requests-reset", "2099-01-01T00:00:00Z"),
+            ("anthropic-ratelimit-requests-remaining", "0"),
+            ("anthropic-ratelimit-tokens-reset", "2099-01-01T01:00:00Z"),
+            ("anthropic-ratelimit-tokens-remaining", "0"),
+            (
+                "anthropic-ratelimit-input-tokens-reset",
+                "2099-01-01T00:30:00Z",
+            ),
+            ("anthropic-ratelimit-input-tokens-remaining", "3"),
+        ]);
+        let resume = error_with(&headers, 429)
+            .resume_at_ms
+            .expect("reset 里的恢复时间");
+        assert_eq!(
+            resume,
+            i64::try_from(date_time_ms(1, 1, 2099, 1, 0, 0).unwrap()).unwrap(),
+            "撞满的桶取最晚；没撞满的不优先"
+        );
+    }
+
+    #[test]
+    fn reset_headers_fall_back_to_latest_when_remaining_is_missing() {
+        let headers = header_map(&[
+            ("anthropic-ratelimit-requests-reset", "2099-01-01T00:00:00Z"),
+            ("anthropic-ratelimit-tokens-reset", "2099-01-01T02:00:00Z"),
+        ]);
+        let resume = error_with(&headers, 402).resume_at_ms.expect("402 也认");
+        assert_eq!(
+            resume,
+            i64::try_from(date_time_ms(1, 1, 2099, 2, 0, 0).unwrap()).unwrap()
+        );
+    }
+
+    #[test]
+    fn non_429_402_and_invalid_headers_have_no_resume() {
+        let headers = header_map(&[("retry-after", "20")]);
+        assert!(error_with(&headers, 500).resume_at_ms.is_none());
+        let headers = header_map(&[("retry-after", "bogus")]);
+        assert!(error_with(&headers, 429).resume_at_ms.is_none());
+        let headers = header_map(&[("anthropic-ratelimit-requests-reset", "2000-01-01T00:00:00Z")]);
+        assert!(
+            error_with(&headers, 429).resume_at_ms.is_none(),
+            "过期 reset 不安排"
+        );
+        assert!(error_with(&headers, 429).status.is_some());
     }
 }

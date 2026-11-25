@@ -119,6 +119,7 @@ impl Capability for CompactionCapability {
                             message: error.message.clone(),
                             status: error.status,
                             retry_after_ms: error.retry_after_ms,
+                            resume_at_ms: error.resume_at_ms,
                         })
                     };
                     match compaction::compact_if_needed(

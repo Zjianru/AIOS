@@ -181,6 +181,7 @@ fn turn_end_reasons_use_dsh_shapes() {
                     error: LlmFailure {
                         message: "boom".to_owned(),
                         code: "SERVER".to_owned(),
+                        resume_at_ms: None,
                     },
                 },
             },
@@ -425,6 +426,7 @@ fn retry_events_match_dsh() {
                 failure: LlmFailure {
                     message: "boom".to_owned(),
                     code: "SERVER".to_owned(),
+                    resume_at_ms: None,
                 },
             },
             EventKind::LlmRetryStarted {
@@ -652,6 +654,7 @@ fn all_event_kinds() -> Vec<EventKind> {
             failure: LlmFailure {
                 message: "boom".to_owned(),
                 code: "SERVER".to_owned(),
+                resume_at_ms: None,
             },
         },
         EventKind::LlmRetryStarted {

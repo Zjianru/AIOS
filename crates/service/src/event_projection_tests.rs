@@ -8,6 +8,7 @@ fn turn_end(code: &str) -> session::EventKind {
             error: session::LlmFailure {
                 message: "boom".to_owned(),
                 code: code.to_owned(),
+                resume_at_ms: None,
             },
         },
     }
@@ -33,6 +34,7 @@ fn failure_cause_classifies_credential_and_model() {
             error: session::LlmFailure {
                 message: "Keyring 无法签发：钥匙文件不在".to_owned(),
                 code: "KEYRING".to_owned(),
+                resume_at_ms: None,
             },
         },
     };

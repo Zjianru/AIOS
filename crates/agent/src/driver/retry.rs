@@ -96,6 +96,7 @@ pub(super) async fn decide_retry(
             failure: LlmFailure {
                 message: error.message.clone(),
                 code: error.code.as_str(),
+                resume_at_ms: None,
             },
         }])
         .await?;

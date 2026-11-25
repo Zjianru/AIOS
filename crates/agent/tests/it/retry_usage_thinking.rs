@@ -244,6 +244,7 @@ async fn auth_error_does_not_retry() {
             error: session::LlmFailure {
                 code: "AUTH".to_owned(),
                 message: "模型请求失败: AUTH: 测试错误".to_owned(),
+                resume_at_ms: None,
             },
         }]
     );
