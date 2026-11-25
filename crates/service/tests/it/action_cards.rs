@@ -2496,10 +2496,47 @@ fn fake_key_never_becomes_a_save_action_or_details_field() {
         ),
         ("exa_key_delete", json!({ "key": fake })),
         ("settings_update", json!({ "currency": "cny", "key": fake })),
+        (
+            "keyring_action",
+            json!({ "action": "relocate", "path": "/tmp/x", "key": fake }),
+        ),
     ] {
         let action = registry.get(name).expect("已登记");
         let error = action.details(&details).expect_err("key 不能进 details");
         assert!(error.contains("设置页"), "{name}: {error}");
         assert!(!error.contains(fake), "{name} 回显了 key：{error}");
     }
+}
+
+/// relocate 成功：act 调页面同函数，身份文件位置真的换到隔离目录。
+#[tokio::test]
+async fn keyring_relocate_act_moves_the_identity_file() {
+    let scenario = settings_scenario(vec![skill_script()]).await;
+    let data_dir = scenario.data_dir.clone();
+    let moved = data_dir.join("moved-identity.txt");
+    scenario
+        .host
+        .append_user_message_for_test(&format!("把钥匙换到 {}", moved.display()))
+        .await
+        .expect("用户原话");
+    let conversation = scenario.host.info().session_id.expect("根会话");
+    let env = ActionEnv {
+        data_dir: &data_dir,
+        identity: Some(&data_dir.join("identity.txt")),
+        events: &[],
+        conversation: Some(&conversation),
+    };
+    let action = settings_action(&data_dir, "keyring_action");
+    let details = action
+        .details(&json!({ "action": "relocate", "path": moved.to_string_lossy() }))
+        .expect("details");
+    action.describe(&details, &env).expect("路径核过");
+    action
+        .act(&details, scenario.host())
+        .await
+        .expect("换钥匙位置");
+    let view = credentials::Keyring::open(&data_dir, Some(&data_dir.join("identity.txt")))
+        .unwrap()
+        .view();
+    assert_eq!(view.key_file.path, moved);
 }

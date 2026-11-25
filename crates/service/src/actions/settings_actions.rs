@@ -421,6 +421,7 @@ impl ActionKind for KeyringAction {
     }
 
     fn details(&self, raw: &Value) -> Result<Value, String> {
+        reject_key_fields(raw)?;
         let kind = self.kind(raw)?;
         let action = match kind {
             KeyringKind::Relocate => "relocate",
