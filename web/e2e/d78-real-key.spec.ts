@@ -107,14 +107,27 @@ test('D78 写周报：出写到哪卡，不派任务', async ({ page }) => {
 test('D78 写进 ~/Desktop/t082.md：原样核过直接派，不出写到哪卡', async ({ page }) => {
   const fixture = await startD78KernelFixture();
   try {
+    expect(path.resolve(fixture.homeDir!)).not.toBe(
+      path.resolve(process.env.HOME ?? '/nonexistent-d78-home'),
+    );
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind');
-    await send(page, '把这段写进 ~/Desktop/t082.md');
-    // 按 spec 这条只要求：原话里有路径就直接派、不要「写到哪」卡；任务后续缺正文可以卡住，
-    // 不要求它成功，所以不等「已派出」，只等写任务卡出现。
+    const line = '周五下午三点和李雷对稿';
+    await send(page, '把『' + line + '』这句写进 ~/Desktop/t082.md');
+    // 原话里有路径、也有要写的内容：直接派，不出「写到哪」卡。
     await expect(
       page.locator('[data-kind="task-result"]').filter({ hasText: '写任务' }).last(),
     ).toBeVisible({ timeout: 180_000 });
     await expect(page.locator('[data-kind="confirm-card"]').filter({ hasText: '写到哪' })).toHaveCount(0);
+    const target = path.join(fixture.homeDir!, 'Desktop', 't082.md');
+    await expect
+      .poll(async () => {
+        try {
+          return await readFile(target, 'utf8');
+        } catch {
+          return '';
+        }
+      }, { timeout: 180_000 })
+      .toContain(line);
   } finally {
     await fixture.close();
   }

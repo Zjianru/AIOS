@@ -1026,8 +1026,14 @@ mod guide_tests {
         assert!(
             !parsed
                 .body
-                .contains("ask the user first and give one concrete path to approve"),
+                .contains("ask the user first and give one concrete path to approve")
+                && !parsed.body.contains("do not ask what to write")
+                && !parsed.body.contains("do not wait for the body text"),
             "旧的不合适说法要删掉"
+        );
+        assert!(
+            parsed.body.contains("ask what to write"),
+            "用户给了路径但没给内容时要问"
         );
     }
 }

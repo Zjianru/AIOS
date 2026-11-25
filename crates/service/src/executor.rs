@@ -3299,7 +3299,7 @@ impl TaskRuntime {
                 .is_none()
         {
             return Err(ToolFailure::plain(format!(
-                "write_scope 不在用户原话里：{raw}。不要派任务；先加载 aios-tasks skill，再调用 propose_action，action=confirm_write_scope，details={{\"write_scope\":\"{raw}\",\"task\":{{…task_accept 的完整参数（含 title/quote/requirement/dod）…}}}}，让用户确认写到哪。"
+                "write_scope 不在用户原话里：{raw}。路径要照用户原话抄，以 / 或 ~/ 开头；用户没给路径就不要派，也不要用 ask_user_question 代替。先加载 aios-tasks skill，再调用 propose_action，action=confirm_write_scope，details={{\"write_scope\":\"{raw}\",\"task\":{{…task_accept 的完整参数（含 title/quote/requirement/dod）…}}}}，让用户确认写到哪。"
             )));
         }
         crate::write_scope::expand(raw).map_err(ToolFailure::plain)

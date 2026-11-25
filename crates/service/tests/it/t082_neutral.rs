@@ -184,9 +184,19 @@ async fn local_file_allows_only_paths_said_in_the_root_conversation() {
     let host = crate::common::open(crate::common::options(dir.path())).await;
     let said = dir.path().join("said.txt");
     let silent = dir.path().join("silent.txt");
+    let answered = dir.path().join("answered.txt");
+    let tool_only = dir.path().join("tool-only.txt");
     std::fs::write(&said, "said").unwrap();
     std::fs::write(&silent, "silent").unwrap();
+    std::fs::write(&answered, "answered").unwrap();
+    std::fs::write(&tool_only, "tool").unwrap();
     host.append_user_message_for_test(&format!("看下 {}", said.display()))
+        .await
+        .unwrap();
+    host.append_assistant_message_for_test(&format!("已经写到 {}", answered.display()))
+        .await
+        .unwrap();
+    host.append_tool_result_for_test(&format!("glob 结果：{}", tool_only.display()))
         .await
         .unwrap();
     assert!(
@@ -197,12 +207,23 @@ async fn local_file_allows_only_paths_said_in_the_root_conversation() {
         .await
     );
     assert!(
-        !host
-            .local_file_allowed(
-                silent.to_str().unwrap(),
-                &std::fs::canonicalize(&silent).unwrap()
-            )
-            .await
+        host.local_file_allowed(
+            answered.to_str().unwrap(),
+            &std::fs::canonicalize(&answered).unwrap()
+        )
+        .await,
+        "Kind 回答里出现的路径要放通"
     );
+    for denied in [&silent, &tool_only] {
+        assert!(
+            !host
+                .local_file_allowed(
+                    denied.to_str().unwrap(),
+                    &std::fs::canonicalize(denied).unwrap()
+                )
+                .await,
+            "只出现在工具结果里的路径不能放通"
+        );
+    }
     host.shutdown().await;
 }

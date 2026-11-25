@@ -36,6 +36,8 @@ export interface KernelFixture {
   baseUrl: string;
   token: string;
   dataDir: string;
+  /** D78：隔离的 HOME；真 key 写文件用例在它下面看结果。 */
+  homeDir?: string;
   /** T008.4：假 DeepSeek 的 endpoint（页面连接会被 e2e 改写到它）。 */
   fakeEndpoint: string;
   /** T008.4：假 DeepSeek 最近一次请求体里的 model（下一轮生效断言用）。 */
@@ -1121,13 +1123,14 @@ export async function startT017DodFixture(): Promise<KernelFixture> {
 export async function startD78KernelFixture(): Promise<KernelFixture> {
   const apiKey = process.env.MINIMAX_API_KEY;
   if (!apiKey) throw new Error('缺少 MINIMAX_API_KEY（D78）');
-  const root = process.env.AIOS_D78_DOD_ROOT ?? '/tmp/aios-d78';
-  const workDir = path.join(root, 'work');
+  const root =
+    process.env.AIOS_D78_DOD_ROOT ?? (await mkdtemp(path.join(tmpdir(), 'aios-d78-')));
+  if (process.env.AIOS_D78_DOD_ROOT) await rm(root, { recursive: true, force: true });
+  const homeDir = path.join(root, 'home');
   const dataDir = path.join(root, 'data');
-  await rm(root, { recursive: true, force: true });
-  await mkdir(path.join(workDir, 'Desktop'), { recursive: true });
+  await mkdir(path.join(homeDir, 'Desktop'), { recursive: true });
   await mkdir(dataDir, { recursive: true });
-  await writeFile(path.join(workDir, 'README.md'), 'D78-README-OK' + String.fromCharCode(10));
+  await writeFile(path.join(homeDir, 'README.md'), 'D78-README-OK' + String.fromCharCode(10));
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
   const bin = process.env.AIOS_BIN ?? path.join(repoRoot, 'target/debug/aios-dev');
   const identityPath = path.join(dataDir, 'identity.txt');
@@ -1153,8 +1156,8 @@ export async function startD78KernelFixture(): Promise<KernelFixture> {
     bin,
     ['serve', '--data-dir', dataDir, '--identity', identityPath, '--web-dist', path.join(repoRoot, 'web/dist')],
     {
-      env: { ...process.env, HOME: workDir },
-      cwd: workDir,
+      env: { ...process.env, HOME: homeDir },
+      cwd: homeDir,
       stdio: ['ignore', 'pipe', 'pipe'],
     },
   );
@@ -1181,6 +1184,7 @@ export async function startD78KernelFixture(): Promise<KernelFixture> {
   return {
     ...parsed,
     dataDir,
+    homeDir,
     fakeEndpoint: '',
     lastModel: async () => null,
     lastRequest: async () => null,

@@ -558,7 +558,8 @@ impl RootHost {
         for event in self.root_session_events().await {
             match &event.kind {
                 session::EventKind::UserMessage { message, .. }
-                | session::EventKind::ToolResult { message, .. } => {
+                | session::EventKind::AssistantMessage { message, .. } => {
+                    // 只认用户打字和 Kind 回答文字；工具结果（glob 一串路径、网页正文）不算。
                     for block in &message.content {
                         let Some(text) = model::ContentBlock::as_text(block) else {
                             continue;
@@ -595,6 +596,59 @@ impl RootHost {
         let after = host.agent().last_seq();
         if after <= before {
             return Err(format!("追加用户消息没有落日志：{before} -> {after}"));
+        }
+        Ok(())
+    }
+
+    /// 测试钩子：往根会话追加一条 Kind 回答（只给 /local-file 路径来源测试用）。
+    #[doc(hidden)]
+    pub async fn append_assistant_message_for_test(&self, text: &str) -> Result<(), String> {
+        let guard = self.inner.lock().await;
+        let host = guard.as_ref().ok_or_else(|| "根会话没开".to_owned())?;
+        let before = host.agent().last_seq();
+        host.agent()
+            .append_event(session::EventKind::AssistantMessage {
+                turn: 1,
+                step: 0,
+                message: model::Message::assistant(
+                    vec![model::ContentBlock::text(text)],
+                    "deepseek",
+                    "deepseek-flash",
+                ),
+                stream: Vec::new(),
+                usage: None,
+                interrupted: None,
+                effort: None,
+                effort_wanted: None,
+                request_at: None,
+                context_parts: None,
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+        if host.agent().last_seq() <= before {
+            return Err("追加回答没有落日志".to_owned());
+        }
+        Ok(())
+    }
+
+    /// 测试钩子：往根会话追加一条工具结果（/local-file 不能拿它当路径来源）。
+    #[doc(hidden)]
+    pub async fn append_tool_result_for_test(&self, text: &str) -> Result<(), String> {
+        let guard = self.inner.lock().await;
+        let host = guard.as_ref().ok_or_else(|| "根会话没开".to_owned())?;
+        let before = host.agent().last_seq();
+        host.agent()
+            .append_event(session::EventKind::ToolResult {
+                turn: 1,
+                step: 0,
+                message: model::Message::tool_result("call-local-path-test", text, false),
+                error: None,
+                meta: None,
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+        if host.agent().last_seq() <= before {
+            return Err("追加工具结果没有落日志".to_owned());
         }
         Ok(())
     }
