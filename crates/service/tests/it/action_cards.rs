@@ -2300,3 +2300,206 @@ async fn direct_action_act_still_checks_memory_words() {
         "被拒绝后不能改"
     );
 }
+
+/// 设置/连接/Keyring/Exa 动作都登记；key 保存/更新不是 action。
+#[test]
+fn settings_connections_keyring_actions_are_registered() {
+    let directory = tempfile::tempdir().unwrap();
+    let data_dir = directory.path();
+    let registry = ActionRegistry::settings(data_dir.to_path_buf(), None);
+    for (name, skill) in [
+        ("settings_update", "aios-settings"),
+        ("connection_update", "aios-settings"),
+        ("connection_delete", "aios-settings"),
+        ("connection_revoke", "aios-settings"),
+        ("keyring_action", "aios-settings"),
+        ("exa_key_delete", "aios-settings"),
+    ] {
+        let action = registry
+            .get(name)
+            .unwrap_or_else(|| panic!("没登记 {name}"));
+        assert_eq!(action.skill(), skill, "{name}");
+    }
+    for forbidden in ["connection_save", "connection_key_save", "exa_key_save"] {
+        assert!(
+            registry.get(forbidden).is_none(),
+            "key 保存不能是 action：{forbidden}"
+        );
+    }
+}
+
+#[test]
+fn settings_update_lists_only_the_changed_fields() {
+    let directory = tempfile::tempdir().unwrap();
+    let data_dir = directory.path();
+    let action = settings_action(data_dir, "settings_update");
+    let details = action
+        .details(&json!({ "currency": "cny", "seats": 5 }))
+        .expect("details");
+    let facts = action
+        .describe(
+            &details,
+            &action_env(data_dir, &data_dir.join("identity.txt")),
+        )
+        .expect("设置卡");
+    assert_eq!(facts.len(), 2);
+    assert_eq!(facts[0].name, "币种");
+    assert!(facts[0].value.ends_with("→ cny"), "{:?}", facts[0]);
+    assert_eq!(facts[1].name, "席位");
+    assert!(facts[1].value.ends_with("→ 5"), "{:?}", facts[1]);
+    assert!(action.details(&json!({})).is_err(), "空 details 要拒");
+}
+
+#[test]
+fn connection_actions_describe_before_after_without_a_key() {
+    let directory = tempfile::tempdir().unwrap();
+    let data_dir = directory.path().to_path_buf();
+    seed_settings_connection(&data_dir);
+    let update = settings_action(&data_dir, "connection_update");
+    let details = update
+        .details(&json!({
+            "id": "deepseek",
+            "endpoint": "http://127.0.0.1:2",
+            "model": "deepseek-v4",
+        }))
+        .expect("details");
+    let facts = update
+        .describe(
+            &details,
+            &action_env(&data_dir, &data_dir.join("identity.txt")),
+        )
+        .expect("连接卡");
+    assert_eq!(facts[1].value, "http://127.0.0.1:1 → http://127.0.0.1:2");
+    assert_eq!(facts[2].value, "deepseek-flash → deepseek-v4");
+    let delete = settings_action(&data_dir, "connection_delete");
+    let facts = delete
+        .describe(
+            &delete.details(&json!({ "id": "deepseek" })).unwrap(),
+            &action_env(&data_dir, &data_dir.join("identity.txt")),
+        )
+        .expect("删除卡");
+    assert_eq!(facts[1].value, "删除这个连接");
+    let revoke = settings_action(&data_dir, "connection_revoke");
+    let facts = revoke
+        .describe(
+            &revoke.details(&json!({ "id": "deepseek" })).unwrap(),
+            &action_env(&data_dir, &data_dir.join("identity.txt")),
+        )
+        .expect("撤销卡");
+    assert!(facts[1].value.contains("撤销"), "{:?}", facts[1]);
+    // details 里带 key 一个字段都不接受。
+    let error = update
+        .details(&json!({
+            "id": "deepseek",
+            "endpoint": "http://127.0.0.1:2",
+            "model": "deepseek-v4",
+            "key": "sk-fake",
+        }))
+        .expect_err("key 不能进 details");
+    assert!(error.contains("设置页"), "{error}");
+}
+
+/// Keyring relocate 的路径必须 / 或 ~/ 开头且原样在用户话里；act 也重核。
+#[tokio::test]
+async fn keyring_relocate_checks_the_users_path() {
+    let scenario = settings_scenario(vec![skill_script()]).await;
+    let data_dir = scenario.data_dir.clone();
+    let target = "/tmp/t083c-identity.txt";
+    scenario
+        .host
+        .append_user_message_for_test(&format!("把钥匙换到 {target}"))
+        .await
+        .expect("用户原话");
+    let conversation = scenario.host.info().session_id.expect("根会话");
+    let env = ActionEnv {
+        data_dir: &data_dir,
+        identity: Some(&data_dir.join("identity.txt")),
+        events: &[],
+        conversation: Some(&conversation),
+    };
+    let action = settings_action(&data_dir, "keyring_action");
+    let details = action
+        .details(&json!({ "action": "relocate", "path": target }))
+        .expect("details");
+    let facts = action.describe(&details, &env).expect("路径核过");
+    assert_eq!(facts[0].value, "换 Keyring 位置");
+    assert!(facts[1].value.contains(target), "{:?}", facts[1]);
+
+    let bad = action
+        .details(&json!({ "action": "relocate", "path": "relative/key" }))
+        .expect_err("相对路径拒");
+    assert!(bad.contains("/ 或 ~/"), "{bad}");
+    let unsaid = action
+        .details(&json!({ "action": "relocate", "path": "/tmp/not-said.txt" }))
+        .expect("details 先不核原话");
+    let error = action
+        .describe(&unsaid, &env)
+        .expect_err("没在用户话里要问");
+    assert!(error.contains("不在用户原话"), "{error}");
+    // 直接 ActionAct 也不能绕过原话核。
+    let direct = scenario
+        .host
+        .dispatch(Call::ActionAct(service::ActionActRequest {
+            action: "keyring_action".to_owned(),
+            details: json!({ "action": "relocate", "path": "/tmp/not-said.txt" }),
+        }));
+    assert!(direct.await.is_err(), "直接 act 也要核原话");
+}
+
+#[tokio::test]
+async fn exa_key_delete_describes_and_deletes_only_the_stored_key() {
+    let scenario = settings_scenario(vec![skill_script()]).await;
+    let data_dir = scenario.data_dir.clone();
+    let identity = data_dir.join("identity.txt");
+    let keyring = credentials::Keyring::open(&data_dir, Some(&identity)).unwrap();
+    keyring.save_exa_key("exa-test-key").expect("存 Exa key");
+    let action = settings_action(&data_dir, "exa_key_delete");
+    let details = action.details(&json!({})).expect("details");
+    let facts = action
+        .describe(&details, &action_env(&data_dir, &identity))
+        .expect("删除卡");
+    assert_eq!(facts[0].value, "删除 Exa 的 key");
+    action.act(&details, scenario.host()).await.expect("删除");
+    let view = credentials::Keyring::open(&data_dir, Some(&identity))
+        .unwrap()
+        .exa_key_view()
+        .unwrap();
+    assert!(!view.key.saved, "删完 key 不在了");
+    let missing = action.describe(&details, &action_env(&data_dir, &identity));
+    assert!(missing.is_err(), "没存时不再出删除卡");
+}
+
+/// 假 key：没有 save action，key 也不能进任何新动作的 details。
+#[test]
+fn fake_key_never_becomes_a_save_action_or_details_field() {
+    let directory = tempfile::tempdir().unwrap();
+    let data_dir = directory.path();
+    seed_settings_connection(data_dir);
+    let registry =
+        ActionRegistry::settings(data_dir.to_path_buf(), Some(data_dir.join("identity.txt")));
+    let fake = "sk-fake-t083c-0123456789";
+    for forbidden in ["connection_save", "connection_key_save", "exa_key_save"] {
+        assert!(registry.get(forbidden).is_none(), "不能有 {forbidden}");
+    }
+    for (name, details) in [
+        (
+            "connection_update",
+            json!({ "id": "deepseek", "endpoint": "http://127.0.0.1:2", "model": "m", "key": fake }),
+        ),
+        (
+            "connection_delete",
+            json!({ "id": "deepseek", "key": fake }),
+        ),
+        (
+            "connection_revoke",
+            json!({ "id": "deepseek", "key": fake }),
+        ),
+        ("exa_key_delete", json!({ "key": fake })),
+        ("settings_update", json!({ "currency": "cny", "key": fake })),
+    ] {
+        let action = registry.get(name).expect("已登记");
+        let error = action.details(&details).expect_err("key 不能进 details");
+        assert!(error.contains("设置页"), "{name}: {error}");
+        assert!(!error.contains(fake), "{name} 回显了 key：{error}");
+    }
+}

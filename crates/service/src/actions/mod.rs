@@ -15,6 +15,7 @@ mod project_actions;
 mod resume_task;
 mod select_model;
 mod set_paused;
+mod settings_actions;
 mod start_task_graph;
 mod task_actions;
 mod update_gate_commands;
@@ -122,7 +123,7 @@ impl ActionRegistry {
         )));
         registry.register(Arc::new(mask::MaskAction::unmask(
             data_dir.clone(),
-            identity,
+            identity.clone(),
         )));
         registry.register(Arc::new(set_paused::SetPausedAction::new(data_dir.clone())));
         registry.register(Arc::new(cancel_tasks::CancelTasksAction::new(
@@ -197,6 +198,32 @@ impl ActionRegistry {
         )));
         registry.register(Arc::new(memory_actions::MemoryAction::resolve_about_draft(
             data_dir.clone(),
+        )));
+        registry.register(Arc::new(settings_actions::SettingsUpdateAction::new(
+            data_dir.clone(),
+        )));
+        registry.register(Arc::new(settings_actions::ConnectionAction::new(
+            data_dir.clone(),
+            identity.clone(),
+            settings_actions::ConnectionKind::Update,
+        )));
+        registry.register(Arc::new(settings_actions::ConnectionAction::new(
+            data_dir.clone(),
+            identity.clone(),
+            settings_actions::ConnectionKind::Delete,
+        )));
+        registry.register(Arc::new(settings_actions::ConnectionAction::new(
+            data_dir.clone(),
+            identity.clone(),
+            settings_actions::ConnectionKind::Revoke,
+        )));
+        registry.register(Arc::new(settings_actions::KeyringAction::new(
+            data_dir.clone(),
+            identity.clone(),
+        )));
+        registry.register(Arc::new(settings_actions::ExaKeyDeleteAction::new(
+            data_dir.clone(),
+            identity,
         )));
         registry.register(Arc::new(appointments::CreateAppointmentAction));
         registry.register(Arc::new(appointments::UpdateAppointmentAction));

@@ -9,7 +9,7 @@ Use this when the user asks about their own AIOS setup — which model this conv
 
 ## When to query
 
-Call `aios_query` before answering, every time; do not answer these from memory:
+Call aios_query before answering, every time; do not answer these from memory:
 
 - which model and reasoning effort this conversation uses, or what a new conversation would use;
 - how much this conversation has cost, how many turns and tokens it took;
@@ -21,22 +21,27 @@ One call per topic. Its output is the only source: quote its numbers, do not rec
 
 ## When to propose
 
-Offer a change only when the user's own words ask for it: switch this conversation's model or effort, mask a model, unmask a model. Match the wish, not keywords.
+Offer a change only when the user's own words ask for it: switch this conversation's model or effort, mask a model, unmask a model, change settings/connection details, change Keyring handling, or delete the stored Exa key. Match the wish, not keywords.
 
 Offer no card in these cases:
 
-- the user only asks what the setup is now: answer from `aios_query` and stop;
+- the user only asks what the setup is now: answer from aios_query and stop;
 - the change is already in effect: say so and how to undo it;
-- the wish is about a connection or a key: those belong in the settings page; say where, do not propose;
+- the wish is about a key value: keys never go through Kind or a card; say which settings page field to fill, do not propose. Changing/deleting a connection without its key, changing Keyring handling, or deleting the stored Exa key can be proposed;
 - the user has declined before in this conversation, or asks not to be offered anything;
 - no registered action matches the wish, or the wish is too vague: answer normally or ask one question.
 
-To propose, call `propose_action` once, with one option per choice the user can make. The card appears below your answer and nothing changes until the user clicks. Every option carries the everyday name in `label` and one sentence in `description`; AIOS fills in the before and after values, so do not write them yourself.
+To propose, call propose_action once, with one option per choice the user can make. The card appears below your answer and nothing changes until the user clicks. Every option carries the everyday name in label and one sentence in description; AIOS fills in the before and after values, so do not write them yourself.
 
 ## Actions
 
-- `select_model`: `details` is `{ "model": "<model id>" }`, optionally with `"connection": "<connection id>"` and `"effort": "<the model's own effort name>"` (leave effort out to keep the current one). Offer one option per model or effort the user could choose.
-- `mask_model` / `unmask_model`: `details` is `{ "connection": "<connection id>", "model": "<model id>" }`. Masking blocks that model on every request; unmasking removes the single rule for it. Offer one option, named the way the user names the model.
+- select_model: details is { "model": "<model id>" }, optionally with "connection": "<connection id>" and "effort": "<the model's own effort name>" (leave effort out to keep the current one). Offer one option per model or effort the user could choose.
+- mask_model / unmask_model: details is { "connection": "<connection id>", "model": "<model id>" }. Masking blocks that model on every request; unmasking removes the single rule for it. Offer one option, named the way the user names the model.
+- settings_update: details carries only the fields the user wants to change: { "currency": "usd"|"cny", "seats": 1..16, "bash": true|false }. One card lists just those fields as before → after; existing set_paused handles pause.
+- connection_update: only { "id", "endpoint", "model" }; never a key. The card shows address and model before → after.
+- connection_delete: { "id" }; connection_revoke: { "id" } (key removed, connection kept). No key value in either.
+- keyring_action: { "action": "relocate"|"reopen"|"restart", "path": "<path>" }; relocate/reopen path must start with / or ~/ and appear verbatim in the user's message. If it is not there, ask where; do not propose. restart has no path.
+- exa_key_delete: {}; only when the user asks to delete the stored Exa key. The card says web search/web tools stop until the key is filled on the settings page.
 
 ## One card per turn
 

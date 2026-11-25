@@ -1018,6 +1018,17 @@ mod guide_tests {
                 ],
             ),
             (
+                "aios-settings",
+                vec![
+                    "settings_update",
+                    "connection_update",
+                    "connection_delete",
+                    "connection_revoke",
+                    "keyring_action",
+                    "exa_key_delete",
+                ],
+            ),
+            (
                 "aios-memory",
                 vec![
                     "memory_delete",
