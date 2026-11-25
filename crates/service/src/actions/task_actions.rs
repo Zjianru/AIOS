@@ -38,7 +38,7 @@ fn task_id(raw: &Value) -> Result<String, String> {
 
 fn task_text(raw: &Value) -> Result<String, String> {
     raw.as_object()
-        .and_then(|object| object.get("text"))
+        .and_then(|object| object.get("text").or_else(|| object.get("message")))
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|text| !text.is_empty())
@@ -473,7 +473,11 @@ impl GateJudgeAction {
     fn gate_task(details: &Value) -> Result<String, String> {
         details
             .as_object()
-            .and_then(|object| object.get("gate_task"))
+            .and_then(|object| {
+                object
+                    .get("gate_task")
+                    .or_else(|| object.get("gate_task_id"))
+            })
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|id| !id.is_empty())
@@ -484,7 +488,11 @@ impl GateJudgeAction {
     fn gate_report(details: &Value) -> Result<String, String> {
         details
             .as_object()
-            .and_then(|object| object.get("gate_report"))
+            .and_then(|object| {
+                object
+                    .get("gate_report")
+                    .or_else(|| object.get("report_id"))
+            })
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|id| !id.is_empty())
@@ -495,11 +503,11 @@ impl GateJudgeAction {
     fn conclusion(details: &Value) -> Result<GateJudgeConclusion, String> {
         match details
             .as_object()
-            .and_then(|object| object.get("conclusion"))
+            .and_then(|object| object.get("conclusion").or_else(|| object.get("verdict")))
             .and_then(Value::as_str)
         {
-            Some("pass") => Ok(GateJudgeConclusion::Pass),
-            Some("needs_fix") => Ok(GateJudgeConclusion::NeedsFix),
+            Some("pass" | "通过") => Ok(GateJudgeConclusion::Pass),
+            Some("needs_fix" | "需修正" | "不通过") => Ok(GateJudgeConclusion::NeedsFix),
             _ => Err("details.conclusion 必须是 pass 或 needs_fix".to_owned()),
         }
     }
