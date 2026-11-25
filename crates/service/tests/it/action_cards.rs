@@ -2061,7 +2061,12 @@ fn memory_correct_requires_the_users_words() {
 /// 删除=移隔离区仍能找回；彻底删=从库里消失。
 #[tokio::test]
 async fn memory_delete_quarantines_and_forget_removes() {
-    let scenario = scenario(vec![skill_script()], Arc::new(ActionRegistry::empty())).await;
+    let scenario = settings_scenario(vec![skill_script()]).await;
+    scenario
+        .host
+        .append_user_message_for_test("把这条彻底删掉")
+        .await
+        .expect("用户原话");
     let data_dir = scenario.data_dir.clone();
     let store = memory::MemoryStore::open(data_dir.join("memory.sqlite")).unwrap();
     let remember = |title: &str| {

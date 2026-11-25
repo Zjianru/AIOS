@@ -151,13 +151,11 @@ impl MemoryAction {
     }
 
     fn check_user_words(
-        env: &ActionEnv<'_>,
+        data_dir: &std::path::Path,
+        conversation: &str,
         values: &[(&str, &str)],
         current: &memory::types::MemoryItem,
     ) -> Result<(), String> {
-        let conversation = env.conversation.ok_or_else(|| {
-            "没有发起会话 id，核不了更正文字；对不上只能 memory_note，不能改原条。".to_owned()
-        })?;
         let unchanged = [
             ("title", current.title.as_str()),
             ("summary", current.summary.as_str()),
@@ -172,11 +170,60 @@ impl MemoryAction {
             {
                 continue;
             }
-            if crate::ledger::find_user_words(env.data_dir, conversation, value)?.is_none() {
+            if crate::ledger::find_user_words(data_dir, conversation, value)?.is_none() {
                 return Err(format!(
                     "更正后的{name}必须逐字来自用户消息：『{value}』不在用户消息里；对不上只能 memory_note，不能改原条。"
                 ));
             }
+        }
+        Ok(())
+    }
+
+    /// act 再核一次用户原话；ActionAct 直接带 details 也不能绕过卡上的核对。
+    fn check_act_words(&self, details: &Value, host: &RootHost) -> Result<(), String> {
+        let conversation = host
+            .info()
+            .session_id
+            .ok_or_else(|| "根会话没开，核不了用户原话".to_owned())?;
+        match self.kind {
+            Kind::Forget => {
+                if crate::ledger::find_user_words(&host.options.data_dir, &conversation, "彻底删")?
+                    .is_none()
+                    && crate::ledger::find_user_words(
+                        &host.options.data_dir,
+                        &conversation,
+                        "永久删",
+                    )?
+                    .is_none()
+                {
+                    return Err(
+                        "只有用户明说「彻底删」或「永久删」才彻底删；否则用 memory_delete（移隔离区，7 天可恢复）。"
+                            .to_owned(),
+                    );
+                }
+            }
+            Kind::Correct => {
+                let (current, title, summary, body, reason) = self.corrected(details)?;
+                if title == current.title
+                    && summary == current.summary
+                    && body == current.body
+                    && reason.is_empty()
+                {
+                    return Err("没有改任何文字".to_owned());
+                }
+                Self::check_user_words(
+                    &host.options.data_dir,
+                    &conversation,
+                    &[
+                        ("title", &title),
+                        ("summary", &summary),
+                        ("body", &body),
+                        ("reason", &reason),
+                    ],
+                    &current,
+                )?;
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -347,8 +394,13 @@ impl ActionKind for MemoryAction {
                 {
                     return Err("没有改任何文字".to_owned());
                 }
+                let conversation = env.conversation.as_deref().ok_or_else(|| {
+                    "没有发起会话 id，核不了更正文字；对不上只能 memory_note，不能改原条。"
+                        .to_owned()
+                })?;
                 Self::check_user_words(
-                    env,
+                    env.data_dir,
+                    conversation,
                     &[
                         ("title", &title),
                         ("summary", &summary),
@@ -501,6 +553,7 @@ impl ActionKind for MemoryAction {
         host: &'a RootHost,
     ) -> ActionFuture<'a, Result<ActionOutcome, String>> {
         Box::pin(async move {
+            self.check_act_words(details, host)?;
             let Some(memory) = host.memory_runtime() else {
                 return Err("记忆库没开".to_owned());
             };
