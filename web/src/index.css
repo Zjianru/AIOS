@@ -59,6 +59,7 @@
   --line-w: #8b6cff;
   --line-n: #2bb8cf;
   --line-d: #d08a5a;
+  --kind-write: #d77fb0;
   /* 地铁线规则（brief §四.2）：站是中性——浅底深描边，线色只认路线 */
   --stn-fill: #f4f4f7;
   --stn-line: var(--content);
@@ -105,6 +106,7 @@
   --line-w: #6c4cf0;
   --line-n: #0a8fa6;
   --line-d: #a8673a;
+  --kind-write: #b4417f;
   /* 地铁线规则（brief §四.2）：站是中性——浅底深描边，线色只认路线 */
   --stn-fill: #ffffff;
   --stn-line: var(--ink-2);
@@ -416,45 +418,27 @@
 }
 
 /* 任务图状态环与线动效（不引动画库；减少动效时全停）。 */
-@keyframes graph-ring-spin {
-  to { transform: rotate(360deg); }
+.graph-box { --box-r: var(--r-card); border-radius: var(--box-r); }
+.graph-box[data-shape="program"] { --box-r: 3px; }
+.graph-write-bar {
+  position: absolute; left: -1px; top: -1px; bottom: -1px; width: 3px;
+  border-radius: var(--box-r) 0 0 var(--box-r); background: var(--kind-write);
 }
-.graph-node-ring {
-  position: absolute;
-  inset: -2px;
-  border-radius: inherit;
-  border: 2px solid transparent;
-  border-top-color: var(--done);
-  border-right-color: var(--done);
-  animation: graph-ring-spin 1.5s linear infinite;
-  pointer-events: none;
+.graph-flag {
+  position: absolute; right: -1px; top: -1px; width: 14px; height: 14px;
+  border-top-right-radius: var(--box-r); background: var(--ink-3);
+  clip-path: polygon(0 0, 100% 0, 100% 100%);
 }
-.graph-node-ring[data-slow='true'] {
-  border-top-color: var(--wait);
-  border-right-color: var(--wait);
-  animation-duration: 4.5s;
-}
-@keyframes graph-edge-flow {
-  from { stroke-dashoffset: 0; }
-  to { stroke-dashoffset: -22; }
-}
-@keyframes graph-edge-make {
-  from { stroke-dashoffset: 0; }
-  to { stroke-dashoffset: 22; }
-}
-@keyframes graph-edge-back {
-  from { stroke-dashoffset: 0; }
-  to { stroke-dashoffset: -18; }
-}
-.graph-edge-live-flow { animation: graph-edge-flow 1.6s linear infinite; }
-.graph-edge-live-make { animation: graph-edge-make 2.6s linear infinite; }
-.graph-edge-live-back { animation: graph-edge-back 1.2s linear infinite; }
+.graph-legend-box { display: inline-block; position: relative; width: 14px; height: 10px; border: 1px solid var(--ink-3); border-radius: 3px; overflow: hidden; }
+.graph-legend-box[data-shape="write"] { box-shadow: inset 2px 0 0 var(--kind-write); }
+.graph-legend-box[data-shape="milestone"]::after { content: ''; position: absolute; right: 0; top: 0; width: 6px; height: 6px; background: var(--ink-3); clip-path: polygon(0 0, 100% 0, 100% 100%); }
+.graph-legend-box[data-shape="program"] { border-radius: 0; }
+@keyframes graph-dash-flow { to { stroke-dashoffset: -11; } }
+@keyframes graph-dash-back { to { stroke-dashoffset: 11; } }
+@keyframes graph-dash-out { to { stroke-dashoffset: -9; } }
+.graph-dash-flow { animation: graph-dash-flow 0.7s linear infinite; }
+.graph-dash-back { animation: graph-dash-back 0.7s linear infinite; }
+.graph-dash-out { animation: graph-dash-out 1.6s linear infinite; }
 @media (prefers-reduced-motion: reduce) {
-  .graph-node-ring,
-  .graph-edge-live-flow,
-  .graph-edge-live-make,
-  .graph-edge-live-back {
-    animation: none;
-  }
-  .graph-node-ring { border-color: var(--line-2); }
+  .graph-dash-flow, .graph-dash-back, .graph-dash-out { animation: none; }
 }
