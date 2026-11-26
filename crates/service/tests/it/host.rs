@@ -475,7 +475,20 @@ async fn typing_while_a_question_waits_answers_the_batch_and_continues_the_turn(
         "不是 ASK_ABORTED 错误：{second}"
     );
 
+    assert!(
+        !second.contains("ask_direct_reply"),
+        "meta 只落日志、不投给模型：{second}"
+    );
     let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
+    let direct_meta = store.events().iter().find_map(|event| match &event.kind {
+        session::EventKind::ToolResult { meta, .. } => meta.clone(),
+        _ => None,
+    });
+    assert_eq!(
+        direct_meta,
+        Some(serde_json::json!({ "ask_direct_reply": true })),
+        "tool/result.meta 原样落盘（T095.3/N3）"
+    );
     let cancelled = store
         .events()
         .iter()

@@ -534,15 +534,15 @@ export function deriveTurnViews(
         // T013.5：按 call id 配对（不再用「最后一条 running」猜），并留下 meta。
         const message = (data.message ?? {}) as Record<string, unknown>;
         const callId = String(message.toolCallId ?? message.tool_call_id ?? '');
-        // 问题卡等回答时用户直接发送 → 工具结果是「用户没有选，直接说了：…」。
-        // 卡状态由 question/cancelled 派生为 dismissed；这里按同批工具结果把它改成 replied，
-        // 回执写「你直接回复了」，和 ASK_ABORTED 的「不答」区分。
+        // 问题卡等回答时用户直接发送：agent 在工具结果 meta 写结构化标记（T095.3/N3），
+        // 页面只从 meta 派生 replied，不再匹配工具结果正文（文案改了回执也不丢）。
+        const resultMeta = data.meta as { ask_direct_reply?: unknown } | undefined;
         if (
           callId &&
           raw.question &&
           (raw.question.status === 'dismissed' || raw.question.status === 'pending') &&
           raw.question.batchId === callId &&
-          (textOfToolResult(data.message) || textOf(data.message)).startsWith('用户没有选，直接说了：')
+          resultMeta?.ask_direct_reply === true
         ) {
           raw.question = {
             status: 'replied',
