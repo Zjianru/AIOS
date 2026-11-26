@@ -580,6 +580,7 @@ export function ConversationPane() {
               onSend={onComposerSend}
               onCanSendChange={setCanSend}
               queueRestores={queueRestores}
+              pageTag="现在"
             >
               <ModelPicker />
               {running ? (

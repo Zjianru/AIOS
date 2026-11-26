@@ -3,6 +3,7 @@ import { useEffect } from 'react';
 import { FirstUsePane } from './FirstUsePane';
 import { KernelGate } from './KernelGate';
 import { ConversationPane } from './ConversationPane';
+import { RightRail } from './RightRail';
 import { TaskCardStateSync } from './TaskCardStateSync';
 import { useKindStore } from './kindStore';
 
@@ -58,5 +59,5 @@ export function KindScene({ pane }: { pane: string }) {
       </>
     );
   }
-  return null;
+  return <RightRail />;
 }

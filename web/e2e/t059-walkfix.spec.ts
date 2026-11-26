@@ -236,6 +236,9 @@ test('T059 F5：Kind 长流式追加中滚轮上推不被拉回；点回到底�
   const fixture = await startKernelFixture({ t059LongStream: true });
   try {
     await page.goto(urlOf(fixture));
+    // T098.2：Kind 恢复两栏（对话 | 右栏）；窄视口下 dockview 把右栏折成页签，先切回「对话」再验滚动。
+    const conversationTab = page.getByRole('tab', { name: '对话' });
+    if ((await conversationTab.count()) > 0) await conversationTab.first().click();
     await sendKind(page, '你现在都能做什么卡片');
     // 流式还在跑、内容已超过视口：等 stop 按钮和足够长的流式文字。
     await expect(page.locator('[data-kind="stop"]')).toBeVisible({ timeout: 30_000 });

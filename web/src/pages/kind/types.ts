@@ -70,6 +70,8 @@ export interface KindState {
   cwd: string;
  /** 上下文占用（%），底栏悬停可见。 */
   usage: number;
+ /** 上下文窗口 token 数（ready 帧给；0=旧服务没给）。 */
+  contextWindow: number;
   compacting: boolean;
  /** 演示用：下一条消息送不到。 */
  /** ：模型 id → 显示名（来自模型设置；拿不到就用 id）。 */

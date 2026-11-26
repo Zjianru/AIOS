@@ -13,7 +13,7 @@
 
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { FileText, Quote } from 'lucide-react';
+import { FileText, MapPin, Quote, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { useKindStore } from '../kindStore';
 import { fileMentions } from '../atGrammar';
@@ -92,6 +92,8 @@ interface ComposerProps {
   placeholder?: string;
   /** 从日志恢复的排队消息（被停止清掉的那些）；每条 seq 最多放回一次。 */
   queueRestores?: QueueRestore[];
+  /** T098.2：输入框里的页面位置标签（Kind 传「现在」；任务对话不传）。 */
+  pageTag?: string;
 }
 
 /** 本地记录文件的 MIME（发送时只带 id/name/bytes；预览用）。 */
@@ -145,7 +147,7 @@ function quotedLines(quote: string): string {
 }
 
 export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer(
-  { offline, onSend, onCanSendChange, children, draftKey, placeholder, queueRestores = [] },
+  { offline, onSend, onCanSendChange, children, draftKey, placeholder, queueRestores = [], pageTag },
   ref,
 ) {
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -192,6 +194,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const restoredKeysRef = useRef<string[]>([]);
 
   const canSend = text.trim().length > 0 || quotes.length > 0 || pastes.length > 0 || attachments.length > 0;
+  const [pageTagDismissed, setPageTagDismissed] = useState(false);
 
   useEffect(() => {
     onCanSendChange(canSend);
@@ -1012,6 +1015,22 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             style={{ maxHeight: MAX_HEIGHT }}
             />
           </div>
+          {pageTag && !pageTagDismissed ? (
+            <div className="mt-1.5 flex items-center" data-kind="composer-page-tag">
+              <span className="inline-flex items-center gap-1 rounded-badge border border-line bg-pane px-1.5 py-0.5 text-1 text-ink-2">
+                <MapPin className="size-3 text-ink-3" />
+                {pageTag}
+                <button
+                  type="button"
+                  aria-label="去掉页面标签"
+                  onClick={() => setPageTagDismissed(true)}
+                  className="text-ink-3 transition-colors hover:text-ink"
+                >
+                  <X className="size-3" />
+                </button>
+              </span>
+            </div>
+          ) : null}
           {children}
         </div>
       </div>

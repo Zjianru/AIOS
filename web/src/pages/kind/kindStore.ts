@@ -480,7 +480,7 @@ function applyFrame(frame: Frame): void {
       frame.context.window > 0
         ? Math.round((frame.context.used / frame.context.window) * 100)
         : 0;
-    useKindStore.setState({ connection: { state: 'online' }, usage });
+    useKindStore.setState({ connection: { state: 'online' }, usage, contextWindow: frame.context.window });
     return;
   }
   if (frame.type === 'event') {
@@ -524,6 +524,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
   sessionId: null,
   cwd: '',
   usage: 0,
+  contextWindow: 0,
   compacting: false,
   modelNames: {},
   modelWindows: {},
