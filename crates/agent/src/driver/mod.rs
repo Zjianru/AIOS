@@ -720,10 +720,19 @@ impl Inner {
     pub(crate) async fn cancel(&self) -> Result<(), AgentError> {
         {
             let _gate = self.inbox_mutations.lock().await;
-            self.inbox_splice(InboxTarget::NextStep, 0, i64::MAX, Vec::new(), true)
-                .await?;
-            self.inbox_splice(InboxTarget::NextTurn, 0, i64::MAX, Vec::new(), true)
-                .await?;
+            // 本票：只清用户自己发的排队消息；程序消息（任务报回、固定块等）留在队列，
+            // 之后照旧送到。连续区段各落一条 InboxSpliced（outcome=canceled）；从后往前删，
+            // 前面的下标不受影响。
+            for target in [InboxTarget::NextTurn, InboxTarget::NextStep] {
+                let runs = {
+                    let inbox = self.inbox.lock().expect("agent 收件箱锁被毒化");
+                    inbox.user_message_runs(target)
+                };
+                for (start, len) in runs.into_iter().rev() {
+                    self.inbox_splice(target, start as i64, len as i64, Vec::new(), true)
+                        .await?;
+                }
+            }
         }
         self.cancel_with(AbortCause::User);
         Ok(())

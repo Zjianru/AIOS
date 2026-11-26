@@ -204,6 +204,8 @@ async fn send(host: &RootHost, text: &str, serial: u32) {
         attachments: Vec::new(),
         canvas: None,
         result_card: None,
+        result_cards: Vec::new(),
+        canvases: Vec::new(),
     }))
     .await
     .expect("send");

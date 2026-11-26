@@ -1,0 +1,64 @@
+// 本票：回退前端的纯函数（原文还原顺序、菜单禁用条件）。
+import assert from 'node:assert/strict';
+import { canRecallCleared, hasBefore, rewindSourceOfMessage, viewOfSeq } from '../src/pages/kind/rewind.ts';
+import { questionCardEntryOf } from '../src/pages/kind/cards/model.ts';
+
+const source = rewindSourceOfMessage({
+  content: [
+    { type: 'text', text: '打的字' },
+    { type: 'text', text: '第一段粘贴', paste: true },
+    { type: 'file', attachmentId: 'att-1', name: 'pic.png', bytes: 5 },
+    { type: 'result-card', taskId: 'task-a', title: '结果甲', version: 2 },
+    { type: 'text', text: '（来自画布「画布甲」）', canvas: { id: 'cv-a', title: '画布甲' } },
+  ],
+});
+assert.equal(source.text, '打的字');
+assert.deepEqual(source.pastes, ['第一段粘贴']);
+assert.equal(source.files.length, 1);
+assert.equal(source.files[0].mime, 'image/png', '旧日志没有 mime：按扩展名兜底');
+assert.deepEqual(source.resultCards, [{ taskId: 'task-a', title: '结果甲', version: 2 }]);
+assert.deepEqual(source.canvases, [{ id: 'cv-a', title: '画布甲' }]);
+assert.equal(rewindSourceOfMessage({ content: [] }), null, '没有可还原的块时返回 null');
+
+const rows = [
+  { seq: 10, time: 1, text: '第一句' },
+  { seq: 20, time: 2, text: '第二句' },
+];
+assert.equal(hasBefore(rows, 10), false, '压缩后第一句前面没有内容');
+assert.equal(hasBefore(rows, 20), true);
+assert.equal(hasBefore(rows, null), false);
+assert.equal(viewOfSeq([{ id: 'turn-1', user: { seq: 10 } }], 10)?.id, 'turn-1');
+assert.equal(viewOfSeq([], 10), undefined);
+const blank = {
+  hasText: false,
+  hasPastes: false,
+  hasAttachments: false,
+  hasQuotes: false,
+  hasCanvas: false,
+  hasResultCard: false,
+  hasExtraCanvases: false,
+  hasExtraResultCards: false,
+};
+assert.equal(canRecallCleared(blank), true, '空输入可以 ↑ 找回');
+for (const key of [
+  'hasText',
+  'hasPastes',
+  'hasAttachments',
+  'hasQuotes',
+  'hasCanvas',
+  'hasResultCard',
+  'hasExtraCanvases',
+  'hasExtraResultCards',
+]) {
+  assert.equal(canRecallCleared({ ...blank, [key]: true }), false, key + ' 存在时不召回');
+}
+// K4（本票）：旧日志没有 meta：不判答没答，回执收成工具结果原文一行。
+const legacyReply = questionCardEntryOf({
+  batchId: 'call-ask',
+  status: 'legacy-reply',
+  questions: [{ id: 'q1', question: '选一个？', options: [{ label: '是' }], multiSelect: false }],
+  text: '用户没有选，直接说了：旧日志里的原话',
+});
+assert.equal(legacyReply.receipt.summary, '用户没有选，直接说了：旧日志里的原话');
+assert.ok(!legacyReply.receipt.summary.includes('你没回答'), '不判答没答');
+console.log('rewind.test.mjs: all assertions passed');

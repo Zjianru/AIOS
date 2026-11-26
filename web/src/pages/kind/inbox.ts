@@ -7,6 +7,7 @@
 // 按顺序折叠能对上。
 
 import type { ServiceEvent } from '@/data/service';
+import { mimeFromFileName } from './fileMime.ts';
 
 /** 日志里的一条消息（结构照 model::Message 的 JSON 形状）。 */
 export interface InboxMessage {
@@ -24,6 +25,7 @@ interface InboxBlock {
   attachmentId?: string;
   name?: string;
   bytes?: number;
+  mime?: string | null;
   taskId?: string;
   title?: string;
   version?: number;
@@ -32,12 +34,14 @@ interface InboxBlock {
 /** 一条 canceled splice 要从日志找回来放回输入框的内容。 */
 export interface QueueRestore {
   seq: number;
+  /** 同一条 splice 里第几条消息（逐条放回的身份；seq+index 唯一）。 */
+  key: string;
   text: string;
   pastes: string[];
-  attachments: { id: string; name: string; bytes: number }[];
-  resultCard?: { taskId: string; title: string; version: number };
-  /** 画布按钮放进来的那一句带画布身份；放回时恢复「来自画布」标记，不把自动文字再拼一遍。 */
-  canvas?: { id: string; title: string };
+  attachments: { id: string; name: string; bytes: number; mime?: string | null }[];
+  /** 本票（N2）：一次放回的多张结果卡/多个画布标记，按原顺序。 */
+  resultCards: { taskId: string; title: string; version: number }[];
+  canvases: { id: string; title: string }[];
 }
 
 /** 两个待领队列的投影（只留折叠需要的消息字段）。 */
@@ -85,8 +89,11 @@ export function applyInboxEvent(projection: InboxProjection, event: ServiceEvent
   const inserted = Array.isArray(data.inserted) ? (data.inserted as InboxMessage[]) : [];
   if (inserted.length > 0) queue.splice(start, 0, ...inserted);
   if (data.outcome !== 'canceled' || missing > 0) return { restores: [], missing };
-  const restore = restoreOf(removed, event.seq);
-  return { restores: restore ? [restore] : [], missing: 0 };
+  // N2：被清的消息逐条放回，不再合并成一条（每条的卡/画布各自成组）。
+  const restores = removed
+    .map((message, index) => restoreOf(message, event.seq, index))
+    .filter((restore): restore is QueueRestore => restore !== null);
+  return { restores, missing: 0 };
 }
 
 /** 一页日志（首屏或往前翻的一页）。 */
@@ -161,24 +168,23 @@ function isTypedByUser(message: InboxMessage): boolean {
  * 只还原用户发送时能拼出的块：text（含 paste）、file、result-card、带 canvas 的 text。
  * 其余类型（reasoning/tool-call 等）不会出现在用户收件箱里；真遇到就忽略，不猜、不丢正文。
  */
-function restoreOf(removed: InboxMessage[], seq: number): QueueRestore | null {
+function restoreOf(message: InboxMessage, seq: number, index: number): QueueRestore | null {
   const text: string[] = [];
   const pastes: string[] = [];
   const attachments: QueueRestore['attachments'] = [];
-  let resultCard: QueueRestore['resultCard'];
-  let canvas: QueueRestore['canvas'];
-  for (const message of removed) {
-    if (!isTypedByUser(message)) continue;
-    for (const block of message.content ?? []) {
+  const resultCards: QueueRestore['resultCards'] = [];
+  const canvases: QueueRestore['canvases'] = [];
+  if (!isTypedByUser(message)) return null;
+  for (const block of message.content ?? []) {
       if (block.type === 'text' && typeof block.text === 'string') {
-        // 画布块：正文是发送时自动拼的「（来自画布「标题」）」；放回时恢复标记（Composer 只留一个），
+        // 画布块：正文是发送时自动拼的「（来自画布「标题」）」；放回时恢复标记（N2 多条各留一个 chip），
         // 不把它当普通文字再拼一遍。
         if (
           block.canvas &&
           typeof block.canvas.id === 'string' &&
           typeof block.canvas.title === 'string'
         ) {
-          canvas = { id: block.canvas.id, title: block.canvas.title };
+          canvases.push({ id: block.canvas.id, title: block.canvas.title });
         } else if (block.paste) pastes.push(block.text);
         else text.push(block.text);
       } else if (
@@ -187,32 +193,41 @@ function restoreOf(removed: InboxMessage[], seq: number): QueueRestore | null {
         typeof block.name === 'string' &&
         typeof block.bytes === 'number'
       ) {
-        attachments.push({ id: block.attachmentId, name: block.name, bytes: block.bytes });
+        attachments.push({
+          id: block.attachmentId,
+          name: block.name,
+          bytes: block.bytes,
+          // 旧日志没有 mime：按扩展名兜底（png/jpg 等回图片类型），认不出才 null。
+          mime:
+            typeof block.mime === 'string' && block.mime.length > 0
+              ? block.mime
+              : mimeFromFileName(block.name),
+        });
       } else if (
         block.type === 'result-card' &&
         typeof block.taskId === 'string' &&
         typeof block.title === 'string' &&
         typeof block.version === 'number'
       ) {
-        resultCard = { taskId: block.taskId, title: block.title, version: block.version };
+        resultCards.push({ taskId: block.taskId, title: block.title, version: block.version });
       }
-    }
   }
   if (
     text.length === 0 &&
     pastes.length === 0 &&
     attachments.length === 0 &&
-    !resultCard &&
-    !canvas
+    resultCards.length === 0 &&
+    canvases.length === 0
   ) {
     return null;
   }
   return {
     seq,
+    key: seq + '-' + index,
     text: text.join(String.fromCharCode(10)),
     pastes,
     attachments,
-    ...(resultCard ? { resultCard } : {}),
-    ...(canvas ? { canvas } : {}),
+    resultCards,
+    canvases,
   };
 }

@@ -75,6 +75,39 @@ async fn mount(server: &MockServer, responses: Vec<ResponseTemplate>, expected: 
         .await;
 }
 
+async fn resume(server: &MockServer, data_dir: &std::path::Path, id: &SessionId) -> Agent {
+    let store = SessionStore::open(data_dir, id).unwrap();
+    let config = AgentConfig {
+        instruction_roots: vec![data_dir.join("agents-home")],
+        skill_roots: vec![data_dir.join("skills-home")],
+        ..AgentConfig::default()
+    };
+    let model = DeepSeek::with_credentials(
+        DeepSeekConfig {
+            provider: "deepseek".to_owned(),
+            base_url: server.uri(),
+            model: "deepseek-flash".to_owned(),
+            max_tokens: 2048,
+            context_window: model::DEFAULT_CONTEXT_WINDOW,
+            effort: Effort::new("high"),
+            tool_update: None,
+        },
+        crate::common::test_credential(data_dir),
+    )
+    .unwrap();
+    Agent::resume(
+        id.clone(),
+        config,
+        agent::Deps {
+            model,
+            tools: tools::ToolSet::builtin(),
+            store,
+        },
+    )
+    .await
+    .unwrap()
+}
+
 async fn setup(server: &MockServer) -> (Agent, tempfile::TempDir, SessionId) {
     let data_dir = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
@@ -111,6 +144,24 @@ async fn setup(server: &MockServer) -> (Agent, tempfile::TempDir, SessionId) {
     (agent, data_dir, id)
 }
 
+fn user_texts(body: &serde_json::Value) -> Vec<String> {
+    let mut texts = Vec::new();
+    if let Some(messages) = body["messages"].as_array() {
+        for message in messages {
+            if let Some(content) = message["content"].as_array() {
+                for block in content {
+                    if block["type"] == "text"
+                        && let Some(text) = block["text"].as_str()
+                    {
+                        texts.push(text.to_owned());
+                    }
+                }
+            }
+        }
+    }
+    texts
+}
+
 fn send_request(request_id: &str, text: &str) -> SendRequest {
     SendRequest {
         request_id: request_id.to_owned(),
@@ -120,6 +171,8 @@ fn send_request(request_id: &str, text: &str) -> SendRequest {
         attachments: Vec::new(),
         canvas: None,
         result_card: None,
+        result_cards: Vec::new(),
+        canvases: Vec::new(),
     }
 }
 
@@ -422,7 +475,20 @@ async fn typing_while_a_question_waits_answers_the_batch_and_continues_the_turn(
         "不是 ASK_ABORTED 错误：{second}"
     );
 
+    assert!(
+        !second.contains("ask_direct_reply"),
+        "meta 只落日志、不投给模型：{second}"
+    );
     let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
+    let direct_meta = store.events().iter().find_map(|event| match &event.kind {
+        session::EventKind::ToolResult { meta, .. } => meta.clone(),
+        _ => None,
+    });
+    assert_eq!(
+        direct_meta,
+        Some(serde_json::json!({ "ask_direct_reply": true })),
+        "tool/result.meta 原样落盘（本票/N3）"
+    );
     let cancelled = store
         .events()
         .iter()
@@ -477,6 +543,7 @@ async fn typing_with_pastes_and_attachments_while_a_question_waits_answers_with_
             attachment_id: "att-legacy-1".to_owned(),
             name: "排队附件.txt".to_owned(),
             bytes: 42,
+            mime: None,
             path: Some("/tmp/legacy/attachments/att-legacy-1.txt".to_owned()),
         },
         ContentBlock::from_result_card("task-legacy", "结果卡标题", 2),
@@ -869,4 +936,125 @@ async fn shutdown_cancels_active_turn_and_keeps_log_resumable() {
     drop(store);
     drop(service);
     drop(agent);
+}
+
+#[tokio::test]
+async fn cancel_keeps_queued_program_messages() {
+    let server = MockServer::start().await;
+    mount(
+        &server,
+        vec![
+            sse(FINAL_TEXT_SSE).set_delay(Duration::from_secs(10)),
+            sse(FINAL_TEXT_SSE),
+            sse(FINAL_TEXT_SSE),
+        ],
+        3,
+    )
+    .await;
+    let (agent, data_dir, id) = setup(&server).await;
+    let service = ServiceHost::new(agent.clone());
+    let mut events = service.subscribe_events();
+
+    service
+        .send(send_request("req-run", "跑一轮"))
+        .await
+        .unwrap();
+    wait_for(&mut events, "turn/start", 1).await;
+    let queued = service.send(send_request("req-user-a", "用户A")).await;
+    assert!(queued.is_ok(), "排队用户消息应受理：{queued:?}");
+    assert!(queued.unwrap().accepted, "排队用户消息要 accepted");
+    service
+        .send_message(
+            "task-report:task-1:report-1",
+            UserMessage::text("任务报回了"),
+            DeliveryMode::FollowUp,
+        )
+        .await
+        .unwrap();
+
+    service.cancel(CancelRequest {}).await.unwrap();
+    service
+        .send(send_request("req-after", "取消后新话"))
+        .await
+        .unwrap();
+    agent.idle().await;
+
+    let bodies = server.received_requests().await.unwrap();
+    assert_eq!(bodies.len(), 2, "取消 + 新话只发两次模型请求");
+    let second: serde_json::Value = serde_json::from_slice(&bodies[1].body).unwrap();
+    let texts = user_texts(&second);
+    assert!(
+        texts.contains(&"任务报回了".to_owned()),
+        "程序消息要照旧送到下一轮：{texts:?}"
+    );
+    assert!(texts.contains(&"取消后新话".to_owned()));
+    assert!(
+        !texts.contains(&"用户A".to_owned()),
+        "用户排队话应被停掉：{texts:?}"
+    );
+
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
+    let canceled = store
+        .events()
+        .iter()
+        .filter(|event| {
+            matches!(
+                &event.kind,
+                session::EventKind::InboxSpliced {
+                    outcome: Some(session::InboxOutcome::Canceled),
+                    ..
+                }
+            )
+        })
+        .count();
+    assert!(canceled >= 1, "用户排队话要落 canceled splice");
+    assert!(
+        !turn_ends(data_dir.path(), &id).is_empty(),
+        "取消后这一轮要收尾"
+    );
+
+    // 重启恢复后：程序消息已投递的不再重复，用户被清掉的排队话也不出现。
+    drop(store);
+    drop(service);
+    drop(agent);
+    let resumed = resume(&server, data_dir.path(), &id).await;
+    let service2 = ServiceHost::new(resumed.clone());
+    service2
+        .send(send_request("req-restart", "重启后新句"))
+        .await
+        .unwrap();
+    resumed.idle().await;
+    let bodies = server.received_requests().await.unwrap();
+    assert_eq!(bodies.len(), 3, "重启后只多一次模型请求");
+    let third: serde_json::Value = serde_json::from_slice(&bodies[2].body).unwrap();
+    let third_texts = user_texts(&third);
+    // 请求里带的是整段历史；「不重复」看这一轮新追加的那条是重启后新句。
+    assert_eq!(third_texts.last().map(String::as_str), Some("重启后新句"));
+    assert!(
+        !third_texts
+            .iter()
+            .skip(third_texts.len().saturating_sub(1))
+            .any(|text| text == "任务报回了"),
+        "程序消息重启后不能作为新消息重复投递：{third_texts:?}"
+    );
+    assert!(!third_texts.contains(&"用户A".to_owned()));
+    let reopened = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
+    let program_count = reopened
+        .events()
+        .iter()
+        .filter(|event| {
+            matches!(
+                &event.kind,
+                session::EventKind::UserMessage { message, .. }
+                    if message
+                        .content
+                        .iter()
+                        .filter_map(model::ContentBlock::as_text)
+                        .collect::<Vec<_>>()
+                        .join("")
+                        == "任务报回了"
+            )
+        })
+        .count();
+    assert_eq!(program_count, 1, "程序消息恰好投递一次");
 }

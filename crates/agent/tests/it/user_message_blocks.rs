@@ -36,6 +36,7 @@ async fn user_message_blocks_keep_order_and_request_body_uses_file_handle_text()
                 name: "notes.txt".to_owned(),
                 bytes: 5,
                 path: Some(copy.to_string_lossy().into_owned()),
+                mime: None,
             },
         ],
         "req-t013-4",
@@ -72,11 +73,13 @@ async fn user_message_blocks_keep_order_and_request_body_uses_file_handle_text()
             name,
             bytes,
             path,
+            mime,
         } => {
             assert_eq!(attachment_id, ATTACHMENT_ID);
             assert_eq!(name, "notes.txt");
             assert_eq!(*bytes, 5);
             assert_eq!(path.as_deref(), Some(copy.to_string_lossy().as_ref()));
+            assert_eq!(mime, &None);
         }
         other => panic!("第四块应是 File：{other:?}"),
     }

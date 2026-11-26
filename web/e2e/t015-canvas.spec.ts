@@ -714,13 +714,13 @@ async function readReady(page: Page): Promise<Record<string, unknown>> {
   );
 }
 
-/** 验收：ready 帧协议版本 20（日历区间），旧的 root/context 字段照旧。 */
-test('ready 帧：协议版本 29，旧的 root/context 字段不变', async ({ page }) => {
+/** 验收：ready 帧协议版本 31（T095 放回字段/回退请求），旧的 root/context 字段照旧。 */
+test('ready 帧：协议版本 31，旧的 root/context 字段不变', async ({ page }) => {
   const fixture = await startKernelFixture({ canvas: 'interactive' });
   try {
     await page.goto(urlOf(fixture));
     const ready = await readReady(page);
-    expect(ready.protocolVersion).toBe(30);
+    expect(ready.protocolVersion).toBe(31);
     expect(ready.root).toEqual({ state: 'ok' });
     expect(ready.context).toEqual(expect.objectContaining({ window: expect.any(Number) }));
   } finally {

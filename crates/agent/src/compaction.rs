@@ -349,7 +349,49 @@ async fn compact_once(
     };
     let shadowed_seqs: Vec<u64> = derived[1..split].iter().map(|(seq, _)| *seq).collect();
     let prefix: Vec<Message> = selected[..split].to_vec();
-    let shadowed_token_count = estimate_messages(&prefix);
+    let (outcome, _checkpoint_seq) = compact_transaction(
+        host,
+        turn,
+        source_command_id,
+        trigger,
+        shadowed_range,
+        shadowed_seqs,
+        prefix,
+        Some(1),
+        policy,
+    )
+    .await?;
+    Ok(outcome)
+}
+
+/// 一次可指定区间的 checkpoint 事务（本票：压缩/两种总结共用）。
+///
+/// 语义与旧 compact_once 相同：start → 摘要 → summary → 替换消息 → end。summary_input
+/// 是投给摘要请求的消息；shadowed_seqs 是这次要替换掉的派生节点。expected_start_index
+/// 为 Some 时按旧压缩的 changed 复核（替换范围必须还在原位置）；None 时只要求这些节点还在。
+#[expect(
+    clippy::too_many_arguments,
+    reason = "一次事务的上下文、区间、摘要输入和策略都从调用处传进来"
+)]
+async fn compact_transaction(
+    host: &dyn LoopAccess,
+    turn: Option<u64>,
+    source_command_id: Option<String>,
+    trigger: CompactionTrigger,
+    shadowed_range: ShadowedRange,
+    shadowed_seqs: Vec<u64>,
+    summary_input: Vec<Message>,
+    expected_start_index: Option<usize>,
+    policy: &CompactionPolicy,
+) -> Result<(CompactionOutcome, u64), AgentError> {
+    if shadowed_seqs.is_empty() {
+        return Err(manual_error(
+            trigger,
+            ManualCompactionErrorCode::Commit,
+            AgentError::Compaction("empty summary range".to_owned()),
+        ));
+    }
+    let shadowed_token_count = estimate_messages(&summary_input);
     let fixed_blocks = host.compaction_fixed_blocks();
 
     // id 带进程/纳秒成分：续接或新进程都不会和旧 id 撞车。
@@ -385,7 +427,7 @@ async fn compact_once(
 
     let summary = match summarize(
         host,
-        &prefix,
+        &summary_input,
         policy.summary_max_tokens,
         if host.compaction_profile() == crate::CompactionProfile::Kind {
             KIND_COMPACTION_INSTRUCTION
@@ -459,8 +501,12 @@ async fn compact_once(
                 .map(|(seq, _)| *seq)
                 .collect()
         };
-        let unchanged =
-            current.len() > split && current.get(1..split) == Some(shadowed_seqs.as_slice());
+        let unchanged = match expected_start_index {
+            Some(index) => {
+                current.get(index..index + shadowed_seqs.len()) == Some(shadowed_seqs.as_slice())
+            }
+            None => shadowed_seqs.iter().all(|seq| current.contains(seq)),
+        };
         if !unchanged {
             let message = "the history selected for compaction changed before it could be replaced"
                 .to_owned();
@@ -517,6 +563,10 @@ async fn compact_once(
     )
     .await
     .map_err(|error| manual_error(trigger, ManualCompactionErrorCode::Commit, error))?;
+    let checkpoint_seq = {
+        let store = host.session().lock().expect("agent 会话锁被毒化");
+        store.events().last().map(|event| event.seq).unwrap_or(0)
+    };
 
     host.append(&[EventKind::CompactionEnd {
         compaction_id: compaction_id.clone(),
@@ -534,9 +584,180 @@ async fn compact_once(
         compaction_id,
         error: None,
     });
-    Ok(CompactionOutcome {
-        shadowed_items: shadowed_seqs.len(),
-        shadowed_tokens: shadowed_token_count,
+    Ok((
+        CompactionOutcome {
+            shadowed_items: shadowed_seqs.len(),
+            shadowed_tokens: shadowed_token_count,
+        },
+        checkpoint_seq,
+    ))
+}
+
+/// 恢复对话（本票）：写 conversation/rewound 事件，外壳 replace 圈住 from_seq 到当前日志末尾。
+pub(crate) async fn rewind_restore(
+    host: &dyn LoopAccess,
+    from_seq: u64,
+) -> Result<crate::RewindOutcome, AgentError> {
+    let last_seq = {
+        let store = host.session().lock().expect("agent 会话锁被毒化");
+        store.events().last().map(|event| event.seq).unwrap_or(0)
+    };
+    if from_seq == 0 || from_seq > last_seq {
+        return Err(AgentError::Compaction(format!(
+            "rewind target {from_seq} is not in the session"
+        )));
+    }
+    host.append_surface(
+        EventKind::ConversationRewound {},
+        SurfaceOp::Replace {
+            start_seq: from_seq,
+            end_seq: last_seq,
+        },
+        vec![from_seq, last_seq],
+    )
+    .await
+    .map_err(|error| {
+        manual_error(
+            CompactionTrigger::Manual,
+            ManualCompactionErrorCode::Persistence,
+            error,
+        )
+    })?;
+    let event_seq = {
+        let store = host.session().lock().expect("agent 会话锁被毒化");
+        store
+            .events()
+            .last()
+            .map(|event| event.seq)
+            .unwrap_or(last_seq)
+    };
+    Ok(crate::RewindOutcome {
+        event_seq,
+        checkpoint_seq: None,
+        start_seq: from_seq,
+        end_seq: last_seq,
+        shadowed_items: 1,
+        shadowed_tokens: 0,
+    })
+}
+
+fn visible_derived(host: &dyn LoopAccess) -> Vec<(u64, Message)> {
+    let store = host.session().lock().expect("agent 会话锁被毒化");
+    store.derive_messages_with_seqs()
+}
+
+/// 从这里起总结（本票）：from_seq 到末尾压成一段。
+pub(crate) async fn rewind_summarize_from(
+    host: &dyn LoopAccess,
+    from_seq: u64,
+) -> Result<crate::RewindOutcome, AgentError> {
+    let derived = visible_derived(host);
+    let index = derived
+        .iter()
+        .position(|(seq, _)| *seq == from_seq)
+        .ok_or_else(|| {
+            AgentError::Compaction(format!("rewind target {from_seq} is not visible"))
+        })?;
+    let seqs: Vec<u64> = derived[index..].iter().map(|(seq, _)| *seq).collect();
+    let messages: Vec<Message> = derived[index..]
+        .iter()
+        .map(|(_, message)| message.clone())
+        .collect();
+    let end_seq = {
+        let store = host.session().lock().expect("agent 会话锁被毒化");
+        store.events().last().map(|event| event.seq).unwrap_or(0)
+    };
+    let range = ShadowedRange {
+        start: seqs[0],
+        end: end_seq.max(seqs[0]),
+    };
+    let (outcome, checkpoint_seq) = compact_transaction(
+        host,
+        None,
+        Some(format!("rewind:from:{from_seq}")),
+        CompactionTrigger::Manual,
+        range,
+        seqs,
+        messages,
+        None,
+        &host.compaction_policy(),
+    )
+    .await?;
+    Ok(crate::RewindOutcome {
+        event_seq: checkpoint_seq,
+        checkpoint_seq: Some(checkpoint_seq),
+        start_seq: range.start,
+        end_seq: range.end,
+        shadowed_items: outcome.shadowed_items,
+        shadowed_tokens: outcome.shadowed_tokens,
+    })
+}
+
+/// 总结到这里为止（本票）：上次 checkpoint 之后到 to_seq 之前压成一段。
+pub(crate) async fn rewind_summarize_up_to(
+    host: &dyn LoopAccess,
+    to_seq: u64,
+) -> Result<crate::RewindOutcome, AgentError> {
+    let derived = visible_derived(host);
+    let target = derived
+        .iter()
+        .position(|(seq, _)| *seq == to_seq)
+        .ok_or_else(|| AgentError::Compaction(format!("rewind target {to_seq} is not visible")))?;
+    let boundary = {
+        let store = host.session().lock().expect("agent 会话锁被毒化");
+        store
+            .events()
+            .iter()
+            .filter(|event| event.seq < to_seq)
+            .filter_map(|event| match &event.kind {
+                EventKind::CompactionEnd { error: None, .. } => Some(event.seq),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0)
+    };
+    // 系统消息和上一份 checkpoint（压缩产物）都不进总结区间：checkpoint 不是被总结的内容。
+    let start = derived
+        .iter()
+        .position(|(seq, message)| {
+            *seq > boundary
+                && message.role != Role::System
+                && !matches!(message.source, MessageSource::CompactCheckpoint { .. })
+        })
+        .unwrap_or(derived.len());
+    if start >= target {
+        return Err(AgentError::Compaction(
+            "no messages to summarize before the target".to_owned(),
+        ));
+    }
+    let seqs: Vec<u64> = derived[start..target].iter().map(|(seq, _)| *seq).collect();
+    let messages: Vec<Message> = derived[start..target]
+        .iter()
+        .map(|(_, message)| message.clone())
+        .collect();
+    let range = ShadowedRange {
+        start: seqs[0],
+        end: *seqs.last().expect("summary range is not empty"),
+    };
+    let (outcome, checkpoint_seq) = compact_transaction(
+        host,
+        None,
+        Some(format!("rewind:up-to:{to_seq}")),
+        CompactionTrigger::Manual,
+        range,
+        seqs,
+        messages,
+        None,
+        &host.compaction_policy(),
+    )
+    .await?;
+    Ok(crate::RewindOutcome {
+        event_seq: checkpoint_seq,
+        checkpoint_seq: Some(checkpoint_seq),
+        start_seq: range.start,
+        end_seq: range.end,
+        shadowed_items: outcome.shadowed_items,
+        shadowed_tokens: outcome.shadowed_tokens,
     })
 }
 

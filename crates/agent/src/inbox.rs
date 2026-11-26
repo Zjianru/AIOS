@@ -10,6 +10,7 @@ use model::Message;
 use session::{Event, EventKind, InboxOutcome, InboxTarget};
 
 use crate::AgentError;
+use crate::program_messages::is_program_message;
 
 /// 消息投递方式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,6 +113,26 @@ impl Inbox {
 
     pub(crate) fn next_step_is_empty(&self) -> bool {
         self.next_step.is_empty()
+    }
+
+    /// 本票：这个队列里「用户自己发的」消息连续区段（start, len）——程序消息留在原地。
+    /// 取消时只清这些区段；从后往前删，前面的下标不受影响。
+    pub(crate) fn user_message_runs(&self, target: InboxTarget) -> Vec<(usize, usize)> {
+        let list = self.list(target);
+        let mut runs = Vec::new();
+        let mut index = 0;
+        while index < list.len() {
+            if is_program_message(&list[index]) {
+                index += 1;
+                continue;
+            }
+            let start = index;
+            while index < list.len() && !is_program_message(&list[index]) {
+                index += 1;
+            }
+            runs.push((start, index - start));
+        }
+        runs
     }
 
     /// 从日志恢复：按顺序折叠 `agent/inbox/spliced`；坐标越界算日志损坏，不静默丢。

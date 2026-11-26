@@ -17,6 +17,7 @@ mod instructions;
 mod instructions_capability;
 mod jobs_capability;
 mod memory_capability;
+mod program_messages;
 mod prune_capability;
 mod reminder_capability;
 mod skill_capability;
@@ -39,6 +40,7 @@ pub use assembly::{AgentOpenOptions, ToolPolicy};
 pub use error::{AgentError, ManualCompactionErrorCode};
 pub use inbox::Delivery;
 pub use instructions::{MAX_CHAIN_BYTES, MAX_SOURCE_BYTES};
+pub use program_messages::{is_program_message, is_program_rpc, is_task_relay_rpc};
 pub use tool_gate::loaded_skills;
 pub use tool_policy::{DEFAULT_WAIT, NO_WAIT, STOP_AFTER_REPORT};
 pub use warn::{WarningHook, set_warning_hook};
@@ -478,6 +480,19 @@ pub struct CompactionOutcome {
     pub shadowed_tokens: u64,
 }
 
+/// 本票：一次恢复/总结写进日志的结果（apply 回执）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RewindOutcome {
+    /// restore 写 conversation/rewound 的 seq；两种总结写 checkpoint 消息的 seq。
+    pub event_seq: u64,
+    /// 总结时 checkpoint 消息的 seq（restore 为 None）。
+    pub checkpoint_seq: Option<u64>,
+    pub start_seq: u64,
+    pub end_seq: u64,
+    pub shadowed_items: usize,
+    pub shadowed_tokens: u64,
+}
+
 /// 订阅者收到的 agent 事件。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentEvent {
@@ -829,6 +844,21 @@ impl Agent {
         source_command_id: Option<String>,
     ) -> Result<Option<CompactionOutcome>, AgentError> {
         self.inner.compact_manual(source_command_id).await
+    }
+
+    /// 本票：恢复对话（写 conversation/rewound + 外壳 replace 区间）。
+    pub async fn rewind_restore(&self, from_seq: u64) -> Result<RewindOutcome, AgentError> {
+        compaction::rewind_restore(self.inner.as_ref(), from_seq).await
+    }
+
+    /// 本票：从这里起总结（from_seq 到末尾）。
+    pub async fn rewind_summarize_from(&self, from_seq: u64) -> Result<RewindOutcome, AgentError> {
+        compaction::rewind_summarize_from(self.inner.as_ref(), from_seq).await
+    }
+
+    /// 本票：总结到这里为止（上次 checkpoint 之后到 to_seq 之前）。
+    pub async fn rewind_summarize_up_to(&self, to_seq: u64) -> Result<RewindOutcome, AgentError> {
+        compaction::rewind_summarize_up_to(self.inner.as_ref(), to_seq).await
     }
 
     pub fn id(&self) -> &SessionId {

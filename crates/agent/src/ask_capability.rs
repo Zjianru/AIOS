@@ -791,11 +791,14 @@ impl Capability for AskCapability {
                 if let Some(direct) = &settled.direct {
                     // 问题卡等回答时用户直接发送（文字/粘贴/附件）= 回答这张卡；
                     // 工具结果带回原文，Kind 在同一轮里接着做（不是 ASK_ABORTED 错误）。
+                    // 本票（N3）：直接回复的结构化标记放 meta，页面从它派生 replied，
+                    // 不再靠匹配工具结果正文（文案怎么改回执都不丢）。
                     overrides.push((
                         index,
-                        ToolResult::success(
+                        ToolResult::success_with_meta(
                             call.id.clone(),
                             format!("用户没有选，直接说了：{direct}"),
+                            serde_json::json!({ "ask_direct_reply": true }),
                         ),
                     ));
                 } else if settled.cancelled.is_empty() {

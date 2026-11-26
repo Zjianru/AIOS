@@ -35,6 +35,7 @@ import type { ProjectUpdateRequest } from './generated/ProjectUpdateRequest';
 import type { ProjectUpdateResponse } from './generated/ProjectUpdateResponse';
 import type { TaskSetProjectResponse } from './generated/TaskSetProjectResponse';
 import type { Response } from './generated/Response';
+import type { RewindResponse } from './generated/RewindResponse';
 import type { RootState } from './generated/RootState';
 import type { ServiceAnswer } from './generated/ServiceAnswer';
 import type { SessionModelSelectRequest } from './generated/SessionModelSelectRequest';
@@ -192,6 +193,8 @@ export interface SendAttachmentRef {
   id: string;
   name: string;
   bytes: number;
+  /** 本票：原类型（旧页面/旧日志没有）。 */
+  mime?: string | null;
 }
 
 export interface SendOptions {
@@ -203,6 +206,9 @@ export interface SendOptions {
   canvas?: { id: string; title: string };
   /** T054.2：结果卡「要求修改」带进输入框的那张卡。 */
   resultCard?: SendResultCardRef;
+  /** 本票（N2）：一次放回多条结果卡/画布标记，按顺序发送。 */
+  resultCards?: SendResultCardRef[];
+  canvases?: { id: string; title: string }[];
 }
 
 /** T054.2：随消息带进 Kind 输入框的结果卡（任务 id + 标题 + 要求版本）。 */
@@ -241,9 +247,9 @@ export async function sendMessage(
     delivery: 'follow-up',
     pastes: options.pastes ?? [],
     attachments: options.attachments ?? [],
-    // 没有标记就不带这个字段（服务端缺省就是用户自己写的）。
-    ...(options.canvas ? { canvas: options.canvas } : {}),
-    ...(options.resultCard ? { resultCard: options.resultCard } : {}),
+    // 本票（N2）：多条放回按顺序走列表；单条旧字段不再重复发（服务端两套都收）。
+    resultCards: options.resultCards ?? [],
+    canvases: options.canvases ?? [],
   });
 }
 
@@ -308,6 +314,19 @@ export async function cardAct(
 /** 手动压缩（T007.8）：把之前的对话换成一份摘要，原文留在日志里。 */
 export async function compactThread(commandId: string): Promise<void> {
   await post({ method: 'compact', commandId });
+}
+
+/** 本票：回退菜单的候选（最后一次压缩之后、可见的用户消息，最新在下）。 */
+export async function rewindList(): Promise<RewindResponse> {
+  return post({ method: 'rewind', action: 'list' });
+}
+
+/** 本票：执行一个回退动作；被拒时服务端回可读原因。 */
+export async function rewindApply(
+  action: 'restore' | 'summarize-from' | 'summarize-up-to',
+  fromSeq: number,
+): Promise<RewindResponse> {
+  return post({ method: 'rewind', action, fromSeq });
 }
 
 export async function recheckRoot(): Promise<RootState> {

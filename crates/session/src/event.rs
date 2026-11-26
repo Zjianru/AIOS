@@ -51,10 +51,14 @@ use crate::SessionId;
 /// 旧版本读不了这条事件，按 spec 升版本、旧版本仍拒绝（不迁移）。旧日志照读。
 /// v18：新增 memory/card 会话事件（程序给 Kind 对话加的记忆小卡）和 memory-context 消息来源
 /// （记忆注入）；旧版本读不了这样的日志，按 spec 升版本、旧版本仍拒绝（不迁移）。旧日志照读。
-pub const FORMAT_VERSION: u64 = 19;
+/// v19：请求事实进日志（早先票：requestAt/contextParts 只增可选字段，监控展示用；
+/// 旧日志原样读，旧版本读不了带新字段的日志，按 spec 升版本）。
+/// v20：新增 conversation/rewound 会话事件（本票：外壳 surfaceOp replace 圈恢复区间）与
+/// File 块的 mime 可选字段；旧日志原样读，旧版本读不了新事件，按 spec 升版本、旧版本仍拒绝。
+pub const FORMAT_VERSION: u64 = 20;
 
-/// 读取器最早能读的版本。14–17 版日志原样读、续写时 header 留原版本；
-/// 13 及以下、19 及以上拒绝（文件一字不改）。
+/// 读取器最早能读的版本。14–20 版日志原样读、续写时 header 留原版本；
+/// 13 及以下、21 及以上拒绝（文件一字不改）。
 pub const MIN_READ_VERSION: u64 = 14;
 
 /// JSONL 第一行的会话 header。
@@ -338,6 +342,10 @@ pub enum EventKind {
         #[serde(skip_serializing_if = "Option::is_none")]
         custom: Option<String>,
     },
+    /// 恢复对话（本票）：外壳 surfaceOp replace 圈起「选中那句到恢复前最后一条」的区间；
+    /// 事件本身不带消息，只让 derive/页面历史/待办/画布按区间隐藏（不改 derive 规则）。
+    #[serde(rename = "conversation/rewound")]
+    ConversationRewound {},
     /// 后台任务注册（T006.9；DSH job/registered 的 durable session 记录）。
     #[serde(rename = "job/registered")]
     JobRegistered {
@@ -711,16 +719,46 @@ impl EventKind {
             Self::JobSettled { .. } => "job/settled",
             Self::SessionModel { .. } => "session/model",
             Self::CardDecision { .. } => "card/decision",
+            Self::ConversationRewound { .. } => "conversation/rewound",
         }
     }
 }
 
+/// 恢复对话的区间（本票）：只取 conversation/rewound 事件外壳上的 replace 区间。
+///
+/// 这是恢复区间的唯一来源：页面历史/分页/待办/画布都调它；压缩的 replace 不在这里，
+/// 所以「已总结」的段页面照旧显示、待办照旧算。
+pub fn rewound_ranges(events: &[Event]) -> Vec<(u64, u64)> {
+    events
+        .iter()
+        .filter(|event| matches!(event.kind, EventKind::ConversationRewound { .. }))
+        .filter_map(|event| match event.surface_op {
+            Some(SurfaceOp::Replace { start_seq, end_seq }) => Some((start_seq, end_seq)),
+            None => None,
+        })
+        .collect()
+}
+
+/// seq 是否落在恢复区间里。
+pub fn is_rewound(seq: u64, ranges: &[(u64, u64)]) -> bool {
+    ranges
+        .iter()
+        .any(|(start, end)| seq >= *start && seq <= *end)
+}
+
 /// 从日志回放当前 todo 列表：最近一次 todo/write 胜出（T005.7 续接恢复用）。
+///
+/// 恢复区间里的 todo/write 不算（本票：「恢复藏的段待办不算」）。
 pub fn last_todos(events: &[Event]) -> Option<Vec<TodoItem>> {
-    events.iter().rev().find_map(|event| match &event.kind {
-        EventKind::TodoWrite { todos } => Some(todos.clone()),
-        _ => None,
-    })
+    let rewound = rewound_ranges(events);
+    events
+        .iter()
+        .rev()
+        .filter(|event| !is_rewound(event.seq, &rewound))
+        .find_map(|event| match &event.kind {
+            EventKind::TodoWrite { todos } => Some(todos.clone()),
+            _ => None,
+        })
 }
 
 /// 日志里的一条事件：`{type, seq, time, data}`（照 DSH 的 SessionEvent）。

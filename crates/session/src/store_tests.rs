@@ -1,4 +1,4 @@
-//! 日志版本读 14–16（旧版原样读、续写 header 留原版本）、13- 与 17+ 拒绝且文件不动；只读读取（不截尾）。
+//! 日志版本读 14–20（旧版原样读、续写 header 留原版本）、13- 与 21+ 拒绝且文件不动；只读读取（不截尾）。
 //!
 //! DSH 依据：`packages/core/session/src/types.ts:90`（SESSION_FORMAT_VERSION）、
 //! `packages/session/session-persistence-jsonl/README.md:77,87,93`（读打开不改历史；
@@ -31,14 +31,14 @@ fn append_torn_line(store: &SessionStore) {
 }
 
 #[test]
-fn written_header_uses_format_version_19() {
+fn written_header_uses_format_version_20() {
     let (_data_dir, _cwd, store) = create_store();
     let text = fs::read_to_string(store.path()).unwrap();
     let header: Value =
         serde_json::from_str(text.lines().next().expect("日志有 header 行")).unwrap();
     assert_eq!(
-        header["version"], 19,
-        "监控请求事实让 FORMAT_VERSION 升到 19"
+        header["version"], 20,
+        "恢复对话事件让 FORMAT_VERSION 升到 20"
     );
 }
 
@@ -142,9 +142,9 @@ fn version_15_logs_are_read_as_is_and_can_be_continued() {
     assert_eq!(header["version"], 15, "在 15 版日志上续写时 header 留 15");
 }
 
-/// 旧测试清单 2：13 及以下、20 及以上照旧拒绝，文件一字不改；更新的提示升级。
+/// 旧测试清单 2：13 及以下、21 及以上照旧拒绝，文件一字不改；更新的提示升级。
 #[test]
-fn format_versions_outside_14_through_19_are_rejected_without_touching_the_file() {
+fn format_versions_outside_14_through_20_are_rejected_without_touching_the_file() {
     let (data_dir, _cwd, store) = create_store();
     let id = store.id().clone();
     let path = store.path().to_path_buf();
@@ -163,13 +163,13 @@ fn format_versions_outside_14_through_19_are_rejected_without_touching_the_file(
                 SessionError::UnsupportedVersion {
                     version: got,
                     min: 14,
-                    max: 19
+                    max: 20
                 } if got == version
             ),
             "v{version} 要拒绝并写出范围，实际 {error}"
         );
         assert!(
-            error.to_string().contains("14–19"),
+            error.to_string().contains("14–20"),
             "报错要写出能读的范围：{error}"
         );
         assert_eq!(fs::read(&path).unwrap(), legacy, "拒绝旧版本不能改写它");
@@ -180,14 +180,14 @@ fn format_versions_outside_14_through_19_are_rejected_without_touching_the_file(
                 SessionError::UnsupportedVersion {
                     version: got,
                     min: 14,
-                    max: 19
+                    max: 20
                 } if got == version
             ),
             "只读路径同样拒绝 v{version}，实际 {read_error}"
         );
     }
 
-    for version in [20, 99] {
+    for version in [21, 99] {
         let legacy = legacy_log(&id, version);
         fs::write(&path, &legacy).unwrap();
         let error = match SessionStore::open(data_dir.path(), &id) {
@@ -200,7 +200,7 @@ fn format_versions_outside_14_through_19_are_rejected_without_touching_the_file(
                 SessionError::UnsupportedFutureVersion {
                     version: got,
                     min: 14,
-                    max: 19
+                    max: 20
                 } if got == version
             ),
             "更新版本要拒绝，实际 {error}"
@@ -502,10 +502,10 @@ fn store_absolutizes_relative_data_dir() {
     assert!(reopened.path().is_absolute(), "写打开同样绝对化");
 }
 
-/// 监控请求事实（requestAt/contextParts）进日志后 FORMAT_VERSION 升到 19；读取器仍从 14 起。
+/// 恢复对话事件进日志后 FORMAT_VERSION 升到 20；读取器仍从 14 起。
 #[test]
-fn format_version_bumps_to_19_after_monitor_facts() {
-    assert_eq!(crate::FORMAT_VERSION, 19);
+fn format_version_bumps_to_20_after_rewind() {
+    assert_eq!(crate::FORMAT_VERSION, 20);
     assert_eq!(crate::MIN_READ_VERSION, 14);
 }
 
@@ -556,5 +556,155 @@ fn hook_panic_signal() {
         warnings[0].contains("注入的追加钩子 panic"),
         "警告要带原因：{}",
         warnings[0]
+    );
+}
+
+/// 本票 F2：last_todos 不算恢复区间里的 todo/write，区间外的照旧算。
+#[test]
+fn last_todos_skip_todos_inside_rewound_ranges() {
+    let (data_dir, _cwd, mut store) = create_store();
+    let id = store.id().clone();
+    let seqs = store
+        .append(&[
+            EventKind::TurnStart { turn: 1 },
+            EventKind::UserMessage {
+                turn: 1,
+                step: 1,
+                message: Message::text(model::Role::User, "这句话被恢复掉"),
+            },
+            EventKind::TodoWrite {
+                todos: vec![crate::TodoItem {
+                    content: "恢复区间里的待办".to_owned(),
+                    status: crate::TodoStatus::Pending,
+                }],
+            },
+            EventKind::TurnEnd {
+                turn: 1,
+                reason: TurnEndReason::Completed,
+            },
+        ])
+        .unwrap();
+    store
+        .append_surface(
+            EventKind::ConversationRewound {},
+            crate::SurfaceOp::Replace {
+                start_seq: seqs[1],
+                end_seq: seqs[2],
+            },
+            Vec::new(),
+        )
+        .unwrap();
+    let outside_seqs = store
+        .append(&[EventKind::TodoWrite {
+            todos: vec![crate::TodoItem {
+                content: "区间外要留着的待办".to_owned(),
+                status: crate::TodoStatus::InProgress,
+            }],
+        }])
+        .unwrap();
+    drop(store);
+
+    let reopened = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
+    let todos = crate::last_todos(reopened.events()).expect("区间外还有待办");
+    assert_eq!(
+        todos
+            .iter()
+            .map(|todo| todo.content.as_str())
+            .collect::<Vec<_>>(),
+        vec!["区间外要留着的待办"],
+        "恢复区间里的 todo/write 不算",
+    );
+
+    drop(reopened);
+    let mut writer = SessionStore::open(data_dir.path(), &id).unwrap();
+    writer
+        .append_surface(
+            EventKind::ConversationRewound {},
+            crate::SurfaceOp::Replace {
+                start_seq: outside_seqs[0],
+                end_seq: outside_seqs[0],
+            },
+            Vec::new(),
+        )
+        .unwrap();
+    drop(writer);
+    let reopened = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
+    assert_eq!(
+        crate::last_todos(reopened.events()),
+        None,
+        "区间外那条也被恢复后，没有可算的待办",
+    );
+}
+
+/// 本票 F2：画布当前版按恢复区间重算（区间里的版本不算）。
+#[test]
+fn canvases_skip_versions_inside_rewound_ranges() {
+    let (data_dir, _cwd, mut store) = create_store();
+    let id = store.id().clone();
+    let canvas_meta = |n: u64| {
+        serde_json::json!({
+            "canvas": {
+                "id": "cv-1",
+                "html": format!("<p>v{n}</p>"),
+                "title": "测试画布",
+                "n": n,
+            }
+        })
+    };
+    let seqs = store
+        .append(&[EventKind::ToolResult {
+            turn: 1,
+            step: 1,
+            message: Message::tool_result("call-canvas-1", "已显示", false),
+            error: None,
+            meta: Some(canvas_meta(1)),
+        }])
+        .unwrap();
+    store
+        .append_surface(
+            EventKind::ConversationRewound {},
+            crate::SurfaceOp::Replace {
+                start_seq: seqs[0],
+                end_seq: seqs[0],
+            },
+            Vec::new(),
+        )
+        .unwrap();
+    let outside = store
+        .append(&[EventKind::ToolResult {
+            turn: 1,
+            step: 1,
+            message: Message::tool_result("call-canvas-2", "已显示", false),
+            error: None,
+            meta: Some(canvas_meta(2)),
+        }])
+        .unwrap();
+    drop(store);
+
+    let reopened = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
+    let canvases = crate::projection::canvases(reopened.events());
+    assert_eq!(canvases.len(), 1);
+    assert_eq!(
+        canvases[0].n, 2,
+        "区间里的第 1 版不算，当前版是区间外的第 2 版"
+    );
+
+    drop(reopened);
+    let mut writer = SessionStore::open(data_dir.path(), &id).unwrap();
+    writer
+        .append_surface(
+            EventKind::ConversationRewound {},
+            crate::SurfaceOp::Replace {
+                start_seq: outside[0],
+                end_seq: outside[0],
+            },
+            Vec::new(),
+        )
+        .unwrap();
+    drop(writer);
+    let reopened = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
+    assert!(
+        crate::projection::canvases(reopened.events()).is_empty(),
+        "两版都被恢复后没有当前版",
     );
 }

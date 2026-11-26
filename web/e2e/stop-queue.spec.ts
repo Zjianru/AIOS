@@ -179,3 +179,60 @@ test('停止：页面关着时取消，重开页面把字补回输入框', async
   await reopened.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind');
   await expect(input(reopened)).toHaveValue('页面关着时排的', { timeout: 20_000 });
 });
+test('停止：排队两条各带标记的消息逐条放回，不合并成一条', async ({ page, request }) => {
+  await sendSlowTurn(page);
+  const sendOne = async (requestId: string, text: string, cardTitle: string, canvasTitle: string) => {
+    const response = await apiPost(request, fixture, {
+      method: 'send',
+      requestId,
+      content: text,
+      delivery: 'follow-up',
+      resultCards: [{ taskId: 'task-' + requestId, title: cardTitle, version: 1 }],
+      canvases: [{ id: 'cv-' + requestId, title: canvasTitle }],
+    });
+    expect(response.ok()).toBeTruthy();
+  };
+  await sendOne('t095-2-a-' + String(Date.now()), '第一条', '结果甲', '画布甲');
+  await waitQueued(request, '结果甲');
+  await sendOne('t095-2-b-' + String(Date.now()), '第二条', '结果乙', '画布乙');
+  await waitQueued(request, '结果乙');
+  await stopTurn(page);
+
+  await expect(input(page)).toHaveValue('第一条' + String.fromCharCode(10) + '第二条', {
+    timeout: 15_000,
+  });
+  await expect(page.locator('[data-kind="result-card-chip"]')).toHaveCount(2, { timeout: 15_000 });
+  await expect(page.locator('[data-kind="result-card-chip"]')).toContainText(['结果甲', '结果乙']);
+  await expect(page.locator('[data-kind="from-canvas"]')).toHaveCount(2, { timeout: 15_000 });
+  await expect(page.locator('[data-kind="from-canvas"]')).toContainText(['画布甲', '画布乙']);
+
+  await page.locator('[aria-label="移除结果卡"]').first().click();
+  await expect(page.locator('[data-kind="result-card-chip"]')).toHaveCount(1);
+  await page.locator('[aria-label="移除来自画布的标记"]').first().click();
+  await expect(page.locator('[data-kind="from-canvas"]')).toHaveCount(1);
+});
+
+test('停止：旧日志没有 mime 的图片附件按扩展名回图片', async ({ page, request }) => {
+  await sendSlowTurn(page);
+  const put = await apiPost(request, fixture, {
+    method: 'attachment-put',
+    name: 'pic.png',
+    data: 'aGVsbG8=',
+  });
+  const putBody = (await put.json()) as { id?: string };
+  expect(putBody.id).toBeTruthy();
+  const response = await apiPost(request, fixture, {
+    method: 'send',
+    requestId: 't095-2-mime-' + String(Date.now()) + '-' + String(Math.random()).slice(2),
+    content: '看这张图',
+    delivery: 'follow-up',
+    // 旧日志的发送：附件不带 mime，放回时按扩展名 .png 兜底成 image/png。
+    attachments: [{ id: putBody.id, name: 'pic.png', bytes: 5 }],
+  });
+  expect(response.ok()).toBeTruthy();
+  await waitQueued(request, 'pic.png');
+  await stopTurn(page);
+
+  await expect(page.locator('[data-kind="file-card"]')).toHaveCount(1, { timeout: 15_000 });
+  await expect(page.locator('[data-kind="file-card"]')).toContainText('image/png');
+});

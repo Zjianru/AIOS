@@ -423,12 +423,14 @@ function FailureBlock({ view, readOnly }: { view: TurnViewData; readOnly: boolea
 function CompactionDivider({ compaction }: { compaction: CompactionView }) {
   const [open, setOpen] = useState(false);
   return (
-    <div className="px-6 py-3" data-kind="compaction">
+    <div className="px-6 py-3" data-kind="compaction" data-manual={compaction.manual}>
       <div className="flex items-center gap-3 text-1 text-ink-3">
         <span className="h-px flex-1 bg-line" />
         <button type="button" onClick={() => setOpen((value) => !value)} className="flex items-center gap-1.5 transition-colors hover:text-ink-2">
           <ChevronRight className={cn('size-3 transition-transform', open && 'rotate-90')} />
-          上下文已压缩 · {compaction.auto ? '快满了，自动' : '你手动'}
+          {compaction.manual
+            ? '已总结 · ' + (compaction.manual === 'from' ? '你选的那句到这里' : '你选的那句之前')
+            : '上下文已压缩 · ' + (compaction.auto ? '快满了，自动' : '你手动')}
           {compaction.before !== undefined && compaction.after !== undefined ? (
             <>
               {' '}· 占用 <span className="brand-type">{compaction.before}%</span> →{' '}

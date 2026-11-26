@@ -29,7 +29,8 @@ import type { TaskReadHeader } from '@/data/generated/TaskReadHeader';
 import type { TurnLabels } from './turnViews';
 import type { TurnViewData } from './turnViews';
 import { applyTaskCardStates } from './taskCardState';
-import { canvasTracks, compactionViewOf, deriveTurnViews, mergeCanvasTracks, prependOlderViews, reconcileTaskCards, taskCcFacts } from './turnViews';
+import { canvasTracks, compactionViewOf, deriveTurnViews, manualSummaryOf, mergeCanvasTracks, placeManualDividers, prependOlderViews, reconcileTaskCards, taskCcFacts } from './turnViews';
+import { rewindSourceOfMessage } from './rewind.ts';
 import { contextPercent, contextTokens } from '@/data/turnUsage';
 import { partialKindReactId, partialKindSayParts } from './kindOutput';
 import { getModelSettings } from '@/data/keyring';
@@ -125,6 +126,14 @@ let liveEvents: ServiceEvent[] = [];
 let contextWindow = 0;
 let pendingCompactionAuto = true;
 let livePendingCompaction: { id: string; window?: number } | null = null;
+
+/** 本票：按日志 seq 取那一条用户消息的原文（恢复时放回输入框用）。 */
+export function rewindSourceOf(seq: number) {
+  const event = liveEvents.find((item) => item.seq === seq && item.type === 'user/message');
+  if (!event) return null;
+  const message = event.data?.message as { content?: unknown } | undefined;
+  return rewindSourceOfMessage(message);
+}
 let liveTurn: number | null = null;
 let liveStream = '';
 /**
@@ -197,7 +206,8 @@ function refreshTurn(turn: number): void {
       views.sort((left, right) => Number(left.id.split('-')[1]) - Number(right.id.split('-')[1]));
     }
     // T038：本轮新到的 relay 卡并回派发卡（派发卡在别的轮里，单轮 derive 看不到它）。
-    const reconciled = finishViews(views);
+    // 本票：刷新/追加后把总结分隔重新插回轮次之间。
+    const reconciled = placeManualDividers(finishViews(views));
     return {
       views: reconciled,
       byId: indexOf(reconciled),
@@ -325,11 +335,13 @@ function applyLiveEvent(event: ServiceEvent): void {
     return;
   }
   if (event.type === 'compaction/summary') {
-    const auto =
-      event.data.sourceCommandId === undefined || event.data.sourceCommandId === null
+    const manual = manualSummaryOf(event.data.sourceCommandId);
+    const auto = manual
+      ? false
+      : event.data.sourceCommandId === undefined || event.data.sourceCommandId === null
         ? pendingCompactionAuto
         : false;
-    const compaction = compactionViewOf(event.data, auto);
+    const compaction = compactionViewOf(event.data, auto, manual);
     const window = useKindStore.getState().modelWindows[String(event.data.model ?? '')];
     compaction.before = contextPercent(contextTokens(event.data.usage), window) ?? undefined;
     const compactionId = String(event.data.compactionId ?? String(event.seq));
@@ -339,6 +351,7 @@ function applyLiveEvent(event: ServiceEvent): void {
         'turn-' + String(dividerTurn ?? state.views.length + 0.5) + '-compaction-' + compactionId;
       const view: TurnViewData = {
         id,
+        seqStart: event.seq,
         startedAt: null,
         durationMs: null,
         status: 'completed',
@@ -363,10 +376,12 @@ function applyLiveEvent(event: ServiceEvent): void {
       };
       livePendingCompaction = { id, window };
       const exists = state.views.some((item) => item.id === id);
-      const views = (exists ? state.views.map((item) => (item.id === id ? view : item)) : state.views.concat(view)).sort(
-        (left, right) => Number(left.id.split('-')[1]) - Number(right.id.split('-')[1]),
-      );
-      return { views, byId: indexOf(views) };
+      const merged = exists
+        ? state.views.map((item) => (item.id === id ? view : item))
+        : state.views.concat(view);
+      // 本票：两种总结的分隔按 targetSeq/seq 插回轮次之间（刷新/翻页同一条规则）。
+      const placed = placeManualDividers(merged);
+      return { views: placed, byId: indexOf(placed), ...decorate(placed) };
     });
     return;
   }
@@ -523,6 +538,24 @@ export const useKindStore = create<KindState>()((set, get) => ({
   composerResultCard: null,
   queueRestores: [],
   restoreMissing: false,
+  dropViewsFromSeq: (startSeq, endSeq) =>
+    set((state) => {
+      // 本票 F1：按 applied.startSeq 过滤已加载的 views（不依赖目标轮是否在首屏）。
+      // 命中第一个「这一轮的用户消息 seq 或首事件 seq >= startSeq」的轮，从它起全部收起。
+      const index = state.views.findIndex((view) => {
+        if (view.compaction) return false;
+        if (view.user?.seq !== undefined && view.user.seq >= startSeq) return true;
+        return view.seqStart !== undefined && view.seqStart >= startSeq;
+      });
+      if (index < 0) return {};
+      const views = state.views.slice(0, index);
+      // 恢复区间里的历史不再参与画布当前版（本票：第 2 版被收起，当前版回到第 1 版）。
+      liveEvents = liveEvents.filter(
+        (event) => event.seq < startSeq || event.seq > endSeq,
+      );
+      const tracks = canvasTracks(liveEvents);
+      return { views, byId: indexOf(views), ...decorate(views), canvasTracks: tracks };
+    }),
   reveal: null,
   revealTurn: (turnId) => set({ reveal: { turnId, at: Date.now() } }),
   revealTaskResult: async (taskId, preferredTurn) => {
@@ -640,8 +673,8 @@ export const useKindStore = create<KindState>()((set, get) => ({
       // 先换上这页日志再折视图：T054.2 F1 的「改要求回执 seq」等派生要读到这一页里的
       // card/decision，否则刷新后旧结果卡的按钮会先按旧规则出来、之后也没人重算。
       liveEvents = page.events.slice();
-      const views = finishViews(
-        mergeCcViews(deriveTurnViews(page.events, turnLabels()), page.events),
+      const views = placeManualDividers(
+        finishViews(mergeCcViews(deriveTurnViews(page.events, turnLabels()), page.events)),
       );
       const lastSeqOfPage = page.events[page.events.length - 1]?.seq ?? 0;
       const oldestSeq = page.events[0]?.seq ?? null;
@@ -695,7 +728,9 @@ export const useKindStore = create<KindState>()((set, get) => ({
       set((current) => {
         // 跨页的同一行（抄送的 spliced 与领取后的 user/message）只留已经在列表里的那条。
         // T038：同一任务的派发卡可能在更早的页里，relay 卡要并回去。
-        const views = finishViews(prependOlderViews(older, current.views));
+        const views = placeManualDividers(
+          finishViews(prependOlderViews(older, current.views)),
+        );
         return {
           views,
           byId: indexOf(views),
@@ -735,13 +770,13 @@ export const useKindStore = create<KindState>()((set, get) => ({
     // F1：没送到的那条也把粘贴和文件带着，重发时原样再发一次。
     const pastes = options?.pastes ?? [];
     const files = options?.attachments ?? [];
-    const canvas = options?.canvas;
-    const resultCard = options?.resultCard;
+    const canvases = options?.canvases ?? [];
+    const resultCards = options?.resultCards ?? [];
     return sendMessage(text, requestId, options).then(
       () => true,
       () => {
-        unsentSends.set(viewId, { requestId, text, pastes, files, canvas, resultCard });
-        addUnsentView(viewId, text, pastes, files, canvas, resultCard);
+        unsentSends.set(viewId, { requestId, text, pastes, files, canvases, resultCards });
+        addUnsentView(viewId, text, pastes, files, canvases, resultCards);
         return false;
       },
     );
@@ -754,8 +789,8 @@ export const useKindStore = create<KindState>()((set, get) => ({
     void sendMessage(pending.text, pending.requestId, {
       pastes: pending.pastes,
       attachments: pending.files,
-      canvas: pending.canvas,
-      resultCard: pending.resultCard,
+      canvases: pending.canvases,
+      resultCards: pending.resultCards,
     })
       .then(() => {
         unsentSends.delete(viewId);

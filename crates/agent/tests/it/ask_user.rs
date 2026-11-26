@@ -440,6 +440,18 @@ async fn typing_while_waiting_answers_the_batch_and_continues() {
     );
 
     let events = logged_events(data_dir.path(), &id);
+    let result_meta = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            session::EventKind::ToolResult { meta, .. } => Some(meta.clone()),
+            _ => None,
+        })
+        .expect("直接回复要落一条 tool/result");
+    assert_eq!(
+        result_meta,
+        Some(serde_json::json!({ "ask_direct_reply": true })),
+        "直接回复的结构化标记在 tool/result.meta（本票/N3）"
+    );
     assert_eq!(
         events
             .iter()

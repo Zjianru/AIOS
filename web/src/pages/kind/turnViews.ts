@@ -68,8 +68,100 @@ export function summaryTextOf(data: Record<string, unknown>): string {
     .join('');
 }
 
-export function compactionViewOf(data: Record<string, unknown>, auto: boolean): CompactionView {
-  return { auto, summary: summaryTextOf(data) };
+export interface ManualSummaryMark {
+  manual: 'from' | 'upTo';
+  /** 总结到这里为止选中的那句 seq（旧日志没有就是 undefined）。 */
+  targetSeq?: number;
+}
+
+export function compactionViewOf(
+  data: Record<string, unknown>,
+  auto: boolean,
+  manual?: ManualSummaryMark,
+): CompactionView {
+  return {
+    auto,
+    ...(manual ? { manual: manual.manual } : {}),
+    ...(manual?.targetSeq !== undefined ? { targetSeq: manual.targetSeq } : {}),
+    summary: summaryTextOf(data),
+  };
+}
+
+/** 本票/.6：两种总结的 sourceCommandId 标记（agent rewind_summarize_* 写入，
+ * 形如 rewind:from:<seq> / rewind:up-to:<seq>；旧标记没有 seq 也认）。 */
+export function manualSummaryOf(sourceCommandId: unknown): ManualSummaryMark | undefined {
+  if (typeof sourceCommandId !== 'string') return undefined;
+  const match = /^rewind:(from|up-to)(?::(\d+))?$/.exec(sourceCommandId);
+  if (!match) return undefined;
+  const parsed = match[2] === undefined ? undefined : Number(match[2]);
+  return {
+    manual: match[1] === 'from' ? 'from' : 'upTo',
+    ...(parsed !== undefined && Number.isFinite(parsed) ? { targetSeq: parsed } : {}),
+  };
+}
+
+/** 总结分隔的伪一轮（不属于任何 turn；本票：刷新/翻页后也能重建）。 */
+function dividerViewOf(
+  id: string,
+  compaction: CompactionView,
+  seqStart?: number,
+): TurnViewData {
+  return {
+    id,
+    ...(seqStart !== undefined ? { seqStart } : {}),
+    startedAt: null,
+    durationMs: null,
+    status: 'completed',
+    user: null,
+    taskResults: [],
+    says: [],
+    reasoning: null,
+    tools: [],
+    answer: null,
+    thinkingSeconds: 0,
+    tokens: { input: 0, output: 0 },
+    model: '模型服务',
+    cost: null,
+    retry: null,
+    failure: null,
+    question: null,
+    compaction,
+    canvas: null,
+    card: null,
+    delivery: null,
+    stoppedAt: null,
+  };
+}
+
+/** 把一条总结分隔插回它在轮次之间的位置：到这里为止插在选中那句前，其余按事件 seq。 */
+function insertDivider(views: TurnViewData[], divider: TurnViewData): void {
+  const target = divider.compaction?.targetSeq;
+  if (divider.compaction?.manual === 'upTo' && target !== undefined) {
+    const index = views.findIndex((view) => view.user?.seq === target);
+    if (index >= 0) {
+      views.splice(index, 0, divider);
+      return;
+    }
+  }
+  if (divider.seqStart !== undefined) {
+    const index = views.findIndex(
+      (view) => typeof view.seqStart === 'number' && view.seqStart > divider.seqStart!,
+    );
+    if (index >= 0) {
+      views.splice(index, 0, divider);
+      return;
+    }
+  }
+  views.push(divider);
+}
+
+/** 本票：刷新/翻页/实时追加后，把总结分隔按 targetSeq/seq 重新放回轮次之间。 */
+export function placeManualDividers(views: TurnViewData[]): TurnViewData[] {
+  const dividers = views.filter((view) => view.compaction?.manual);
+  if (dividers.length === 0) return views;
+  const others = views.filter((view) => !view.compaction?.manual);
+  for (const divider of dividers) insertDivider(others, divider);
+  return others;
 }
 
 export function deriveTurnViews(
@@ -78,6 +170,8 @@ export function deriveTurnViews(
 ): TurnViewData[] {
   interface Raw {
     turn: number;
+    /** 这一轮第一条日志事件的 seq（放总结分隔时定位）。 */
+    seqStart?: number;
     startedAt: number | null;
     endedAt: number | null;
     user: TurnUserView | null;
@@ -164,11 +258,15 @@ export function deriveTurnViews(
   }
   // T010.4：每次压缩摘要等「压缩后第一条响应」来算 after。
   const pendingCompaction = new Map<number, { view: CompactionView; window?: number }>();
+  /** 本票：没有 turn 的 compaction/summary（手动压缩、两种总结）先收起来，等轮建完再插。 */
+  const orphanDividers: { seq: number; view: CompactionView }[] = [];
+  let currentSeq = 0;
   const ensure = (turn: number): Raw => {
     let raw = turns.get(turn);
     if (!raw) {
       raw = {
         turn,
+        seqStart: currentSeq,
         startedAt: null,
         endedAt: null,
         user: null,
@@ -381,6 +479,7 @@ export function deriveTurnViews(
   // 页面看日志事实，只认第一次出现，免得旧轮状态被替换事件重置；旧版调用参数仍按原文显示。
   const seenAssistantMessages = new Set<string>();
   for (const event of events) {
+    currentSeq = event.seq;
     const data = event.data ?? {};
     if (event.type === 'assistant/message') {
       const id = (data.message as { id?: unknown } | undefined)?.id;
@@ -390,7 +489,18 @@ export function deriveTurnViews(
       }
     }
     const turn = typeof data.turn === 'number' ? data.turn : null;
-    if (turn === null) continue;
+    if (turn === null) {
+      // 本票：没有 turn 的 compaction/summary（手动压缩、两种总结）也要出分隔；
+      // 先收起来，等轮次建完按 seq/targetSeq 插回原位。
+      if (event.type === 'compaction/summary') {
+        const manual = manualSummaryOf(data.sourceCommandId);
+        const auto = manual
+          ? false
+          : data.sourceCommandId === undefined || data.sourceCommandId === null;
+        orphanDividers.push({ seq: event.seq, view: compactionViewOf(data, auto, manual) });
+      }
+      continue;
+    }
     switch (event.type) {
       case 'turn/start': {
         const raw = ensure(turn);
@@ -453,7 +563,10 @@ export function deriveTurnViews(
           typeof source?.source === 'string' ? source.source : source?.source?.kind;
         if (kind !== undefined && kind !== 'user' && kind !== 'skill-invocation') break;
         const view = userOf(data.message, userRpcIdOf(data.message));
-        if (view) ensure(turn).user = view;
+        if (view) {
+          view.seq = event.seq;
+          ensure(turn).user = view;
+        }
         break;
       }
       case 'assistant/message': {
@@ -534,21 +647,33 @@ export function deriveTurnViews(
         // T013.5：按 call id 配对（不再用「最后一条 running」猜），并留下 meta。
         const message = (data.message ?? {}) as Record<string, unknown>;
         const callId = String(message.toolCallId ?? message.tool_call_id ?? '');
-        // 问题卡等回答时用户直接发送 → 工具结果是「用户没有选，直接说了：…」。
-        // 卡状态由 question/cancelled 派生为 dismissed；这里按同批工具结果把它改成 replied，
-        // 回执写「你直接回复了」，和 ASK_ABORTED 的「不答」区分。
+        // 问题卡等回答时用户直接发送：agent 在工具结果 meta 写结构化标记（本票/N3），
+        // 页面只从 meta 派生 replied，不再匹配工具结果正文（文案改了回执也不丢）。
+        const resultMeta = data.meta as { ask_direct_reply?: unknown } | undefined;
         if (
           callId &&
           raw.question &&
           (raw.question.status === 'dismissed' || raw.question.status === 'pending') &&
-          raw.question.batchId === callId &&
-          (textOfToolResult(data.message) || textOf(data.message)).startsWith('用户没有选，直接说了：')
+          raw.question.batchId === callId
         ) {
-          raw.question = {
-            status: 'replied',
-            batchId: raw.question.batchId,
-            questions: raw.question.questions,
-          };
+          if (resultMeta?.ask_direct_reply === true) {
+            raw.question = {
+              status: 'replied',
+              batchId: raw.question.batchId,
+              questions: raw.question.questions,
+            };
+          } else if (resultMeta === undefined) {
+            // 本票：旧日志没有 meta——不判答没答；收成一行显示工具结果原文，不回填日志。
+            const text = (textOfToolResult(data.message) || textOf(data.message)).trim();
+            if (text) {
+              raw.question = {
+                status: 'legacy-reply',
+                batchId: raw.question.batchId,
+                questions: raw.question.questions,
+                text,
+              };
+            }
+          }
         }
         const step = callId ? raw.tools.find((item) => item.id === callId) : undefined;
         if (step) {
@@ -714,9 +839,11 @@ export function deriveTurnViews(
       }
       case 'compaction/summary': {
         const raw = ensure(turn);
-        const auto =
-          data.sourceCommandId === undefined || data.sourceCommandId === null;
-        const view = compactionViewOf(data, auto);
+        const manual = manualSummaryOf(data.sourceCommandId);
+        const auto = manual
+          ? false
+          : data.sourceCommandId === undefined || data.sourceCommandId === null;
+        const view = compactionViewOf(data, auto, manual);
         const window = labels.modelWindows?.[String(data.model ?? '')];
         view.before = contextPercent(contextTokens(data.usage), window) ?? undefined;
         raw.compaction = view;
@@ -795,6 +922,10 @@ export function deriveTurnViews(
       delivery: null,
       stoppedAt: raw.stoppedAt,
     }));
+  for (const item of orphanDividers) {
+    const id = 'turn-' + String(item.seq + 0.5) + '-compaction-' + String(item.seq);
+    insertDivider(views, dividerViewOf(id, item.view, item.seq));
+  }
   const memoCards: MemoCardInfo[] = events
     .filter((event) => event.type === 'memory/card')
     .map((event) => {

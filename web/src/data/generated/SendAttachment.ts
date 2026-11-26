@@ -3,4 +3,8 @@
 /**
  * 发送消息时引用的一个附件（服务端解析成只读副本路径）。
  */
-export type SendAttachment = { id: string, name: string, bytes: number, };
+export type SendAttachment = { id: string, name: string, bytes: number,
+/**
+ * 本票：附件原类型（旧页面/旧日志没有；按扩展名兜底）。
+ */
+mime?: string | null, };

@@ -23,4 +23,12 @@ canvas?: SendCanvas | null,
 /**
  * T054.2：结果卡「要求修改」带进输入框的那张卡（页面从日志块画成卡，模型看一行文字）。
  */
-resultCard?: SendResultCard | null, };
+resultCard?: SendResultCard | null,
+/**
+ * 本票（N2）：一次放回多条结果卡时按顺序排列（旧字段 resultCard 保留兼容）。
+ */
+resultCards?: Array<SendResultCard>,
+/**
+ * 本票（N2）：一次放回多个画布标记时按顺序排列（旧字段 canvas 保留兼容）。
+ */
+canvases?: Array<SendCanvas>, };

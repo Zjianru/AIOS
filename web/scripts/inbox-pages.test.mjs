@@ -37,9 +37,18 @@ const loaded = await loadProjection(firstPage, async (beforeSeq) => {
 });
 assert.deepEqual(fetched, [20], '用首屏最老 seq 当 beforeSeq 往前读');
 assert.equal(loaded.missing, 0, '补上更早页后对得上');
-assert.equal(loaded.restores.length, 1, '一条取消对应一次放回');
+assert.equal(loaded.restores.length, 2, 'N2：被清的两条消息逐条放回');
 assert.equal(loaded.restores[0].seq, 20, '放回的 seq 是取消那条 splice');
-assert.equal(loaded.restores[0].text, '甲' + String.fromCharCode(10) + '乙', '两条原文按顺序接起来');
+assert.deepEqual(
+  loaded.restores.map((restore) => restore.text),
+  ['甲', '乙'],
+  '两条原文各自一条放回，不合并',
+);
+assert.deepEqual(
+  loaded.restores.map((restore) => restore.key),
+  ['20-0', '20-1'],
+  '逐条放回的身份是 seq+index',
+);
 assert.equal(loaded.projection.nextTurn.length, 0, '取消后队列为空');
 
 // 读到日志开头还对不上：missing 保留、仍不放回（页面据此写「有一句排队的话没找回来」）。
@@ -55,4 +64,53 @@ const olderCancel = {
 };
 const scoped = foldProjectionPages([olderCancel.events, [cancel(40, 0)]], 40);
 assert.equal(scoped.restores.length, 0, '更早页的取消不重放');
+
+// 本票 F1①②：旧日志没有 mime 时按扩展名兜底；结果卡/画布逐条放回且顺序不变。
+const richMessage = (id, blocks) => ({
+  id,
+  role: 'user',
+  content: blocks,
+  source: { kind: 'user', rpcId: 'uuid-' + id },
+});
+const rich = foldProjectionPages(
+  [
+    [
+      insert(50, [
+        richMessage('m1', [
+          { type: 'text', text: '第一条' },
+          { type: 'file', attachmentId: 'att-1', name: 'pic.png', bytes: 5 },
+        ]),
+        richMessage('m2', [
+          { type: 'text', text: '第二条' },
+          { type: 'result-card', taskId: 'task-a', title: '结果甲', version: 1 },
+          { type: 'result-card', taskId: 'task-b', title: '结果乙', version: 2 },
+          { type: 'text', text: '（来自画布「画布甲」）', canvas: { id: 'cv-a', title: '画布甲' } },
+          { type: 'text', text: '（来自画布「画布乙」）', canvas: { id: 'cv-b', title: '画布乙' } },
+        ]),
+      ]),
+      cancel(60, 2),
+    ],
+  ],
+  60,
+);
+assert.equal(rich.restores.length, 2, '两条消息逐条放回');
+assert.equal(rich.restores[0].text, '第一条');
+assert.equal(rich.restores[0].attachments.length, 1);
+assert.equal(rich.restores[0].attachments[0].mime, 'image/png', '旧日志 file 块没有 mime：按 .png 兜底成图片');
+assert.equal(rich.restores[1].text, '第二条');
+assert.deepEqual(
+  rich.restores[1].resultCards.map((card) => card.title),
+  ['结果甲', '结果乙'],
+  '结果卡按日志顺序',
+);
+assert.deepEqual(
+  rich.restores[1].canvases.map((canvas) => canvas.title),
+  ['画布甲', '画布乙'],
+  '画布标记按日志顺序',
+);
+const unknownType = foldProjectionPages(
+  [[insert(70, [richMessage('m3', [{ type: 'file', attachmentId: 'att-2', name: 'noext', bytes: 3 }])]), cancel(80, 1)]],
+  80,
+);
+assert.equal(unknownType.restores[0].attachments[0].mime, null, '认不出扩展名才留 null（Composer 退 text/plain）');
 console.log('inbox-pages ok');

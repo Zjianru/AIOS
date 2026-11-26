@@ -200,6 +200,7 @@ pub(super) fn request_body(
                                 name,
                                 bytes,
                                 path,
+                                ..
                             } if message.role == Role::User => Some(WireBlock::Text {
                                 text: file_handle_text(
                                     attachment_id,
@@ -831,6 +832,7 @@ mod file_block_serialize_tests {
                     name: "notes.txt".to_owned(),
                     bytes: 12,
                     path: Some("/tmp/data/attachments/v1/files/ab/x/notes.txt".to_owned()),
+                    mime: None,
                 },
             ],
             "req-1",

@@ -2232,6 +2232,7 @@ impl TaskRuntime {
                 name: attachment.name.clone(),
                 bytes: attachment.bytes,
                 path: Some(stored.path.to_string_lossy().into_owned()),
+                mime: None,
             });
         }
         Ok(UserMessage::new(blocks))

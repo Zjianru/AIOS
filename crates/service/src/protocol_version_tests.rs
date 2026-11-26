@@ -1,10 +1,10 @@
 use super::*;
 
 #[test]
-fn protocol_version_is_30() {
+fn protocol_version_is_31() {
     assert_eq!(
-        PROTOCOL_VERSION, 30,
-        "新增 confirm_write_scope 动作所需协议，升到 30"
+        PROTOCOL_VERSION, 31,
+        "本票：放回字段（mime/resultCards/canvases）与回退请求，升到 31"
     );
 }
 

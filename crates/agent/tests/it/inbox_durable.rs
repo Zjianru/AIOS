@@ -8,7 +8,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::common::{
-    FINAL_TEXT_SSE, SequenceResponder, isolated_config, model_config, sse, wait_idle,
+    FINAL_TEXT_SSE, PARTIAL_TEXT_SSE, ScriptedSseServer, SequenceResponder, SseScript,
+    isolated_config, model_config, sse, wait_idle,
 };
 use agent::{Agent, AgentError, AgentEvent, Delivery, Deps};
 use model::{DeepSeek, Message, Role, UserMessage};
@@ -671,5 +672,115 @@ async fn cancel_clears_next_turn_input_durably() {
             "排队的一句"
         ),
         0
+    );
+}
+
+#[tokio::test]
+async fn cancel_then_restart_delivers_program_message_exactly_once() {
+    let mut server = ScriptedSseServer::start(vec![
+        SseScript {
+            frames: PARTIAL_TEXT_SSE.to_owned(),
+            hold: true,
+        },
+        SseScript {
+            frames: FINAL_TEXT_SSE.to_owned(),
+            hold: false,
+        },
+        SseScript {
+            frames: FINAL_TEXT_SSE.to_owned(),
+            hold: false,
+        },
+        SseScript {
+            frames: FINAL_TEXT_SSE.to_owned(),
+            hold: false,
+        },
+    ]);
+    let data_dir = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let (agent, id) = create_agent(data_dir.path(), cwd.path(), &server.base_url()).await;
+    agent
+        .send(UserMessage::text("开始"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    server.wait_ready().await;
+    agent
+        .send(UserMessage::text("用户排队"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    agent
+        .send(
+            UserMessage::text_with_request_id("任务报回了", "task-report:t:r"),
+            Delivery::FollowUp,
+        )
+        .await
+        .unwrap();
+    agent.cancel().await.unwrap();
+    wait_idle(&agent, 3).await;
+    drop(agent);
+
+    let resumed = resume_agent(data_dir.path(), &id, &server.base_url())
+        .await
+        .expect("取消后能 resume");
+    resumed
+        .send(UserMessage::text("恢复后新话"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    server.release();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(10), resumed.idle())
+            .await
+            .is_ok(),
+        "resume 后 idle() 必须返回"
+    );
+
+    let bodies = server.request_bodies();
+    assert_eq!(
+        bodies.len(),
+        3,
+        "aborted 后程序消息一轮 + 新话一轮，共三次请求"
+    );
+    let program: Value = serde_json::from_slice(&bodies[1]).unwrap();
+    assert_eq!(
+        request_user_texts(&program).last().map(String::as_str),
+        Some("任务报回了")
+    );
+    let after: Value = serde_json::from_slice(&bodies[2]).unwrap();
+    assert_eq!(
+        request_user_texts(&after).last().map(String::as_str),
+        Some("恢复后新话")
+    );
+    for body in &bodies {
+        let body: Value = serde_json::from_slice(body).unwrap();
+        assert!(
+            !request_user_texts(&body)
+                .iter()
+                .any(|text| text == "用户排队"),
+            "被取消的用户排队话不能再出现"
+        );
+    }
+
+    // 再下一轮：程序消息不再重复。
+    resumed
+        .send(UserMessage::text("再下一句"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    resumed.idle().await;
+    let bodies = server.request_bodies();
+    let last: Value = serde_json::from_slice(bodies.last().unwrap()).unwrap();
+    assert_eq!(
+        request_user_texts(&last).last().map(String::as_str),
+        Some("再下一句")
+    );
+    let snapshot = read_snapshot(data_dir.path(), &id);
+    let texts = logged_user_texts(&snapshot);
+    assert_eq!(
+        count_text(&texts, "任务报回了"),
+        1,
+        "程序消息恰好投递一次：{texts:?}"
+    );
+    assert_eq!(
+        count_text(&texts, "用户排队"),
+        0,
+        "被取消的用户排队话不进日志：{texts:?}"
     );
 }

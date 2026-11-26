@@ -39,12 +39,18 @@ export type QuestionView =
   | { status: 'dismissed'; batchId: string; questions: AskQuestion[] }
   /** 问题卡等回答时用户直接发送，卡收成「你直接回复了」。 */
   | { status: 'replied'; batchId: string; questions: AskQuestion[] }
+  /** 旧日志没有 meta：不判答没答，只把工具结果原文收成一行（本票）。 */
+  | { status: 'legacy-reply'; batchId: string; questions: AskQuestion[]; text: string }
   | { status: 'void'; batchId: string; questions: AskQuestion[] };
 
 
 /** 压缩：在对话里是一条分隔线，不是一轮。 */
 export interface CompactionView {
   auto: boolean;
+  /** 本票：两种总结的分隔（从这里起 / 到这里为止）；普通压缩没有。 */
+  manual?: 'from' | 'upTo';
+  /** 本票：总结到这里为止选中的那句 seq（刷新/翻页后按它把分隔放回原位）。 */
+  targetSeq?: number;
  /** ：压缩前占窗口的百分比（窗口/前后任一拿不到就不显示）。 */
   before?: number;
  /** ：压缩后第一条响应占窗口的百分比。 */
@@ -70,6 +76,8 @@ export interface TurnUserView {
   resultCard: { taskId: string; title: string; version: number } | null;
  /** 服务端给这条消息的 rpcId（续改说明靠它认，不靠正文）。 */
   rpcId: string | null;
+  /** 本票：日志里这条 user/message 的 seq（回退菜单用它定位原文）。 */
+  seq?: number;
 }
 
 
@@ -109,6 +117,8 @@ export interface MemoCardInfo {
 
 
 export interface TurnViewData {
+  /** 这一轮第一条日志事件的 seq（仅派生用；放总结分隔时定位）。 */
+  seqStart?: number;
   id: string;
   startedAt: number | null;
   durationMs: number | null;

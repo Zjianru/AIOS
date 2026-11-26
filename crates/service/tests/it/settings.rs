@@ -1489,6 +1489,8 @@ async fn 空闲时跨连接切换重建根agent并走新连接() {
         attachments: Vec::new(),
         canvas: None,
         result_card: None,
+        result_cards: Vec::new(),
+        canvases: Vec::new(),
     }))
     .await
     .expect("send A");
@@ -1545,6 +1547,8 @@ async fn 空闲时跨连接切换重建根agent并走新连接() {
         attachments: Vec::new(),
         canvas: None,
         result_card: None,
+        result_cards: Vec::new(),
+        canvases: Vec::new(),
     }))
     .await
     .expect("send B");
@@ -1638,6 +1642,8 @@ async fn 同连接换模型窗口跟新模型() {
         attachments: Vec::new(),
         canvas: None,
         result_card: None,
+        result_cards: Vec::new(),
+        canvases: Vec::new(),
     }))
     .await
     .expect("send 第一轮");
@@ -1670,6 +1676,8 @@ async fn 同连接换模型窗口跟新模型() {
         attachments: Vec::new(),
         canvas: None,
         result_card: None,
+        result_cards: Vec::new(),
+        canvases: Vec::new(),
     }))
     .await
     .expect("send 第二轮");
@@ -1814,6 +1822,8 @@ async fn 重开后续轮按新窗口先压缩() {
         attachments: Vec::new(),
         canvas: None,
         result_card: None,
+        result_cards: Vec::new(),
+        canvases: Vec::new(),
     }))
     .await
     .expect("send 长历史");
@@ -1843,6 +1853,8 @@ async fn 重开后续轮按新窗口先压缩() {
             attachments: Vec::new(),
             canvas: None,
             result_card: None,
+            result_cards: Vec::new(),
+            canvases: Vec::new(),
         }))
         .await
         .expect("send 重开后那一轮");
@@ -2429,6 +2441,8 @@ async fn assistant_message_provider(connection_id: &str, preset: &str, model_id:
         attachments: Vec::new(),
         canvas: None,
         result_card: None,
+        result_cards: Vec::new(),
+        canvases: Vec::new(),
     }))
     .await
     .expect("send");

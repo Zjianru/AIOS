@@ -279,6 +279,7 @@ async fn a_task_say_attachment_is_validated_and_lands_in_the_thin_request() {
         id: "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_owned(),
         name: "missing.txt".to_owned(),
         bytes: 1,
+        mime: None,
     };
     let error = fixture
         .host
@@ -323,6 +324,7 @@ async fn a_task_say_attachment_is_validated_and_lands_in_the_thin_request() {
                 id: attachment_id.clone(),
                 name: "notes.txt".to_owned(),
                 bytes,
+                mime: None,
             }],
         }))
         .await
@@ -375,6 +377,7 @@ async fn a_task_say_attachment_is_validated_and_lands_in_the_thin_request() {
                 name,
                 bytes,
                 path,
+                ..
             } => Some((attachment_id.clone(), name.clone(), *bytes, path.clone())),
             _ => None,
         })

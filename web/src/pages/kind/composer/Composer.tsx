@@ -18,6 +18,9 @@ import { toast } from 'sonner';
 import { useKindStore } from '../kindStore';
 import { fileMentions } from '../atGrammar';
 import type { QueueRestore } from '../inbox';
+import { mimeFromFileName } from '../fileMime.ts';
+import { canRecallCleared } from '../rewind.ts';
+import type { RewindSource } from '../rewind.ts';
 import { attachmentGet, attachmentPut, fileReferences } from '@/data/service';
 import type { FileReferenceEntry, SendAttachmentRef } from '@/data/service';
 import { cn } from '@/lib/utils';
@@ -41,6 +44,9 @@ export interface ComposerSendOptions {
   canvas?: { id: string; title: string };
   /** T054.2：结果卡「要求修改」带进来的那张卡。 */
   resultCard?: { taskId: string; title: string; version: number };
+  /** 本票（N2）：一次放回多条时按顺序的列表（单个时仍给 canvas/resultCard 兼容）。 */
+  canvases?: { id: string; title: string }[];
+  resultCards?: { taskId: string; title: string; version: number }[];
 }
 
 export interface ComposerHandle {
@@ -49,6 +55,25 @@ export interface ComposerHandle {
   focus: () => void;
   /** T015.4：画布里的按钮把一句话放进输入框（接在已经写的后面，不发送）。 */
   putFromCanvas: (text: string, canvas: { id: string; title: string }) => void;
+  /** 本票：输入框里有没有东西（两下 Esc 决定清空还是开菜单）。 */
+  hasDraftContent: () => boolean;
+  /** 本票：两下 Esc 清空：草稿压进 cleared，↑ 能取回。 */
+  clearToHistory: () => void;
+  /** 本票：↑ 取回最近清掉的一条。 */
+  recallCleared: () => boolean;
+  /** 本票：恢复对话时把原文（字/粘贴/附件/结果卡/画布标记）放回输入框。 */
+  putBack: (source: RewindSource) => void;
+}
+
+interface ClearedDraft {
+  text: string;
+  quotes: string[];
+  pastes: string[];
+  attachments: { id: string; name: string; bytes: number; mime: string }[];
+  fromCanvas: { id: string; title: string } | null;
+  resultCard: { taskId: string; title: string; version: number } | null;
+  extraCanvases: { id: string; title: string }[];
+  extraResultCards: { taskId: string; title: string; version: number }[];
 }
 
 interface ComposerProps {
@@ -131,6 +156,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   /** T015.4：这句话是画布放进来的（发出去时带标记，气泡上留着）。 */
   const [fromCanvas, setFromCanvas] = useState<{ id: string; title: string } | null>(null);
+  // 本票（N2）：一次放回多条画布标记/结果卡；第一条走上面的单值状态（兼容旧 UI），其余放这里。
+  const [extraCanvases, setExtraCanvases] = useState<{ id: string; title: string }[]>([]);
+  const [extraResultCards, setExtraResultCards] = useState<
+    { taskId: string; title: string; version: number }[]
+  >([]);
+  // 本票：两下 Esc 清掉的草稿，↑ 取最近一条；跟草稿一起存 localStorage。
+  const [cleared, setCleared] = useState<ClearedDraft[]>([]);
   /** T054.2：结果卡「要求修改」放进输入框的那张卡（一次一张，再点别的卡就换掉）。 */
   const [resultCard, setResultCard] = useState<{
     taskId: string;
@@ -156,7 +188,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const touchedRef = useRef(false);
   const changedDuringSendRef = useRef(false);
   /** 已经放回过的 canceled splice seq；跟草稿一起存，刷新不再重复放回。 */
-  const restoredSplicesRef = useRef<number[]>([]);
+  // 每条放回用 seq+index 唯一标识（N2 逐条放回；同一 splice 可能有多条消息）。
+  const restoredKeysRef = useRef<string[]>([]);
 
   const canSend = text.trim().length > 0 || quotes.length > 0 || pastes.length > 0 || attachments.length > 0;
 
@@ -292,12 +325,40 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         attachments?: unknown;
         canvas?: unknown;
         resultCard?: unknown;
-        restoredSplices?: unknown;
+        canvases?: unknown;
+        resultCards?: unknown;
+        restoredKeys?: unknown;
+        cleared?: unknown;
       };
       if (typeof draft.text === 'string') setText(draft.text);
       const fromCanvas = draft.canvas as { id?: unknown; title?: unknown } | null | undefined;
       if (fromCanvas && typeof fromCanvas.id === 'string' && typeof fromCanvas.title === 'string') {
         setFromCanvas({ id: fromCanvas.id, title: fromCanvas.title });
+      }
+      if (Array.isArray(draft.canvases)) {
+        const canvases = (draft.canvases as unknown[]).filter(
+          (item): item is { id: string; title: string } =>
+            Boolean(item) &&
+            typeof (item as { id?: unknown }).id === 'string' &&
+            typeof (item as { title?: unknown }).title === 'string',
+        );
+        if (canvases.length > 0) {
+          setFromCanvas(canvases[0] ?? null);
+          setExtraCanvases(canvases.slice(1));
+        }
+      }
+      if (Array.isArray(draft.resultCards)) {
+        const cards = (draft.resultCards as unknown[]).filter(
+          (item): item is { taskId: string; title: string; version: number } =>
+            Boolean(item) &&
+            typeof (item as { taskId?: unknown }).taskId === 'string' &&
+            typeof (item as { title?: unknown }).title === 'string' &&
+            typeof (item as { version?: unknown }).version === 'number',
+        );
+        if (cards.length > 0) {
+          setResultCard(cards[0] ?? null);
+          setExtraResultCards(cards.slice(1));
+        }
       }
       if (Array.isArray(draft.quotes)) {
         setQuotes(draft.quotes.filter((item): item is string => typeof item === 'string'));
@@ -327,12 +388,23 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               typeof (item as { bytes?: unknown }).bytes === 'number'
             );
           })
-          .map((item) => ({ ...item, mime: item.mime ?? 'text/plain' }));
+          .map((item) => ({ ...item, mime: item.mime ?? mimeFromFileName(item.name) ?? 'text/plain' }));
         setAttachments(files);
       }
-      if (Array.isArray(draft.restoredSplices)) {
-        restoredSplicesRef.current = draft.restoredSplices.filter(
-          (item): item is number => typeof item === 'number',
+      if (Array.isArray(draft.restoredKeys)) {
+        restoredKeysRef.current = draft.restoredKeys.filter(
+          (item): item is string => typeof item === 'string',
+        );
+      }
+      if (Array.isArray(draft.cleared)) {
+        setCleared(
+          draft.cleared.filter(
+            (item): item is ClearedDraft =>
+              Boolean(item) &&
+              typeof item === 'object' &&
+              typeof (item as { text?: unknown }).text === 'string' &&
+              Array.isArray((item as { pastes?: unknown }).pastes),
+          ),
         );
       }
     } catch {
@@ -350,14 +422,17 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       attachments: attachments.map(({ id, name, bytes, mime }) => ({ id, name, bytes, mime })),
       canvas: fromCanvas,
       resultCard,
-      restoredSplices: restoredSplicesRef.current,
+      canvases: [...(fromCanvas ? [fromCanvas] : []), ...extraCanvases],
+      resultCards: [...(resultCard ? [resultCard] : []), ...extraResultCards],
+      restoredKeys: restoredKeysRef.current,
+      cleared,
     };
     try {
       localStorage.setItem('aios.kind.draft.' + draftScope, JSON.stringify(draft));
     } catch {
       // 存不下（隐私模式）就算了。
     }
-  }, [attachments, draftScope, fromCanvas, pastes, quotes, resultCard, text]);
+  }, [attachments, cleared, draftScope, extraCanvases, extraResultCards, fromCanvas, pastes, quotes, resultCard, text]);
 
   // 停止时内核照 DSH clear 清掉排队消息；把 canceled splice 里被删的、
   // 页面从日志折叠回来的用户消息放回输入框。每条 seq 最多放回一次：放回过的 seq 跟草稿
@@ -365,11 +440,11 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   useEffect(() => {
     if (!draftScope || draftLoadedRef.current !== draftScope) return;
     const pending = queueRestores
-      .filter((restore) => !restoredSplicesRef.current.includes(restore.seq))
+      .filter((restore) => !restoredKeysRef.current.includes(restore.key))
       .sort((left, right) => left.seq - right.seq);
     if (pending.length === 0) return;
-    restoredSplicesRef.current = restoredSplicesRef.current.concat(
-      pending.map((restore) => restore.seq),
+    restoredKeysRef.current = restoredKeysRef.current.concat(
+      pending.map((restore) => restore.key),
     );
     const restoredText = pending
       .map((restore) => restore.text)
@@ -377,14 +452,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       .join(String.fromCharCode(10));
     const pastes = pending.flatMap((restore) => restore.pastes);
     const attachments = pending.flatMap((restore) => restore.attachments);
-    const card = pending.reduce<QueueRestore['resultCard']>(
-      (found, restore) => restore.resultCard ?? found,
-      undefined,
-    );
-    const canvas = pending.reduce<QueueRestore['canvas']>(
-      (found, restore) => restore.canvas ?? found,
-      undefined,
-    );
+    const resultCards = pending.flatMap((restore) => restore.resultCards);
+    const canvases = pending.flatMap((restore) => restore.canvases);
     touchedRef.current = true;
     changedDuringSendRef.current = true;
     if (restoredText) {
@@ -397,11 +466,22 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     if (pastes.length > 0) setPastes((previous) => previous.concat(pastes));
     if (attachments.length > 0) {
       setAttachments((previous) =>
-        previous.concat(attachments.map((item) => ({ ...item, mime: 'text/plain' }))),
+        previous.concat(
+          attachments.map((item) => ({
+            ...item,
+            mime: item.mime ?? mimeFromFileName(item.name) ?? 'text/plain',
+          })),
+        ),
       );
     }
-    if (card) setResultCard(card);
-    if (canvas) setFromCanvas(canvas);
+    if (resultCards.length > 0) {
+      setResultCard(resultCards[0] ?? null);
+      setExtraResultCards((previous) => previous.concat(resultCards.slice(1)));
+    }
+    if (canvases.length > 0) {
+      setFromCanvas(canvases[0] ?? null);
+      setExtraCanvases((previous) => previous.concat(canvases.slice(1)));
+    }
     requestAnimationFrame(() => {
       resize();
       inputRef.current?.focus();
@@ -493,7 +573,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       .join(String.fromCharCode(10));
     if (!value && pastes.length === 0 && attachments.length === 0) return;
     // T013.8：发送时先清空（马上能继续打），受理失败再把内容放回来（草稿不清）。
-    const snapshot = { text, quotes, pastes, attachments, quote, fromCanvas, resultCard };
+    const snapshot = { text, quotes, pastes, attachments, quote, fromCanvas, resultCard, extraCanvases, extraResultCards };
     changedDuringSendRef.current = false;
     setText('');
     setQuotes([]);
@@ -504,15 +584,17 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     setPageQuote(null);
     setFromCanvas(null);
     setResultCard(null);
+    setExtraCanvases([]);
+    setExtraResultCards([]);
     requestAnimationFrame(() => {
       resize();
       inputRef.current?.focus();
     });
     const accepted = await onSend(value, {
       pastes,
-      attachments: attachments.map(({ id, name, bytes }) => ({ id, name, bytes })),
-      ...(fromCanvas ? { canvas: fromCanvas } : {}),
-      ...(resultCard ? { resultCard } : {}),
+      attachments: attachments.map(({ id, name, bytes, mime }) => ({ id, name, bytes, mime: mime ?? null })),
+      canvases: [...(fromCanvas ? [fromCanvas] : []), ...extraCanvases],
+      resultCards: [...(resultCard ? [resultCard] : []), ...extraResultCards],
     });
     if (!accepted) {
       // 失败进 unsent：内容放回输入框（草稿也没动）；失败等待期间用户又输入了就不覆盖新的。
@@ -524,6 +606,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       setQuote(snapshot.quote);
       setFromCanvas(snapshot.fromCanvas);
       setResultCard(snapshot.resultCard);
+      setExtraCanvases(snapshot.extraCanvases);
+      setExtraResultCards(snapshot.extraResultCards);
       return;
     }
     try {
@@ -531,7 +615,130 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     } catch {
       // 忽略。
     }
-  }, [attachments, draftScope, fromCanvas, offline, onSend, pastes, quote, quotes, resize, resultCard, text]);
+  }, [attachments, draftScope, extraCanvases, extraResultCards, fromCanvas, offline, onSend, pastes, quote, quotes, resize, resultCard, text]);
+
+
+  const hasDraftContent = useCallback(
+    () =>
+      Boolean(
+        text.trim() ||
+          quotes.length > 0 ||
+          pastes.length > 0 ||
+          attachments.length > 0 ||
+          fromCanvas ||
+          resultCard ||
+          extraCanvases.length > 0 ||
+          extraResultCards.length > 0,
+      ),
+    [attachments.length, extraCanvases.length, extraResultCards.length, fromCanvas, pastes.length, quotes.length, resultCard, text],
+  );
+
+  /** 本票：两下 Esc 清空输入框；清掉的东西压进 cleared，↑ 能取回。 */
+  const clearToHistory = useCallback(() => {
+    if (!hasDraftContent()) return;
+    touchedRef.current = true;
+    changedDuringSendRef.current = true;
+    setCleared((previous) =>
+      previous.concat({
+        text,
+        quotes,
+        pastes,
+        attachments: attachments.map(({ id, name, bytes, mime }) => ({ id, name, bytes, mime })),
+        fromCanvas,
+        resultCard,
+        extraCanvases,
+        extraResultCards,
+      }),
+    );
+    setText('');
+    setQuotes([]);
+    setPastes([]);
+    setAttachments([]);
+    setFromCanvas(null);
+    setResultCard(null);
+    setExtraCanvases([]);
+    setExtraResultCards([]);
+    setAtMenu(null);
+    requestAnimationFrame(() => resize());
+  }, [attachments, extraCanvases, extraResultCards, fromCanvas, hasDraftContent, pastes, quotes, resize, resultCard, text]);
+
+  /** 本票：输入框空着按 ↑，取回最近清掉的一条。 */
+  const recallCleared = useCallback(() => {
+    const recalled = cleared[cleared.length - 1];
+    if (!recalled) return false;
+    touchedRef.current = true;
+    changedDuringSendRef.current = true;
+    setCleared((previous) => previous.slice(0, -1));
+    setText(recalled.text);
+    setQuotes(recalled.quotes ?? []);
+    setPastes(recalled.pastes);
+    setAttachments(recalled.attachments);
+    setFromCanvas(recalled.fromCanvas);
+    setResultCard(recalled.resultCard);
+    setExtraCanvases(recalled.extraCanvases);
+    setExtraResultCards(recalled.extraResultCards);
+    requestAnimationFrame(() => {
+      resize();
+      const input = inputRef.current;
+      if (!input) return;
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    });
+    return true;
+  }, [cleared, resize]);
+
+  /** 本票：恢复对话时把原文放回输入框（字接在已有字后面；附带的东西按顺序加在后面）。 */
+  const putBack = useCallback(
+    (source: RewindSource) => {
+      touchedRef.current = true;
+      changedDuringSendRef.current = true;
+      if (source.text) {
+        setText((previous) =>
+          !previous.trim()
+            ? source.text
+            : previous.replace(/\s+$/, '') + String.fromCharCode(10) + source.text,
+        );
+      }
+      if (source.pastes.length > 0) setPastes((previous) => previous.concat(source.pastes));
+      if (source.files.length > 0) {
+        setAttachments((previous) =>
+          previous.concat(
+            source.files.map((file) => ({
+              id: file.id,
+              name: file.name,
+              bytes: file.bytes,
+              mime: file.mime ?? mimeFromFileName(file.name) ?? 'text/plain',
+            })),
+          ),
+        );
+      }
+      if (source.resultCards.length > 0) {
+        if (resultCard === null) {
+          setResultCard(source.resultCards[0] ?? null);
+          if (source.resultCards.length > 1) {
+            setExtraResultCards((previous) => previous.concat(source.resultCards.slice(1)));
+          }
+        } else {
+          setExtraResultCards((previous) => previous.concat(source.resultCards));
+        }
+      }
+      if (source.canvases.length > 0) {
+        if (fromCanvas === null) {
+          setFromCanvas(source.canvases[0] ?? null);
+          if (source.canvases.length > 1) {
+            setExtraCanvases((previous) => previous.concat(source.canvases.slice(1)));
+          }
+        } else {
+          setExtraCanvases((previous) => previous.concat(source.canvases));
+        }
+      }
+      requestAnimationFrame(() => {
+        resize();
+        inputRef.current?.focus();
+      });
+    },
+    [fromCanvas, resize, resultCard],
+  );
 
   useImperativeHandle(
     ref,
@@ -549,8 +756,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           inputRef.current?.focus();
         });
       },
+      hasDraftContent,
+      clearToHistory,
+      recallCleared,
+      putBack,
     }),
-    [resize, submit],
+    [clearToHistory, hasDraftContent, putBack, recallCleared, resize, submit],
   );
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -575,6 +786,22 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       if (event.key === 'Escape') {
         event.preventDefault();
         setAtMenu(null);
+        return;
+      }
+    }
+    if (event.key === 'ArrowUp' && !atMenu) {
+      const empty = canRecallCleared({
+        hasText: text.trim().length > 0,
+        hasPastes: pastes.length > 0,
+        hasAttachments: attachments.length > 0,
+        hasQuotes: quotes.length > 0,
+        hasCanvas: fromCanvas !== null,
+        hasResultCard: resultCard !== null,
+        hasExtraCanvases: extraCanvases.length > 0,
+        hasExtraResultCards: extraResultCards.length > 0,
+      });
+      if (empty && recallCleared()) {
+        event.preventDefault();
         return;
       }
     }
@@ -645,17 +872,37 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             className="mb-1.5"
           />
         ) : null}
+        {extraResultCards.map((card, index) => (
+          <ResultCardChip
+            key={'extra-result-card-' + index}
+            title={card.title}
+            version={card.version}
+            onRemove={() => setExtraResultCards((previous) => previous.filter((_, position) => position !== index))}
+            className="mb-1.5"
+          />
+        ))}
         {fromCanvas ? (
-          <FromCanvasChip
+          <span data-kind="attachment-canvas" className="mb-1.5 block">
+            <FromCanvasChip
             title={fromCanvas.title}
             onRemove={() => {
               touchedRef.current = true;
               changedDuringSendRef.current = true;
               setFromCanvas(null);
             }}
-            className="mb-1.5"
-          />
+              className="mb-1.5"
+            />
+          </span>
         ) : null}
+        {extraCanvases.map((canvas, index) => (
+          <span key={'extra-canvas-' + index} data-kind="attachment-canvas" className="mb-1.5 block">
+            <FromCanvasChip
+              title={canvas.title}
+              onRemove={() => setExtraCanvases((previous) => previous.filter((_, position) => position !== index))}
+              className="mb-1.5"
+            />
+          </span>
+        ))}
         {quotes.length > 0 || pastes.length > 0 || attachments.length > 0 ? (
           <div ref={cardsRef} className="mb-1.5 flex gap-1.5 overflow-x-auto pb-1" data-kind="composer-cards">
             {quotes.map((item, index) => (

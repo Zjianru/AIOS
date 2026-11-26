@@ -3,7 +3,9 @@
 use std::path::Path;
 use std::time::Duration;
 
-use service::{AttachmentPutRequest, Call, RootHost, SendAttachment, SendRequest};
+use service::{
+    AttachmentPutRequest, Call, RootHost, SendAttachment, SendCanvas, SendRequest, SendResultCard,
+};
 use tempfile::tempdir;
 
 async fn host(dir: &Path, cwd: &Path) -> RootHost {
@@ -21,6 +23,8 @@ fn request(content: &str) -> SendRequest {
         attachments: Vec::new(),
         canvas: None,
         result_card: None,
+        result_cards: Vec::new(),
+        canvases: Vec::new(),
     }
 }
 
@@ -82,6 +86,7 @@ async fn send_builds_blocks_in_order_content_then_pastes_then_files() {
         id: id.clone(),
         name: "notes.txt".to_owned(),
         bytes: 5,
+        mime: None,
     }];
     host.dispatch(Call::Send(send)).await.expect("send");
     let blocks = wait_user_blocks(&host, data.path()).await;
@@ -160,6 +165,7 @@ async fn attachment_name_and_bytes_use_the_request_values() {
         id,
         name: "b.txt".to_owned(),
         bytes: 99,
+        mime: None,
     }];
     host.dispatch(Call::Send(send)).await.expect("send");
     let blocks = wait_user_blocks(&host, data.path()).await;
@@ -194,6 +200,7 @@ async fn unknown_attachment_is_rejected() {
         id: "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_owned(),
         name: "missing.txt".to_owned(),
         bytes: 1,
+        mime: None,
     }];
     let error = host
         .dispatch(Call::Send(send))
@@ -266,4 +273,100 @@ async fn send_without_canvas_keeps_a_single_text_block() {
         vec![serde_json::json!({ "type": "text", "text": "按这个存：每月 3000" })],
         "没有画布就不该多出标记块"
     );
+}
+
+/// 本票（N2/N1）：多条结果卡/画布标记按顺序成块，附件原 MIME 跟着文件块落日志。
+#[tokio::test]
+async fn send_appends_multi_markers_in_order_and_keeps_attachment_mime() {
+    let data = tempdir().unwrap();
+    let cwd = tempdir().unwrap();
+    let host = host(data.path(), cwd.path()).await;
+    let put = host
+        .dispatch(Call::AttachmentPut(AttachmentPutRequest {
+            name: "pic.png".to_owned(),
+            data: "aGVsbG8=".to_owned(),
+        }))
+        .await
+        .expect("put");
+    let id = serde_json::to_value(&put).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut send = request("带标记");
+    send.result_cards = vec![
+        SendResultCard {
+            task_id: "task-a".to_owned(),
+            title: "结果甲".to_owned(),
+            version: 1,
+        },
+        SendResultCard {
+            task_id: "task-b".to_owned(),
+            title: "结果乙".to_owned(),
+            version: 2,
+        },
+    ];
+    send.canvases = vec![
+        SendCanvas {
+            id: "cv-a".to_owned(),
+            title: "画布甲".to_owned(),
+        },
+        SendCanvas {
+            id: "cv-b".to_owned(),
+            title: "画布乙".to_owned(),
+        },
+    ];
+    send.attachments = vec![SendAttachment {
+        id: id.clone(),
+        name: "pic.png".to_owned(),
+        bytes: 5,
+        mime: Some("image/png".to_owned()),
+    }];
+    host.dispatch(Call::Send(send)).await.expect("send");
+    let blocks = wait_user_blocks(&host, data.path()).await;
+    assert_eq!(
+        blocks.len(),
+        6,
+        "两张卡 + 两个画布 + 正文 + 文件：{blocks:?}"
+    );
+    match (&blocks[0], &blocks[1]) {
+        (
+            model::ContentBlock::ResultCard { task_id, .. },
+            model::ContentBlock::ResultCard { title, version, .. },
+        ) => {
+            assert_eq!(task_id, "task-a");
+            assert_eq!(title, "结果乙");
+            assert_eq!(*version, 2);
+        }
+        other => panic!("前两块应是结果卡：{other:?}"),
+    }
+    match (&blocks[2], &blocks[3]) {
+        (
+            model::ContentBlock::Text {
+                canvas: Some(left), ..
+            },
+            model::ContentBlock::Text {
+                canvas: Some(right),
+                ..
+            },
+        ) => {
+            assert_eq!((left.id.as_str(), left.title.as_str()), ("cv-a", "画布甲"));
+            assert_eq!(
+                (right.id.as_str(), right.title.as_str()),
+                ("cv-b", "画布乙")
+            );
+        }
+        other => panic!("第三、四块应是画布标记：{other:?}"),
+    }
+    assert_eq!(blocks[4].as_text(), Some("带标记"));
+    match &blocks[5] {
+        model::ContentBlock::File { mime, name, .. } => {
+            assert_eq!(name, "pic.png");
+            assert_eq!(
+                mime.as_deref(),
+                Some("image/png"),
+                "附件原 MIME 要写进文件块"
+            );
+        }
+        other => panic!("最后一块应是文件：{other:?}"),
+    }
 }
