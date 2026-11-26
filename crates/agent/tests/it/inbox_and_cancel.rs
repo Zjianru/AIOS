@@ -908,8 +908,7 @@ async fn cancel_clears_only_user_messages_and_keeps_program_messages() {
         .unwrap();
     server.wait_ready().await;
 
-    // 用户消息和程序消息交替排队：next-turn 两段用户 + 中间一条程序消息；
-    // next-step 一段用户 + 一条程序消息。
+    // 用户消息和程序消息交替排队（next-turn）：两段用户消息中间夹一条程序消息。
     agent
         .send(UserMessage::text("用户排队A"), Delivery::FollowUp)
         .await

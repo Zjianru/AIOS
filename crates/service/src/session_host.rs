@@ -248,7 +248,7 @@ impl ServiceHost {
             .map_err(ServiceError::from)
     }
 
-    /// 取消当前轮（清空 pending inbox + 中止正在跑的轮）。
+    /// 取消当前轮（只清用户自己排队的消息；程序消息留在队列，照旧送到；再中止正在跑的轮）。
     pub async fn cancel(&self, _request: CancelRequest) -> Result<CancelResponse, ServiceError> {
         self.agent.cancel().await?;
         Ok(CancelResponse { cancelled: true })

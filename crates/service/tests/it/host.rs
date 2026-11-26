@@ -75,6 +75,39 @@ async fn mount(server: &MockServer, responses: Vec<ResponseTemplate>, expected: 
         .await;
 }
 
+async fn resume(server: &MockServer, data_dir: &std::path::Path, id: &SessionId) -> Agent {
+    let store = SessionStore::open(data_dir, id).unwrap();
+    let config = AgentConfig {
+        instruction_roots: vec![data_dir.join("agents-home")],
+        skill_roots: vec![data_dir.join("skills-home")],
+        ..AgentConfig::default()
+    };
+    let model = DeepSeek::with_credentials(
+        DeepSeekConfig {
+            provider: "deepseek".to_owned(),
+            base_url: server.uri(),
+            model: "deepseek-flash".to_owned(),
+            max_tokens: 2048,
+            context_window: model::DEFAULT_CONTEXT_WINDOW,
+            effort: Effort::new("high"),
+            tool_update: None,
+        },
+        crate::common::test_credential(data_dir),
+    )
+    .unwrap();
+    Agent::resume(
+        id.clone(),
+        config,
+        agent::Deps {
+            model,
+            tools: tools::ToolSet::builtin(),
+            store,
+        },
+    )
+    .await
+    .unwrap()
+}
+
 async fn setup(server: &MockServer) -> (Agent, tempfile::TempDir, SessionId) {
     let data_dir = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
@@ -897,8 +930,9 @@ async fn cancel_keeps_queued_program_messages() {
         vec![
             sse(FINAL_TEXT_SSE).set_delay(Duration::from_secs(10)),
             sse(FINAL_TEXT_SSE),
+            sse(FINAL_TEXT_SSE),
         ],
-        2,
+        3,
     )
     .await;
     let (agent, data_dir, id) = setup(&server).await;
@@ -962,4 +996,49 @@ async fn cancel_keeps_queued_program_messages() {
         !turn_ends(data_dir.path(), &id).is_empty(),
         "取消后这一轮要收尾"
     );
+
+    // 重启恢复后：程序消息已投递的不再重复，用户被清掉的排队话也不出现。
+    drop(store);
+    drop(service);
+    drop(agent);
+    let resumed = resume(&server, data_dir.path(), &id).await;
+    let service2 = ServiceHost::new(resumed.clone());
+    service2
+        .send(send_request("req-restart", "重启后新句"))
+        .await
+        .unwrap();
+    resumed.idle().await;
+    let bodies = server.received_requests().await.unwrap();
+    assert_eq!(bodies.len(), 3, "重启后只多一次模型请求");
+    let third: serde_json::Value = serde_json::from_slice(&bodies[2].body).unwrap();
+    let third_texts = user_texts(&third);
+    // 请求里带的是整段历史；「不重复」看这一轮新追加的那条是重启后新句。
+    assert_eq!(third_texts.last().map(String::as_str), Some("重启后新句"));
+    assert!(
+        !third_texts
+            .iter()
+            .skip(third_texts.len().saturating_sub(1))
+            .any(|text| text == "任务报回了"),
+        "程序消息重启后不能作为新消息重复投递：{third_texts:?}"
+    );
+    assert!(!third_texts.contains(&"用户A".to_owned()));
+    let reopened = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
+    let program_count = reopened
+        .events()
+        .iter()
+        .filter(|event| {
+            matches!(
+                &event.kind,
+                session::EventKind::UserMessage { message, .. }
+                    if message
+                        .content
+                        .iter()
+                        .filter_map(model::ContentBlock::as_text)
+                        .collect::<Vec<_>>()
+                        .join("")
+                        == "任务报回了"
+            )
+        })
+        .count();
+    assert_eq!(program_count, 1, "程序消息恰好投递一次");
 }
