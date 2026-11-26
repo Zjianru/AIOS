@@ -305,6 +305,10 @@ impl AskState {
         }
         live.direct = Some(text);
         if let Some(deliver) = live.deliver.take() {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "等待方可能已取消；唤醒信号丢失不影响状态判定"
+            )]
             let _ = deliver.send(());
         }
         true
