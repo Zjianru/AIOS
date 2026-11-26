@@ -545,7 +545,6 @@ fn all_event_kinds() -> Vec<EventKind> {
             inserted: vec![Message::text(Role::User, "排队")],
             outcome: Some(InboxOutcome::Canceled),
         },
-        EventKind::ConversationRewound {},
         EventKind::AssistantMessage {
             effort: None,
             effort_wanted: None,
@@ -707,6 +706,7 @@ fn all_event_kinds() -> Vec<EventKind> {
             kind: "permission".to_owned(),
             reference: Some("dream_1".to_owned()),
         },
+        EventKind::ConversationRewound {},
     ]
 }
 
