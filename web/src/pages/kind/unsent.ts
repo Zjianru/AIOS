@@ -11,9 +11,9 @@ export const unsentSends = new Map<
     requestId: string;
     text: string;
     pastes: string[];
-    files: { id: string; name: string; bytes: number }[];
-    canvas?: { id: string; title: string };
-    resultCard?: { taskId: string; title: string; version: number };
+    files: { id: string; name: string; bytes: number; mime?: string | null }[];
+    canvases: { id: string; title: string }[];
+    resultCards: { taskId: string; title: string; version: number }[];
   }
 >();
 
@@ -31,9 +31,9 @@ export function addUnsentView(
   viewId: string,
   text: string,
   pastes: string[],
-  files: { id: string; name: string; bytes: number }[],
-  canvas?: { id: string; title: string },
-  resultCard?: { taskId: string; title: string; version: number },
+  files: { id: string; name: string; bytes: number; mime?: string | null }[],
+  canvases: { id: string; title: string }[],
+  resultCards: { taskId: string; title: string; version: number }[],
 ): void {
   useKindStore.setState((state) => {
     if (state.views.some((view) => view.id === viewId)) return {};
@@ -47,8 +47,8 @@ export function addUnsentView(
         elements: [],
         pastes,
         files,
-        canvas: canvas ?? null,
-        resultCard: resultCard ?? null,
+        canvas: canvases[0] ?? null,
+        resultCard: resultCards[0] ?? null,
         rpcId: null,
       },
       taskResults: [],

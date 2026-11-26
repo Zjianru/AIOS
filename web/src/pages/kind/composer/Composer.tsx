@@ -41,6 +41,9 @@ export interface ComposerSendOptions {
   canvas?: { id: string; title: string };
   /** T054.2：结果卡「要求修改」带进来的那张卡。 */
   resultCard?: { taskId: string; title: string; version: number };
+  /** T095.2（N2）：一次放回多条时按顺序的列表（单个时仍给 canvas/resultCard 兼容）。 */
+  canvases?: { id: string; title: string }[];
+  resultCards?: { taskId: string; title: string; version: number }[];
 }
 
 export interface ComposerHandle {
@@ -131,6 +134,11 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   /** T015.4：这句话是画布放进来的（发出去时带标记，气泡上留着）。 */
   const [fromCanvas, setFromCanvas] = useState<{ id: string; title: string } | null>(null);
+  // T095.2（N2）：一次放回多条画布标记/结果卡；第一条走上面的单值状态（兼容旧 UI），其余放这里。
+  const [extraCanvases, setExtraCanvases] = useState<{ id: string; title: string }[]>([]);
+  const [extraResultCards, setExtraResultCards] = useState<
+    { taskId: string; title: string; version: number }[]
+  >([]);
   /** T054.2：结果卡「要求修改」放进输入框的那张卡（一次一张，再点别的卡就换掉）。 */
   const [resultCard, setResultCard] = useState<{
     taskId: string;
@@ -292,12 +300,39 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         attachments?: unknown;
         canvas?: unknown;
         resultCard?: unknown;
+        canvases?: unknown;
+        resultCards?: unknown;
         restoredSplices?: unknown;
       };
       if (typeof draft.text === 'string') setText(draft.text);
       const fromCanvas = draft.canvas as { id?: unknown; title?: unknown } | null | undefined;
       if (fromCanvas && typeof fromCanvas.id === 'string' && typeof fromCanvas.title === 'string') {
         setFromCanvas({ id: fromCanvas.id, title: fromCanvas.title });
+      }
+      if (Array.isArray(draft.canvases)) {
+        const canvases = (draft.canvases as unknown[]).filter(
+          (item): item is { id: string; title: string } =>
+            Boolean(item) &&
+            typeof (item as { id?: unknown }).id === 'string' &&
+            typeof (item as { title?: unknown }).title === 'string',
+        );
+        if (canvases.length > 0) {
+          setFromCanvas(canvases[0] ?? null);
+          setExtraCanvases(canvases.slice(1));
+        }
+      }
+      if (Array.isArray(draft.resultCards)) {
+        const cards = (draft.resultCards as unknown[]).filter(
+          (item): item is { taskId: string; title: string; version: number } =>
+            Boolean(item) &&
+            typeof (item as { taskId?: unknown }).taskId === 'string' &&
+            typeof (item as { title?: unknown }).title === 'string' &&
+            typeof (item as { version?: unknown }).version === 'number',
+        );
+        if (cards.length > 0) {
+          setResultCard(cards[0] ?? null);
+          setExtraResultCards(cards.slice(1));
+        }
       }
       if (Array.isArray(draft.quotes)) {
         setQuotes(draft.quotes.filter((item): item is string => typeof item === 'string'));
@@ -350,6 +385,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       attachments: attachments.map(({ id, name, bytes, mime }) => ({ id, name, bytes, mime })),
       canvas: fromCanvas,
       resultCard,
+      canvases: [...(fromCanvas ? [fromCanvas] : []), ...extraCanvases],
+      resultCards: [...(resultCard ? [resultCard] : []), ...extraResultCards],
       restoredSplices: restoredSplicesRef.current,
     };
     try {
@@ -357,7 +394,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     } catch {
       // 存不下（隐私模式）就算了。
     }
-  }, [attachments, draftScope, fromCanvas, pastes, quotes, resultCard, text]);
+  }, [attachments, draftScope, extraCanvases, extraResultCards, fromCanvas, pastes, quotes, resultCard, text]);
 
   // 停止时内核照 DSH clear 清掉排队消息；把 canceled splice 里被删的、
   // 页面从日志折叠回来的用户消息放回输入框。每条 seq 最多放回一次：放回过的 seq 跟草稿
@@ -377,14 +414,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       .join(String.fromCharCode(10));
     const pastes = pending.flatMap((restore) => restore.pastes);
     const attachments = pending.flatMap((restore) => restore.attachments);
-    const card = pending.reduce<QueueRestore['resultCard']>(
-      (found, restore) => restore.resultCard ?? found,
-      undefined,
-    );
-    const canvas = pending.reduce<QueueRestore['canvas']>(
-      (found, restore) => restore.canvas ?? found,
-      undefined,
-    );
+    const resultCards = pending.flatMap((restore) => restore.resultCards);
+    const canvases = pending.flatMap((restore) => restore.canvases);
     touchedRef.current = true;
     changedDuringSendRef.current = true;
     if (restoredText) {
@@ -397,11 +428,17 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     if (pastes.length > 0) setPastes((previous) => previous.concat(pastes));
     if (attachments.length > 0) {
       setAttachments((previous) =>
-        previous.concat(attachments.map((item) => ({ ...item, mime: 'text/plain' }))),
+        previous.concat(attachments.map((item) => ({ ...item, mime: item.mime ?? 'text/plain' }))),
       );
     }
-    if (card) setResultCard(card);
-    if (canvas) setFromCanvas(canvas);
+    if (resultCards.length > 0) {
+      setResultCard(resultCards[0] ?? null);
+      setExtraResultCards((previous) => previous.concat(resultCards.slice(1)));
+    }
+    if (canvases.length > 0) {
+      setFromCanvas(canvases[0] ?? null);
+      setExtraCanvases((previous) => previous.concat(canvases.slice(1)));
+    }
     requestAnimationFrame(() => {
       resize();
       inputRef.current?.focus();
@@ -493,7 +530,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       .join(String.fromCharCode(10));
     if (!value && pastes.length === 0 && attachments.length === 0) return;
     // T013.8：发送时先清空（马上能继续打），受理失败再把内容放回来（草稿不清）。
-    const snapshot = { text, quotes, pastes, attachments, quote, fromCanvas, resultCard };
+    const snapshot = { text, quotes, pastes, attachments, quote, fromCanvas, resultCard, extraCanvases, extraResultCards };
     changedDuringSendRef.current = false;
     setText('');
     setQuotes([]);
@@ -504,15 +541,17 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     setPageQuote(null);
     setFromCanvas(null);
     setResultCard(null);
+    setExtraCanvases([]);
+    setExtraResultCards([]);
     requestAnimationFrame(() => {
       resize();
       inputRef.current?.focus();
     });
     const accepted = await onSend(value, {
       pastes,
-      attachments: attachments.map(({ id, name, bytes }) => ({ id, name, bytes })),
-      ...(fromCanvas ? { canvas: fromCanvas } : {}),
-      ...(resultCard ? { resultCard } : {}),
+      attachments: attachments.map(({ id, name, bytes, mime }) => ({ id, name, bytes, mime: mime ?? null })),
+      canvases: [...(fromCanvas ? [fromCanvas] : []), ...extraCanvases],
+      resultCards: [...(resultCard ? [resultCard] : []), ...extraResultCards],
     });
     if (!accepted) {
       // 失败进 unsent：内容放回输入框（草稿也没动）；失败等待期间用户又输入了就不覆盖新的。
@@ -524,6 +563,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       setQuote(snapshot.quote);
       setFromCanvas(snapshot.fromCanvas);
       setResultCard(snapshot.resultCard);
+      setExtraCanvases(snapshot.extraCanvases);
+      setExtraResultCards(snapshot.extraResultCards);
       return;
     }
     try {
@@ -531,7 +572,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     } catch {
       // 忽略。
     }
-  }, [attachments, draftScope, fromCanvas, offline, onSend, pastes, quote, quotes, resize, resultCard, text]);
+  }, [attachments, draftScope, extraCanvases, extraResultCards, fromCanvas, offline, onSend, pastes, quote, quotes, resize, resultCard, text]);
 
   useImperativeHandle(
     ref,
@@ -645,6 +686,15 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             className="mb-1.5"
           />
         ) : null}
+        {extraResultCards.map((card, index) => (
+          <ResultCardChip
+            key={'extra-result-card-' + index}
+            title={card.title}
+            version={card.version}
+            onRemove={() => setExtraResultCards((previous) => previous.filter((_, position) => position !== index))}
+            className="mb-1.5"
+          />
+        ))}
         {fromCanvas ? (
           <FromCanvasChip
             title={fromCanvas.title}
@@ -656,6 +706,14 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             className="mb-1.5"
           />
         ) : null}
+        {extraCanvases.map((canvas, index) => (
+          <FromCanvasChip
+            key={'extra-canvas-' + index}
+            title={canvas.title}
+            onRemove={() => setExtraCanvases((previous) => previous.filter((_, position) => position !== index))}
+            className="mb-1.5"
+          />
+        ))}
         {quotes.length > 0 || pastes.length > 0 || attachments.length > 0 ? (
           <div ref={cardsRef} className="mb-1.5 flex gap-1.5 overflow-x-auto pb-1" data-kind="composer-cards">
             {quotes.map((item, index) => (

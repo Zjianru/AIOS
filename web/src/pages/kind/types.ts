@@ -117,11 +117,14 @@ export interface KindState {
     text: string,
     options?: {
       pastes?: string[];
-      attachments?: { id: string; name: string; bytes: number }[];
+      attachments?: { id: string; name: string; bytes: number; mime?: string | null }[];
  /** ：画布放进来的那一句带着画布身份（id + 标题）。 */
       canvas?: { id: string; title: string };
  /** ：结果卡「要求修改」带进输入框的那张卡。 */
       resultCard?: { taskId: string; title: string; version: number };
+ /** T095.2（N2）：一次放回多条画布/结果卡，按顺序。 */
+      canvases?: { id: string; title: string }[];
+      resultCards?: { taskId: string; title: string; version: number }[];
     },
   ) => Promise<boolean>;
   resend: (turnId: string) => void;

@@ -192,6 +192,8 @@ export interface SendAttachmentRef {
   id: string;
   name: string;
   bytes: number;
+  /** T095.2：原类型（旧页面/旧日志没有）。 */
+  mime?: string | null;
 }
 
 export interface SendOptions {
@@ -203,6 +205,9 @@ export interface SendOptions {
   canvas?: { id: string; title: string };
   /** T054.2：结果卡「要求修改」带进输入框的那张卡。 */
   resultCard?: SendResultCardRef;
+  /** T095.2（N2）：一次放回多条结果卡/画布标记，按顺序发送。 */
+  resultCards?: SendResultCardRef[];
+  canvases?: { id: string; title: string }[];
 }
 
 /** T054.2：随消息带进 Kind 输入框的结果卡（任务 id + 标题 + 要求版本）。 */
@@ -241,9 +246,9 @@ export async function sendMessage(
     delivery: 'follow-up',
     pastes: options.pastes ?? [],
     attachments: options.attachments ?? [],
-    // 没有标记就不带这个字段（服务端缺省就是用户自己写的）。
-    ...(options.canvas ? { canvas: options.canvas } : {}),
-    ...(options.resultCard ? { resultCard: options.resultCard } : {}),
+    // T095.2（N2）：多条放回按顺序走列表；单条旧字段不再重复发（服务端两套都收）。
+    resultCards: options.resultCards ?? [],
+    canvases: options.canvases ?? [],
   });
 }
 

@@ -735,13 +735,13 @@ export const useKindStore = create<KindState>()((set, get) => ({
     // F1：没送到的那条也把粘贴和文件带着，重发时原样再发一次。
     const pastes = options?.pastes ?? [];
     const files = options?.attachments ?? [];
-    const canvas = options?.canvas;
-    const resultCard = options?.resultCard;
+    const canvases = options?.canvases ?? [];
+    const resultCards = options?.resultCards ?? [];
     return sendMessage(text, requestId, options).then(
       () => true,
       () => {
-        unsentSends.set(viewId, { requestId, text, pastes, files, canvas, resultCard });
-        addUnsentView(viewId, text, pastes, files, canvas, resultCard);
+        unsentSends.set(viewId, { requestId, text, pastes, files, canvases, resultCards });
+        addUnsentView(viewId, text, pastes, files, canvases, resultCards);
         return false;
       },
     );
@@ -754,8 +754,8 @@ export const useKindStore = create<KindState>()((set, get) => ({
     void sendMessage(pending.text, pending.requestId, {
       pastes: pending.pastes,
       attachments: pending.files,
-      canvas: pending.canvas,
-      resultCard: pending.resultCard,
+      canvases: pending.canvases,
+      resultCards: pending.resultCards,
     })
       .then(() => {
         unsentSends.delete(viewId);

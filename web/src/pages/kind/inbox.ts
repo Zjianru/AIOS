@@ -24,6 +24,7 @@ interface InboxBlock {
   attachmentId?: string;
   name?: string;
   bytes?: number;
+  mime?: string | null;
   taskId?: string;
   title?: string;
   version?: number;
@@ -34,10 +35,10 @@ export interface QueueRestore {
   seq: number;
   text: string;
   pastes: string[];
-  attachments: { id: string; name: string; bytes: number }[];
-  resultCard?: { taskId: string; title: string; version: number };
-  /** 画布按钮放进来的那一句带画布身份；放回时恢复「来自画布」标记，不把自动文字再拼一遍。 */
-  canvas?: { id: string; title: string };
+  attachments: { id: string; name: string; bytes: number; mime?: string | null }[];
+  /** T095.2（N2）：一次放回的多张结果卡/多个画布标记，按原顺序。 */
+  resultCards: { taskId: string; title: string; version: number }[];
+  canvases: { id: string; title: string }[];
 }
 
 /** 两个待领队列的投影（只留折叠需要的消息字段）。 */
@@ -165,8 +166,8 @@ function restoreOf(removed: InboxMessage[], seq: number): QueueRestore | null {
   const text: string[] = [];
   const pastes: string[] = [];
   const attachments: QueueRestore['attachments'] = [];
-  let resultCard: QueueRestore['resultCard'];
-  let canvas: QueueRestore['canvas'];
+  const resultCards: QueueRestore['resultCards'] = [];
+  const canvases: QueueRestore['canvases'] = [];
   for (const message of removed) {
     if (!isTypedByUser(message)) continue;
     for (const block of message.content ?? []) {
@@ -178,7 +179,7 @@ function restoreOf(removed: InboxMessage[], seq: number): QueueRestore | null {
           typeof block.canvas.id === 'string' &&
           typeof block.canvas.title === 'string'
         ) {
-          canvas = { id: block.canvas.id, title: block.canvas.title };
+          canvases.push({ id: block.canvas.id, title: block.canvas.title });
         } else if (block.paste) pastes.push(block.text);
         else text.push(block.text);
       } else if (
@@ -187,14 +188,19 @@ function restoreOf(removed: InboxMessage[], seq: number): QueueRestore | null {
         typeof block.name === 'string' &&
         typeof block.bytes === 'number'
       ) {
-        attachments.push({ id: block.attachmentId, name: block.name, bytes: block.bytes });
+        attachments.push({
+          id: block.attachmentId,
+          name: block.name,
+          bytes: block.bytes,
+          mime: typeof block.mime === 'string' ? block.mime : null,
+        });
       } else if (
         block.type === 'result-card' &&
         typeof block.taskId === 'string' &&
         typeof block.title === 'string' &&
         typeof block.version === 'number'
       ) {
-        resultCard = { taskId: block.taskId, title: block.title, version: block.version };
+        resultCards.push({ taskId: block.taskId, title: block.title, version: block.version });
       }
     }
   }
@@ -202,8 +208,8 @@ function restoreOf(removed: InboxMessage[], seq: number): QueueRestore | null {
     text.length === 0 &&
     pastes.length === 0 &&
     attachments.length === 0 &&
-    !resultCard &&
-    !canvas
+    resultCards.length === 0 &&
+    canvases.length === 0
   ) {
     return null;
   }
@@ -212,7 +218,7 @@ function restoreOf(removed: InboxMessage[], seq: number): QueueRestore | null {
     text: text.join(String.fromCharCode(10)),
     pastes,
     attachments,
-    ...(resultCard ? { resultCard } : {}),
-    ...(canvas ? { canvas } : {}),
+    resultCards,
+    canvases,
   };
 }

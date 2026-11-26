@@ -3,4 +3,4 @@
 /**
  * 发送消息时引用的一个附件（服务端解析成只读副本路径）。
  */
-export type SendAttachment = { id: string, name: string, bytes: number, };
+export type SendAttachment = { id: string, name: string, bytes: number, mime?: string | null, };
