@@ -229,7 +229,7 @@ export function Diagnose({ taskId }: { taskId: string }) {
                   ))}
                 </ul>
               ) : (
-                <Missing what="没列待办" />
+                <Missing what="没列过待办" />
               )}
             </Card>
           </div>

@@ -61,11 +61,16 @@ function CtxBar({ used, window, parts }: { used: number; window: number; parts?:
     { key: 'fixed', name: '固定块', value: parts.fixedBlock, color: 'var(--kf-c7)' },
     { key: 'tools', name: '工具定义', value: parts.toolDefinitions, color: 'var(--kf-c4)' },
     { key: 'user', name: '任务书和消息', value: parts.taskBookMessages, color: 'var(--kf-c5)' },
-    { key: 'reply', name: '模型回复', value: parts.modelReplies, color: 'var(--kf-c1)' },
     { key: 'result', name: '工具结果', value: parts.toolResults, color: 'var(--kf-c3)' },
   ];
   return (
-    <div data-kind="live-context">
+    <div
+      data-kind="live-context"
+      title={'模型回复 约 ' + formatTokens(parts.modelReplies) + '（悬停看，不在蓝条里）'}
+    >
+      <span className="hidden" data-kind="live-context-reply">
+        模型回复 约 {formatTokens(parts.modelReplies)}
+      </span>
       <div className="mb-1 flex text-1 text-ink-3">
         <span>上下文</span>
         <span className="flex-1" />
@@ -160,7 +165,7 @@ function LiveCard({ task }: { task: MonitorTaskSummary }) {
           <span className="brand-type">{todoDone}/{detail.todo.length}</span>
         </div>
       ) : (
-        <div className="text-1"><Missing what="待办没列" /></div>
+        <div className="text-1"><Missing what="没列过待办" /></div>
       )}
 
       {detail?.events.length ? null : (

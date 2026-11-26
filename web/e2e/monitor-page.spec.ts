@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { startKernelFixture } from './service-fixture';
+import { apiPost, startKernelFixture } from './service-fixture';
 
 const urlOf = (fixture: { baseUrl: string; token: string }, hash = '#kind') =>
   fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + hash;
@@ -332,6 +332,7 @@ test('看旧 Attempt：新事件不把页面换成最新 Attempt', async ({ page
   }
 });
 
+
 test('在跑卡的花费/token/上下文跟着任务事件出现，不用刷新', async ({ page, browser }) => {
   test.setTimeout(180_000);
   const fixture = await startKernelFixture({ taskResult: 'live', slowMs: 8000 });
@@ -401,6 +402,153 @@ test('在跑卡的花费/token/上下文跟着任务事件出现，不用刷新'
     } finally {
       await kindPage.close();
     }
+  } finally {
+    await fixture.close();
+  }
+});
+test('监控照原型：五卡、项目标签、日柱叠色、两环、排行按项目、模型回复悬浮', async ({ page, request }) => {
+  test.setTimeout(180_000);
+  const fixture = await startKernelFixture({});
+  try {
+    const created = await apiPost(request, fixture, {
+      method: 'project_create',
+      name: '项目甲',
+      goal: '看监控',
+    });
+    const body = (await created.json()) as { project: { id: string } };
+    const projectId = body.project.id;
+    const now = Date.now();
+    const task = {
+      taskId: 'task-1',
+      title: '任务一',
+      state: 'running',
+      model: 'deepseek-flash',
+      projectId,
+      attemptId: 1,
+      running: true,
+      startedAt: now - 60_000,
+      requests: 2,
+      inputTokens: 1_000,
+      outputTokens: 100,
+      costUsd: 1.5,
+      unpriced: false,
+      toolCalls: 1,
+      contextUsed: 1_000,
+      contextWindow: 100_000,
+    };
+    const snapshot = {
+      range: 'today',
+      timezone: 'UTC',
+      generatedAt: now,
+      days: [
+        {
+          day: new Date().toLocaleDateString('sv-SE'),
+          costUsd: 2,
+          unpriced: 0,
+          inputTokens: 1_000,
+          outputTokens: 100,
+          requests: 2,
+          toolCalls: 1,
+          commandCalls: 1,
+          groups: [
+            { projectId, label: '项目甲', costUsd: 1.5, unpriced: 0 },
+            { label: 'Kind 对话', costUsd: 0.5, unpriced: 0 },
+          ],
+        },
+        {
+          day: new Date(Date.now() - 86_400_000).toLocaleDateString('sv-SE'),
+          costUsd: 1,
+          unpriced: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          requests: 1,
+          toolCalls: 0,
+          commandCalls: 0,
+          groups: [{ projectId, label: '项目甲', costUsd: 1, unpriced: 0 }],
+        },
+      ],
+      tasks: [task],
+      projects: [],
+      models: [
+        { key: 'deepseek-flash', label: 'deepseek-flash', projectId, requests: 2, inputTokens: 1_000, outputTokens: 100, cacheReadTokens: 500, cacheWriteTokens: 0, costUsd: 1.5, unpriced: false },
+      ],
+      tools: [{ key: 'read', label: 'read', projectId, requests: 1, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: null, unpriced: false }],
+      commands: [{ key: 'ls', label: 'ls', projectId, requests: 1, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: null, unpriced: false }],
+      rings: { costUsd: 2, unpriced: false, busyMs: 120_000, requestMs: 90_000, toolMs: 20_000, commandMs: 10_000, tokens: 1_100 },
+      anomalies: [],
+      running: { seats: 2, running: 1, queue: 0, anomalous: 0, tasks: [task] },
+      queue: [],
+    };
+    const detail = {
+      task: { taskId: 'task-1', title: '任务一', state: 'running', model: 'deepseek-flash', projectId, running: true },
+      attempts: [{ attemptId: 1, startedAt: now - 60_000, requests: 2, inputTokens: 1_000, outputTokens: 100, costUsd: 1.5, unpriced: false }],
+      contextParts: { fixedBlock: 10, toolDefinitions: 20, taskBookMessages: 30, modelReplies: 1_234, toolResults: 40 },
+      todo: [{ content: '做一半', status: 'in_progress' }],
+      events: [],
+    };
+    await page.route('**/api', async (route) => {
+      let method = '';
+      try {
+        method = (route.request().postDataJSON() as { method?: string }).method ?? '';
+      } catch {
+        // 非 JSON 请求原样放行。
+      }
+      if (method === 'monitor-snapshot') {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(snapshot) });
+        return;
+      }
+      if (method === 'monitor-task') {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(detail) });
+        return;
+      }
+      await route.continue();
+    });
+    await page.goto(urlOf(fixture, '#monitor'));
+    await expect(page.locator('[data-page="monitor"]')).toBeVisible({ timeout: 30_000 });
+
+    // 顶上五张卡。
+    const kpis = page.locator('[data-kind="kpis"] [data-kind="kpi"]');
+    await expect(kpis).toHaveCount(5);
+    for (const label of ['花费', 'Token', '缓存命中', '模型请求', '在忙']) {
+      await expect(kpis.filter({ hasText: label })).toHaveCount(1);
+    }
+    await expect(page.locator('[data-kind="kpi"]').filter({ hasText: '缓存命中' })).toContainText('50%');
+    await expect(page.locator('[data-kind="kpi"]').filter({ hasText: '在忙' })).toContainText('02:00');
+
+    // 项目筛选是一排标签。
+    await expect(page.locator('[data-kind="monitor-project-tag"]').filter({ hasText: '全部项目' })).toBeVisible();
+    await expect(page.locator('[data-kind="monitor-project-tag"]').filter({ hasText: '项目甲' })).toBeVisible();
+
+    // 日柱按项目叠色（项目甲 + Kind），今天也画整月。
+    await expect(page.locator('[data-kind="cost-day"]')).toHaveCount(2);
+    await expect(
+      page.locator('[data-kind="cost-bar-group"][data-project-id="' + projectId + '"]'),
+    ).toHaveCount(2);
+    await expect(page.locator('[data-kind="cost-bar-group"][data-project-id="kind"]')).toHaveCount(1);
+
+    // 两环：钱按项目/Kind；时间含模型/工具/命令，缺的段照实写。
+    await expect(page.getByText('钱花在哪')).toBeVisible();
+    await expect(page.locator('[data-kind="donut"]').first()).toContainText('项目甲');
+    await expect(page.locator('[data-kind="donut"]').first()).toContainText('Kind 对话');
+    await expect(page.locator('[data-kind="time-donut"]')).toContainText('等首字');
+    await expect(page.locator('[data-kind="time-donut"]')).toContainText('模型生成');
+    await expect(page.locator('[data-kind="time-donut"]')).toContainText('工具');
+    await expect(page.locator('[data-kind="time-donut"]')).toContainText('命令');
+    await expect(page.locator('[data-kind="time-donut"]')).toContainText('没采到');
+    await expect(page.locator('[data-kind="time-ring-missing"]')).toContainText('等首字');
+    // 「在跑」页签带数目。
+    await expect(page.locator('[data-tab-key="live"]')).toContainText('1');
+
+    // 排行按项目拆：模型行带项目名。
+    await expect(page.locator('[data-kind="rank-row"]').filter({ hasText: '项目甲 · deepseek-flash' }).first()).toBeVisible();
+
+    // 模型回复从上下文蓝条移除，悬浮看约值。
+    await page.goto(urlOf(fixture, '#monitor?tab=live'));
+    const card = page.locator('[data-kind="live-card"]').first();
+    await expect(card).toBeVisible({ timeout: 30_000 });
+    const context = card.locator('[data-kind="live-context"]');
+    await expect(context).toHaveAttribute('title', /模型回复 约 1\.2K/);
+    await expect(context.locator('[data-kind="live-context-reply"]')).toHaveCount(1);
   } finally {
     await fixture.close();
   }

@@ -166,7 +166,9 @@ test('项目：侧栏新建、项目页逐项改、工作页 ?p=、监控 ?p= �
 
     // 监控按项目筛；没归属的任务显示「个人」。
     await page.goto(urlOf(fixture, '#monitor?p=' + encodeURIComponent(projectId)));
-    await expect(page.locator('[data-kind="monitor-project-trigger"]')).toContainText('清河县农技站');
+    await expect(
+      page.locator('[data-kind="monitor-project-tag"][data-project="' + projectId + '"]'),
+    ).toContainText('清河县农技站');
     // 项目筛选下花费只算项目内任务；全站合计/日柱不混进来。
     const snapshotResponse = await apiPost(request, fixture, {
       method: 'monitor-snapshot',
@@ -189,11 +191,11 @@ test('项目：侧栏新建、项目页逐项改、工作页 ?p=、监控 ?p= �
               : projectMonitorTask!.costUsd.toFixed(3)) +
           (projectMonitorTask!.unpriced ? '+' : '');
     const costKpi = page
-      .locator('[data-kind="cost-project-kpis"] [data-kind="kpi"]')
+      .locator('[data-kind="kpis"] [data-kind="kpi"]')
       .filter({ hasText: '花费' });
     await expect(costKpi).toContainText(expectedCost, { timeout: 20_000 });
     await expect(page.locator('[data-kind="project-scope-note"]')).toContainText('不混全量');
-    await expect(page.locator('[data-kind="cost-daily"]')).toHaveCount(0);
+    await expect(page.locator('[data-kind="cost-daily"]')).toBeVisible();
     await expect(page.locator('[data-kind="task-cards"] [data-kind="task-card"]')).toHaveCount(1);
     const taskCard = page.locator('[data-kind="task-card"]').filter({ hasText: '判重改成按' }).first();
     await expect(taskCard).toBeVisible({ timeout: 30_000 });
@@ -204,15 +206,18 @@ test('项目：侧栏新建、项目页逐项改、工作页 ?p=、监控 ?p= �
       timeout: 20_000,
     });
     await page.goto(urlOf(fixture, '#monitor?p=' + encodeURIComponent(projectId)));
-    await page.locator('[data-kind="monitor-project-trigger"]').click();
-    await page.getByRole('menuitemradio', { name: '个人' }).click();
-    await expect(page.locator('[data-kind="monitor-project-trigger"]')).toContainText('个人');
+    await page.locator('[data-kind="monitor-project-tag"][data-project="personal"]').click();
+    await expect(page.locator('[data-kind="monitor-project-tag"][data-project="personal"]')).toHaveClass(/bg-ink/);
     await expect(page.locator('[data-kind="task-card"]').filter({ hasText: '判重改成按' })).toHaveCount(0);
     // 空项目：刷新让项目列表带上 API 建的「别的项目」，选它看空态。
     await page.reload();
-    await page.locator('[data-kind="monitor-project-trigger"]').click();
-    await page.getByRole('menuitemradio', { name: '别的项目' }).click();
-    await expect(page.locator('[data-kind="monitor-project-trigger"]')).toContainText('别的项目');
+    await page
+      .locator('[data-kind="monitor-project-tag"]')
+      .filter({ hasText: '别的项目' })
+      .click();
+    await expect(
+      page.locator('[data-kind="monitor-project-tag"]').filter({ hasText: '别的项目' }),
+    ).toHaveClass(/bg-ink/);
     await expect(page.locator('[data-kind="project-empty"]')).toBeVisible();
   } finally {
     await fixture.close();
