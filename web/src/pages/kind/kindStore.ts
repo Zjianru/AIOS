@@ -18,6 +18,7 @@ import type { AgentFrame, KindState } from './types';
 import { applyAcceptEligibility, applyCardSignals, rememberCardSignals } from './cardSignals';
 import { FIRST_INDEX_BASE, canvasTitleOf, decorate, indexOf } from './viewUtils';
 import { addUnsentView, removeView, unsentSends } from './unsent';
+import { applyInboxEvent, emptyProjection, seedProjection } from './inbox';
 import { applyRootState } from './rootState';
 import { mergeCcViews } from './ccViews';
 import { catalogCache, useStreamStore } from './streams';
@@ -48,6 +49,8 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let recheckTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectAttempt = 0;
 let lastSeq = 0;
+/** T090.1：页面从日志折叠出的 inbox 投影；停止清队列时从这里找回被清的消息。 */
+let inboxProjection = emptyProjection();
 /** 按已处理到的 lastSeq 重连；失败后指数退避，横幅显示第几次。 */
 function openSocket(): void {
   // 同一时刻只留一条连接：recheck → loadInitial 撞上已经连着的旧 socket 时，两条连接
@@ -239,6 +242,13 @@ function applyLiveEvent(event: ServiceEvent): void {
   lastSeq = event.seq;
   rememberCardSignals([event]);
   liveEvents.push(event);
+  // T090.1：停止清队列的 splice 只带坐标和数量，投影折叠后把被清的消息交给输入框恢复。
+  const queueRestores = applyInboxEvent(inboxProjection, event);
+  if (queueRestores.length > 0) {
+    useKindStore.setState((current) => ({
+      queueRestores: current.queueRestores.concat(queueRestores),
+    }));
+  }
   // T028.5：抄送 Kind 的行（inbox/spliced 或领取后的 user/message）单独成行，不是一轮。
   if (event.type === 'agent/inbox/spliced' || event.type === 'user/message') {
     const facts = taskCcFacts([event]);
@@ -507,6 +517,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
   drawingCanvas: null,
   pendingResultCard: null,
   composerResultCard: null,
+  queueRestores: [],
   reveal: null,
   revealTurn: (turnId) => set({ reveal: { turnId, at: Date.now() } }),
   revealTaskResult: async (taskId, preferredTurn) => {
@@ -608,6 +619,9 @@ export const useKindStore = create<KindState>()((set, get) => ({
     try {
       const page = await fetchEventsPage({ maxMessages: 100, minMessages: 10, minTurns: 5 });
       rememberCardSignals(page.events);
+      // T090.1：重建 inbox 投影；页面没开着时发生的取消，打开后从这里补放回。
+      const folded = seedProjection(page.events);
+      inboxProjection = folded.projection;
       // 先换上这页日志再折视图：T054.2 F1 的「改要求回执 seq」等派生要读到这一页里的
       // card/decision，否则刷新后旧结果卡的按钮会先按旧规则出来、之后也没人重算。
       liveEvents = page.events.slice();
@@ -630,6 +644,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
       mark('turns:loaded');
       set({
         views,
+        queueRestores: folded.restores,
         byId: indexOf(views),
         ...decorate(views),
         canvasTracks: canvasTracks(page.events),

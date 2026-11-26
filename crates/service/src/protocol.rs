@@ -284,7 +284,7 @@ pub struct SendResponse {
     pub duplicate: bool,
 }
 
-/// 取消当前轮（不丢 pending inbox）。
+/// 取消当前轮：照 DSH clear 清掉还没领的 next-step 和 next-turn（删除落日志，页面据此把字放回输入框），中止正在跑的这一轮。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, TS)]
 pub struct CancelRequest {}
 

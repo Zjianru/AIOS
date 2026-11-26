@@ -52,6 +52,7 @@ export function ConversationPane() {
   const running = streamingTurnId !== null;
   const offline = connection.state !== 'online';
   const sessionId = useKindStore((state) => state.sessionId);
+  const queueRestores = useKindStore((state) => state.queueRestores);
   const scrollerRef = useRef<HTMLElement | null>(null);
   const topIndexRef = useRef<number | null>(null);
   const capturedForRef = useRef<string | null>(null);
@@ -291,7 +292,7 @@ export function ConversationPane() {
 
   // T013.7：发送走 Composer（Enter/Cmd+Enter/按钮都到 submit）；pastes/attachments 跟着发。
   const handleSend = useCallback(() => {
-    if (useKindStore.getState().connection.state !== 'online') return;
+    // 断线时交给 Composer.submit 提示并保留草稿（T090.1），这里不静默 return。
     if (useKindStore.getState().streamingTurnId) {
       toast('Kind 还在做上一轮', { description: '等它做完，或者先停下（Esc）' });
       return;
@@ -434,6 +435,7 @@ export function ConversationPane() {
               offline={offline}
               onSend={onComposerSend}
               onCanSendChange={setCanSend}
+              queueRestores={queueRestores}
             >
               <ModelPicker />
               {running ? (

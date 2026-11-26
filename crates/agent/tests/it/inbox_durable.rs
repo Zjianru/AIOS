@@ -582,25 +582,95 @@ async fn duplicate_message_id_in_corrupt_inbox_is_reported_on_resume() {
     );
 }
 
-/// 取消/关服务不能吞掉已经排进 next-turn 的用户消息；它留在日志里，重启后还能处理。
+/// 取消（停止/关服务）照 DSH clear 清掉 next-turn 里排队的用户消息；
+/// 删除落 removedCount + outcome=canceled，重启后也不再投递（页面据此把字放回输入框）。
 #[tokio::test]
-async fn cancel_keeps_next_turn_input_durably() {
+async fn cancel_clears_next_turn_input_durably() {
+    use std::time::Duration;
+    use tokio::time::{Instant, timeout_at};
+    use wiremock::ResponseTemplate;
+
     let server = MockServer::start().await;
+    // 第一轮扣在模型请求上，给「运行中再排一条」留出确定窗口。
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(sse(FINAL_TEXT_SSE.to_owned()).set_delay(Duration::from_secs(10)))
+        .mount(&server)
+        .await;
     let data_dir = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
     let (agent, id) = create_agent(data_dir.path(), cwd.path(), &server.uri()).await;
+    // 等第一轮真的领取了 next-turn（InboxClaimed 通知）再排第二条：两条同时在队列里时，
+    // 取消的数量取决于调度时序，测试会抖。
+    let mut events = agent.subscribe();
+    agent
+        .send(UserMessage::text("第一轮"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let event = timeout_at(deadline, events.recv())
+            .await
+            .expect("等第一轮领取超时")
+            .expect("事件流不应关闭");
+        if let AgentEvent::InboxClaimed { message, .. } = event
+            && message_text(&message) == "第一轮"
+        {
+            break;
+        }
+    }
     agent
         .send(UserMessage::text("排队的一句"), Delivery::FollowUp)
         .await
         .unwrap();
     agent.cancel().await.unwrap();
+    agent.idle().await;
+    // 还有没有被取消的一轮在跑时，写锁可能还在驱动任务手里；显式关写者再 resume。
+    agent.close_session_writer();
 
     let snapshot = read_snapshot(data_dir.path(), &id);
     let splices = splices(&snapshot);
-    assert_eq!(splices.len(), 1, "插入后不应再被取消：{splices:?}");
-    assert_eq!(splices[0].target, InboxTarget::NextTurn);
-    assert_eq!(splices[0].inserted.len(), 1);
-    assert_eq!(message_text(&splices[0].inserted[0]), "排队的一句");
-    assert!(splices[0].outcome.is_none());
-}
+    let canceled = splices
+        .iter()
+        .find(|splice| {
+            splice.outcome == Some(InboxOutcome::Canceled) && splice.target == InboxTarget::NextTurn
+        })
+        .unwrap_or_else(|| panic!("next-turn 要被取消并落日志：{splices:?}"));
+    assert_eq!(canceled.start, 0);
+    assert_eq!(canceled.removed_count, Some(1));
+    assert!(canceled.inserted.is_empty());
+    // wire 形状：普通删除带 removedCount + outcome: canceled（DSH inbox.ts:214-221）。
+    let rows = log_rows(data_dir.path(), &id);
+    let wire = rows
+        .iter()
+        .find(|row| row["data"]["target"] == "next-turn" && row["data"]["outcome"] == "canceled")
+        .unwrap_or_else(|| panic!("日志里要有 next-turn 的 canceled splice：{rows:?}"));
+    assert_eq!(wire["data"]["removedCount"], 1);
+    drop(snapshot);
 
+    // 重启后队列为空：被取消的消息不再进请求、也不再落 user/message。
+    drop(agent);
+    let server2 = MockServer::start().await;
+    mount_responses(&server2, vec![FINAL_TEXT_SSE.to_owned()]).await;
+    let resumed = resume_agent(data_dir.path(), &id, &server2.uri())
+        .await
+        .unwrap();
+    resumed
+        .send(UserMessage::text("新消息"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    wait_idle(&resumed, 3).await;
+    let requests = server2.received_requests().await.unwrap();
+    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert!(
+        !request_user_texts(&body).contains(&"排队的一句".to_owned()),
+        "被取消的消息不能进请求"
+    );
+    assert_eq!(
+        count_text(
+            &logged_user_texts(&read_snapshot(data_dir.path(), &id)),
+            "排队的一句"
+        ),
+        0
+    );
+}
