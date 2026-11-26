@@ -27,7 +27,8 @@
     "test:rewind": "node --experimental-strip-types scripts/rewind.test.mjs",
     "test:work-groups": "node --experimental-strip-types scripts/work-groups.test.mjs",
     "test:program-messages": "node --experimental-strip-types scripts/program-messages.test.mjs",
-    "test:monitor-ws": "node scripts/monitor-ws.test.mjs"
+    "test:monitor-ws": "node scripts/monitor-ws.test.mjs",
+    "test:monitor-refresh": "node --experimental-strip-types scripts/monitor-refresh.test.mjs"
   },
   "dependencies": {
     "@fontsource-variable/overpass": "5.3.0",

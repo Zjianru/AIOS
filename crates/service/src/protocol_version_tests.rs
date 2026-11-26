@@ -1,10 +1,10 @@
 use super::*;
 
 #[test]
-fn protocol_version_is_31() {
+fn protocol_version_is_32() {
     assert_eq!(
-        PROTOCOL_VERSION, 31,
-        "放回字段（mime/resultCards/canvases）与回退请求，升到 31"
+        PROTOCOL_VERSION, 32,
+        "监控 Attempt 花费/rings 命令段/日柱分组/排行分组只增字段，升到 32"
     );
 }
 

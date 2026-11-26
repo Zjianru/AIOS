@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { startKernelFixture } from './service-fixture';
+import { apiPost, startKernelFixture } from './service-fixture';
 
 const urlOf = (fixture: { baseUrl: string; token: string }, hash = '#kind') =>
   fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + hash;
@@ -190,6 +190,351 @@ test('监控 WS：开页后新任务 TaskEvent，双任务 seq 差大重连不�
     } finally {
       await kindPage.close();
     }
+  } finally {
+    await fixture.close();
+  }
+});
+test('监控跟着任务走：在跑卡不用刷新出现，诊断链路自己长', async ({ page, browser }) => {
+  test.setTimeout(240_000);
+  const fixture = await startKernelFixture({ taskResult: 'live', slowMs: 2500 });
+  try {
+    await page.goto(urlOf(fixture, '#monitor?tab=live'));
+    await expect(page.locator('[data-page="monitor"]')).toBeVisible({ timeout: 30_000 });
+    const kindPage = await browser.newPage();
+    try {
+      await kindPage.goto(urlOf(fixture, '#kind'));
+      await sendKind(kindPage, '帮我查一下新闻归档里的判重规则');
+      // 页面在任务开始前就开着：卡出现=快照跟事件刷了，没有手动刷新。
+      const card = page.locator('[data-kind="live-card"]').first();
+      await expect(card).toBeVisible({ timeout: 90_000 });
+      await expect(page.locator('[data-kind="kpis"]')).toContainText('在跑');
+
+      // 诊断页跟同一路 WS：事件表行数自己变多。
+      await card.click();
+      await expect(page.locator('[data-page="monitor-task"]')).toBeVisible({ timeout: 30_000 });
+      const rows = page.locator('[data-kind="event-table"] tbody tr');
+      await expect(rows.first()).toBeVisible({ timeout: 30_000 });
+      const rowCount = await rows.count();
+      await expect
+        .poll(async () => rows.count(), { timeout: 90_000 })
+        .toBeGreaterThan(rowCount);
+    } finally {
+      await kindPage.close();
+    }
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('慢的旧快照不会盖掉新数据（代次丢弃）', async ({ page, browser }) => {
+  test.setTimeout(180_000);
+  const fixture = await startKernelFixture({ taskResult: 'live' });
+  let snapshotCalls = 0;
+  try {
+    await page.route('**/api', async (route) => {
+      let method = '';
+      try {
+        method = (route.request().postDataJSON() as { method?: string }).method ?? '';
+      } catch {
+        // 非 JSON 请求原样放行。
+      }
+      if (method !== 'monitor-snapshot') {
+        await route.continue();
+        return;
+      }
+      snapshotCalls += 1;
+      if (snapshotCalls === 1) {
+        // 第一次快照故意慢 1500ms，并带一个一眼能认出的旧值；第二次及以后是真实新值。
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        const response = await route.fetch();
+        const body = (await response.json()) as {
+          tasks?: { costUsd?: number | null }[];
+          running?: { tasks?: { costUsd?: number | null }[] };
+        };
+        for (const task of body.tasks ?? []) task.costUsd = 999.999;
+        for (const task of body.running?.tasks ?? []) task.costUsd = 999.999;
+        await route.fulfill({ response, json: body });
+        return;
+      }
+      await route.continue();
+    });
+    await page.goto(urlOf(fixture, '#monitor?tab=live'));
+    await expect(page.locator('[data-page="monitor"]')).toBeVisible({ timeout: 30_000 });
+    const kindPage = await browser.newPage();
+    try {
+      await kindPage.goto(urlOf(fixture, '#kind'));
+      await sendKind(kindPage, '帮我查一下新闻归档里的判重规则');
+      await expect(page.locator('[data-kind="live-card"]').first()).toBeVisible({ timeout: 90_000 });
+      // 第一次慢快照在第二次之后回来；代次丢弃后页面不能出现旧值。
+      await page.waitForTimeout(2500);
+      await expect(page.locator('[data-kind="live-card"]').first()).toBeVisible();
+      await expect(page.getByText('999.999')).toHaveCount(0);
+    } finally {
+      await kindPage.close();
+    }
+  } finally {
+    await fixture.close();
+  }
+});
+test('看旧 Attempt：新事件不把页面换成最新 Attempt', async ({ page, browser }) => {
+  test.setTimeout(180_000);
+  const fixture = await startKernelFixture({ taskResult: 'live', slowMs: 2500 });
+  try {
+    await page.route('**/api', async (route) => {
+      let requestBody: { method?: string; attemptId?: number } = {};
+      try {
+        requestBody = route.request().postDataJSON() as { method?: string; attemptId?: number };
+      } catch {
+        // 非 JSON 请求原样放行。
+      }
+      if (requestBody.method !== 'monitor-task') {
+        await route.continue();
+        return;
+      }
+      const response = await route.fetch();
+      const json = (await response.json()) as Record<string, unknown>;
+      const requested = requestBody.attemptId;
+      json.attempts = [
+        { attemptId: 1, startedAt: 1_700_000_000_000, endedAt: 1_700_000_100_000, requests: 1, inputTokens: 10, outputTokens: 5, unpriced: false },
+        { attemptId: 2, startedAt: 1_700_000_200_000, requests: 1, inputTokens: 20, outputTokens: 5, unpriced: false },
+      ];
+      json.todo = [
+        {
+          content: requested === 1 ? '旧 Attempt 的待办' : '新 Attempt 的待办',
+          status: 'in_progress',
+        },
+      ];
+      await route.fulfill({ response, json });
+    });
+    await page.goto(urlOf(fixture, '#monitor?tab=live'));
+    await expect(page.locator('[data-page="monitor"]')).toBeVisible({ timeout: 30_000 });
+    const kindPage = await browser.newPage();
+    try {
+      await kindPage.goto(urlOf(fixture, '#kind'));
+      await sendKind(kindPage, '帮我查一下新闻归档里的判重规则');
+      const card = page.locator('[data-kind="live-card"]').first();
+      await expect(card).toBeVisible({ timeout: 90_000 });
+      await card.click();
+      await expect(page.locator('[data-page="monitor-task"]')).toBeVisible({ timeout: 30_000 });
+      const oldAttempt = page.locator('[data-kind="diagnose-attempt"][data-attempt-id="1"]');
+      await expect(oldAttempt).toBeVisible({ timeout: 30_000 });
+      await oldAttempt.click();
+      await expect(page.getByText('旧 Attempt 的待办')).toBeVisible({ timeout: 20_000 });
+      await page.waitForTimeout(4000);
+      await expect(page.getByText('旧 Attempt 的待办')).toBeVisible();
+      await expect(page.getByText('新 Attempt 的待办')).toHaveCount(0);
+      await expect(oldAttempt).toHaveClass(/bg-active/);
+    } finally {
+      await kindPage.close();
+    }
+  } finally {
+    await fixture.close();
+  }
+});
+
+
+test('在跑卡的花费/token/上下文跟着任务事件出现，不用刷新', async ({ page, browser }) => {
+  test.setTimeout(180_000);
+  const fixture = await startKernelFixture({ taskResult: 'live', slowMs: 8000 });
+  try {
+    await page.route('**/api', async (route) => {
+      let method = '';
+      try {
+        method = (route.request().postDataJSON() as { method?: string }).method ?? '';
+      } catch {
+        // 非 JSON 请求原样放行。
+      }
+      if (method === 'monitor-snapshot') {
+        const response = await route.fetch();
+        const json = (await response.json()) as {
+          tasks?: { running?: boolean; costUsd?: number | null; inputTokens?: number; outputTokens?: number; contextUsed?: number; contextWindow?: number }[];
+          running?: { tasks?: { costUsd?: number | null; inputTokens?: number; outputTokens?: number; contextUsed?: number; contextWindow?: number }[] };
+        };
+        const running = json.running?.tasks ?? [];
+        for (const task of json.tasks ?? []) {
+          if (!task.running) continue;
+          task.costUsd = 1.5;
+          task.inputTokens = 1500;
+          task.outputTokens = 500;
+          task.contextUsed = 1234;
+          task.contextWindow = 200_000;
+        }
+        for (const task of running) {
+          task.costUsd = 1.5;
+          task.inputTokens = 1500;
+          task.outputTokens = 500;
+          task.contextUsed = 1234;
+          task.contextWindow = 200_000;
+        }
+        await route.fulfill({ response, json });
+        return;
+      }
+      if (method === 'monitor-task') {
+        const response = await route.fetch();
+        const json = (await response.json()) as Record<string, unknown>;
+        json.todo = [{ content: '事件里新增的待办', status: 'in_progress' }];
+        json.contextParts = {
+          fixedBlock: 100,
+          toolDefinitions: 200,
+          taskBookMessages: 300,
+          modelReplies: 400,
+          toolResults: 234,
+        };
+        await route.fulfill({ response, json });
+        return;
+      }
+      await route.continue();
+    });
+    await page.goto(urlOf(fixture, '#monitor?tab=live'));
+    await expect(page.locator('[data-page="monitor"]')).toBeVisible({ timeout: 30_000 });
+    // 页面在任务开始前就开着：此刻没有在跑卡/数字。
+    await expect(page.locator('[data-kind="live-card"]')).toHaveCount(0);
+    const kindPage = await browser.newPage();
+    try {
+      await kindPage.goto(urlOf(fixture, '#kind'));
+      await sendKind(kindPage, '帮我查一下新闻归档里的判重规则');
+      const card = page.locator('[data-kind="live-card"]').first();
+      // 任务事件到了以后卡和数字出现（页面没刷新、没手动重取）。
+      await expect(card).toBeVisible({ timeout: 90_000 });
+      await expect(card.locator('[data-kind="live-cost"]')).toHaveText('$1.500');
+      await expect(card.locator('[data-kind="live-token"]')).toContainText('2K');
+      await expect(card.locator('[data-kind="live-context"]')).toContainText('1.2K');
+    } finally {
+      await kindPage.close();
+    }
+  } finally {
+    await fixture.close();
+  }
+});
+test('监控照原型：五卡、项目标签、日柱叠色、两环、排行按项目、模型回复悬浮', async ({ page, request }) => {
+  test.setTimeout(180_000);
+  const fixture = await startKernelFixture({});
+  try {
+    const createdA = await apiPost(request, fixture, { method: 'project_create', name: '项目甲', goal: '看监控' });
+    const projectA = ((await createdA.json()) as { project: { id: string } }).project.id;
+    const createdB = await apiPost(request, fixture, { method: 'project_create', name: '项目乙', goal: '看监控' });
+    const projectB = ((await createdB.json()) as { project: { id: string } }).project.id;
+    const now = Date.now();
+    const dayOf = (offset: number) => new Date(Date.now() - offset * 86_400_000).toLocaleDateString('sv-SE');
+    const today = dayOf(0);
+    const task = {
+      taskId: 'task-1', title: '任务一', state: 'running', model: 'deepseek-flash', projectId: projectA,
+      attemptId: 1, running: true, startedAt: now - 60_000, requests: 2, inputTokens: 1_000, outputTokens: 100,
+      costUsd: 1.5, unpriced: false, toolCalls: 1, contextUsed: 1_000, contextWindow: 100_000,
+    };
+    const day = (offset: number, groups: unknown[]) => ({
+      day: dayOf(offset), costUsd: 2, unpriced: 0, inputTokens: 1_000, outputTokens: 100,
+      requests: 2, toolCalls: 1, commandCalls: 1, groups,
+    });
+    const snapshot = {
+      range: 'today', timezone: 'UTC', generatedAt: now,
+      days: [
+        day(0, [
+          { projectId: projectA, label: '项目甲', costUsd: 1.5, unpriced: 0 },
+          { label: 'Kind 对话', costUsd: 0.5, unpriced: 0 },
+        ]),
+        day(1, [{ projectId: projectA, label: '项目甲', costUsd: 1, unpriced: 0 }]),
+      ],
+      tasks: [task], projects: [],
+      models: [
+        { key: 'deepseek-flash', label: 'deepseek-flash', projectId: projectA, requests: 2, inputTokens: 1_000, outputTokens: 100, cacheReadTokens: 500, cacheWriteTokens: 0, costUsd: 1.5, unpriced: false },
+        { key: 'deepseek-pro', label: 'deepseek-pro', projectId: projectB, requests: 3, inputTokens: 300, outputTokens: 30, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.5, unpriced: false },
+      ],
+      tools: [{ key: 'read', label: 'read', projectId: projectA, requests: 1, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: null, unpriced: false }],
+      commands: [{ key: 'ls', label: 'ls', projectId: projectA, requests: 1, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: null, unpriced: false }],
+      rings: { costUsd: 2, unpriced: false, busyMs: 120_000, requestMs: 90_000, toolMs: 20_000, commandMs: 10_000, tokens: 1_100 },
+      anomalies: [], running: { seats: 2, running: 1, queue: 0, anomalous: 0, tasks: [task] }, queue: [],
+    };
+    // 「今天」要显示整月柱：month 快照给 8 天，today 只给 2 天，证明页面取的是 month 那份。
+    const monthSnapshot = {
+      ...snapshot,
+      range: 'month',
+      days: Array.from({ length: 8 }, (_, index) => day(index, [{ projectId: projectA, label: '项目甲', costUsd: 0.5, unpriced: 0 }])),
+    };
+    const detail = {
+      task: { taskId: 'task-1', title: '任务一', state: 'running', model: 'deepseek-flash', projectId: projectA, running: true },
+      attempts: [{ attemptId: 1, startedAt: now - 60_000, requests: 2, inputTokens: 1_000, outputTokens: 100, costUsd: 1.5, unpriced: false }],
+      contextParts: { fixedBlock: 10, toolDefinitions: 20, taskBookMessages: 30, modelReplies: 1_234, toolResults: 40 },
+      todo: [{ content: '做一半', status: 'in_progress' }], events: [],
+    };
+    let monthCalls = 0;
+    await page.route('**/api', async (route) => {
+      let body: { method?: string; range?: string } = {};
+      try {
+        body = route.request().postDataJSON() as { method?: string; range?: string };
+      } catch {
+        // 非 JSON 请求原样放行。
+      }
+      if (body.method === 'monitor-snapshot') {
+        if (body.range === 'month') {
+          monthCalls += 1;
+          await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(monthSnapshot) });
+        } else {
+          await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(snapshot) });
+        }
+        return;
+      }
+      if (body.method === 'monitor-task') {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(detail) });
+        return;
+      }
+      await route.continue();
+    });
+    await page.goto(urlOf(fixture, '#monitor'));
+    await expect(page.locator('[data-page="monitor"]')).toBeVisible({ timeout: 30_000 });
+
+    // 顶上五张卡；花费卡副标写 Kind 对话自己的数，不当全站合计。
+    const kpis = page.locator('[data-kind="kpis"] [data-kind="kpi"]');
+    await expect(kpis).toHaveCount(5);
+    for (const label of ['花费', 'Token', '缓存命中', '模型请求', '在忙']) {
+      await expect(kpis.filter({ hasText: label })).toHaveCount(1);
+    }
+    const spendKpi = kpis.filter({ hasText: '花费' });
+    await expect(spendKpi).toContainText('其中 Kind 对话 $0.500');
+    await expect(kpis.filter({ hasText: '缓存命中' })).toContainText('38%');
+    await expect(kpis.filter({ hasText: '在忙' })).toContainText('02:00');
+    await expect(page.locator('[data-kind="kind-card-cost"]')).toHaveText('$0.500');
+
+    // 项目筛选是一排标签；「在跑」页签带数。
+    await expect(page.locator('[data-kind="monitor-project-tag"]').filter({ hasText: '全部项目' })).toBeVisible();
+    await expect(page.locator('[data-kind="monitor-project-tag"]').filter({ hasText: '项目甲' })).toBeVisible();
+    await expect(page.locator('[data-tab-key="live"]')).toContainText('1');
+
+    // 今天也画整月：month 请求发生、柱数是 month 的 8 根；只有今天上色，其余置灰。
+    await expect.poll(() => monthCalls).toBeGreaterThan(0);
+    await expect(page.locator('[data-kind="cost-day"]')).toHaveCount(8);
+    const todayBar = page.locator('[data-kind="cost-day"][data-day="' + today + '"]');
+    await expect(todayBar).toHaveCount(1);
+    await expect(todayBar.locator('[data-kind="cost-bar-group"]').first()).not.toHaveAttribute('style', /line-2/);
+    const dimBars = page.locator('[data-kind="cost-day"]:not([data-day="' + today + '"]) [data-kind="cost-bar-group"]');
+    await expect(dimBars).toHaveCount(7);
+    await expect(dimBars.first()).toHaveAttribute('style', /line-2/);
+
+    // 两环：钱按项目/Kind；时间五段，缺的段照实写。
+    await expect(page.getByText('钱花在哪')).toBeVisible();
+    await expect(page.locator('[data-kind="donut"]').first()).toContainText('项目甲');
+    await expect(page.locator('[data-kind="donut"]').first()).toContainText('Kind 对话');
+    for (const segment of ['等首字', '模型生成', '工具', '命令', '没采到']) {
+      await expect(page.locator('[data-kind="time-donut"]')).toContainText(segment);
+    }
+
+    // 排行按项目拆；切项目筛选后只合计这个项目。
+    await expect(page.locator('[data-kind="rank-row"]').filter({ hasText: '项目甲 · deepseek-flash' }).first()).toBeVisible();
+    await expect(page.locator('[data-kind="rank-row"]').filter({ hasText: '项目乙 · deepseek-pro' }).first()).toBeVisible();
+    await page.locator('[data-kind="monitor-project-tag"][data-project="' + projectA + '"]').click();
+    await expect(page.locator('[data-kind="project-scope-note"]')).toContainText('日柱按 groups 拆（Kind/个人合并）；时间环/在忙/全站合计不能拆');
+    await expect(page.locator('[data-kind="rank-row"]').filter({ hasText: 'deepseek-flash' }).first()).toBeVisible();
+    await expect(page.locator('[data-kind="rank-row"]').filter({ hasText: '项目乙 · deepseek-pro' })).toHaveCount(0);
+
+    // 模型回复从上下文蓝条移除；整条悬浮给约值。
+    await page.goto(urlOf(fixture, '#monitor?tab=live'));
+    const card = page.locator('[data-kind="live-card"]').first();
+    await expect(card).toBeVisible({ timeout: 30_000 });
+    const context = card.locator('[data-kind="live-context"]');
+    await expect(context).toHaveAttribute('title', /模型回复 约 1\.2K/);
+    const visibleText = await context.evaluate((element) => (element as HTMLElement).innerText);
+    expect(visibleText).not.toContain('模型回复');
+    await expect(context.locator('[data-kind="live-context-reply"]')).toHaveCount(1);
   } finally {
     await fixture.close();
   }

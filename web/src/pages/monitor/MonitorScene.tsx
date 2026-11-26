@@ -4,7 +4,6 @@
  */
 
 import { useEffect, useMemo } from 'react';
-import { ChevronDown } from 'lucide-react';
 import { useRouteStore } from '@/app/routeStore';
 import { go } from '@/app/navigate';
 import { cn } from '@/lib/utils';
@@ -13,13 +12,6 @@ import { CostTab } from './CostTab';
 import { LiveTab } from './LiveTab';
 import { Diagnose } from './Diagnose';
 import { useProjectStore } from '@/pages/project/projectStore';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
 
 function targetOf(route: { kind: string; id: string }): { tab: 'cost' | 'live'; taskId: string | null } {
   if (route.kind === 'usage') {
@@ -42,12 +34,6 @@ export function MonitorScene() {
   const tab: 'cost' | 'live' = route.query.get('tab') === 'live' ? 'live' : 'cost';
   const projectFilter = route.query.get('p');
   const runningCount = snapshot?.running.running ?? 0;
-  const projectFilterLabel =
-    projectFilter === 'personal'
-      ? '个人'
-      : projectFilter
-        ? (projects?.find((project) => project.id === projectFilter)?.name ?? projectFilter)
-        : '全部项目';
 
   useEffect(() => {
     if (!snapshot) void loadSnapshot();
@@ -108,41 +94,30 @@ export function MonitorScene() {
           </div>
           <span className="flex-1" />
           <div className="mb-2 flex flex-wrap items-center gap-1" data-kind="project-filter">
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
+            {[
+              { value: 'all', label: '全部项目' },
+              { value: 'personal', label: '个人' },
+              ...(projects ?? []).map((project) => ({ value: project.id, label: project.name })),
+            ].map((item) => {
+              const active = (projectFilter ?? 'all') === item.value;
+              return (
                 <button
+                  key={item.value}
                   type="button"
-                  data-kind="monitor-project-trigger"
-                  className="flex items-center gap-1.5 rounded-full border border-line-2 bg-active px-2.5 py-0.5 text-1 text-ink"
+                  data-kind="monitor-project-tag"
+                  data-project={item.value}
+                  onClick={() => switchProjectFilter(item.value)}
+                  className={cn(
+                    'rounded-full border px-2.5 py-0.5 text-1 transition-colors',
+                    active
+                      ? 'border-ink bg-ink text-content'
+                      : 'border-line-2 text-ink-2 hover:border-line hover:text-ink',
+                  )}
                 >
-                  {projectFilterLabel}
-                  <ChevronDown className="size-3 text-ink-3" />
+                  {item.label}
                 </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-44">
-                <DropdownMenuRadioGroup
-                  value={projectFilter ?? 'all'}
-                  onValueChange={switchProjectFilter}
-                >
-                  <DropdownMenuRadioItem value="all">全部项目</DropdownMenuRadioItem>
-                  <DropdownMenuRadioItem value="personal">个人</DropdownMenuRadioItem>
-                  {(projects ?? []).map((project) => (
-                    <DropdownMenuRadioItem key={project.id} value={project.id}>
-                      {project.name}
-                    </DropdownMenuRadioItem>
-                  ))}
-                </DropdownMenuRadioGroup>
-              </DropdownMenuContent>
-            </DropdownMenu>
-            {projectFilter ? (
-              <button
-                type="button"
-                onClick={() => switchProjectFilter('all')}
-                className="text-1 text-ink-3 hover:text-ink-2"
-              >
-                清除
-              </button>
-            ) : null}
+              );
+            })}
           </div>
         </div>
       </div>

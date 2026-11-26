@@ -6,13 +6,12 @@
 import { useEffect, useState } from 'react';
 import { ArrowLeft, X } from 'lucide-react';
 import { go } from '@/app/navigate';
-import { monitorTask } from '@/data/service';
-import type { MonitorAttempt, MonitorContextParts, MonitorTaskResponse, ServiceEvent } from '@/data/service';
+import type { MonitorAttempt, MonitorContextParts, ServiceEvent } from '@/data/service';
 import { formatTokens } from '@/lib/numbers';
 import { elapsedSeconds } from './diagnoseTime';
 import { TraceTimeline } from './TraceTimeline';
 import { cn } from '@/lib/utils';
-import { useMonitorStore } from './monitorStore';
+import { detailKeyOf, useMonitorStore } from './monitorStore';
 import { useProjectName } from '@/pages/project/projectStore';
 import { Card, Kpi, Missing, StackBar, fmtClock, fmtTime, useTick } from './monitorParts';
 
@@ -102,26 +101,21 @@ export function Diagnose({ taskId }: { taskId: string }) {
   const snapshot = useMonitorStore((state) => state.snapshot);
   const summary = snapshot?.tasks.find((task) => task.taskId === taskId);
   const [attemptId, setAttemptId] = useState<number | null>(null);
-  const [detail, setDetail] = useState<MonitorTaskResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const effectiveAttempt = attemptId ?? summary?.attemptId ?? null;
+  const detail = useMonitorStore((state) => state.details[detailKeyOf(taskId, effectiveAttempt)]);
+  const error = useMonitorStore(
+    (state) => state.detailErrors[detailKeyOf(taskId, effectiveAttempt)] ?? null,
+  );
+  const loadTask = useMonitorStore((state) => state.loadTask);
   const [selected, setSelected] = useState<ServiceEvent | null>(null);
   const [traceRange, setTraceRange] = useState<{ from: number; to: number } | null>(null);
   const projectName = useProjectName(detail?.task.projectId);
 
+  // 诊断页不再自己取一次就停：读 store 的 details，跟同一路 WS 由事件刷新；
+  // Attempt 切换仍按需重读（带 attemptId）。
   useEffect(() => {
-    let cancelled = false;
-    setError(null);
-    monitorTask(taskId, attemptId ?? undefined)
-      .then((next) => {
-        if (!cancelled) setDetail(next);
-      })
-      .catch((reason: unknown) => {
-        if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [attemptId, taskId]);
+    void loadTask(taskId, effectiveAttempt ?? undefined);
+  }, [effectiveAttempt, loadTask, taskId]);
 
   const events = detail?.events ?? [];
   const traceEvents = traceRange
@@ -175,7 +169,9 @@ export function Diagnose({ taskId }: { taskId: string }) {
                   <button
                     key={attempt.attemptId}
                     type="button"
-                    className={cn('rounded-btn px-2 py-0.5 text-1', (attemptId ?? attempts[attempts.length - 1]?.attemptId) === attempt.attemptId ? 'bg-active text-ink' : 'text-ink-3 hover:text-ink-2')}
+                    data-kind="diagnose-attempt"
+                    data-attempt-id={attempt.attemptId}
+                    className={cn('rounded-btn px-2 py-0.5 text-1', effectiveAttempt === attempt.attemptId ? 'bg-active text-ink' : 'text-ink-3 hover:text-ink-2')}
                     onClick={() => setAttemptId(attempt.attemptId)}
                   >
                     {attemptLabel(attempt)}
@@ -233,7 +229,7 @@ export function Diagnose({ taskId }: { taskId: string }) {
                   ))}
                 </ul>
               ) : (
-                <Missing what="没列待办" />
+                <Missing what="没列过待办" />
               )}
             </Card>
           </div>

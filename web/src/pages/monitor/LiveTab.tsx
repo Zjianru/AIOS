@@ -11,7 +11,7 @@ import { useRouteStore } from '@/app/routeStore';
 import { formatPercent, formatTokens } from '@/lib/numbers';
 import { cn } from '@/lib/utils';
 import { matchesProject, useProjectName } from '@/pages/project/projectStore';
-import { useMonitorStore } from './monitorStore';
+import { detailKeyOf, useMonitorStore } from './monitorStore';
 import type { MonitorTaskSummary, ServiceEvent } from '@/data/service';
 import { Card, Kpi, Missing, StackBar, fmtClock, useTick } from './monitorParts';
 
@@ -61,11 +61,16 @@ function CtxBar({ used, window, parts }: { used: number; window: number; parts?:
     { key: 'fixed', name: '固定块', value: parts.fixedBlock, color: 'var(--kf-c7)' },
     { key: 'tools', name: '工具定义', value: parts.toolDefinitions, color: 'var(--kf-c4)' },
     { key: 'user', name: '任务书和消息', value: parts.taskBookMessages, color: 'var(--kf-c5)' },
-    { key: 'reply', name: '模型回复', value: parts.modelReplies, color: 'var(--kf-c1)' },
     { key: 'result', name: '工具结果', value: parts.toolResults, color: 'var(--kf-c3)' },
   ];
   return (
-    <div>
+    <div
+      data-kind="live-context"
+      title={'模型回复 约 ' + formatTokens(parts.modelReplies) + '（悬停看，不在蓝条里）'}
+    >
+      <span className="hidden" data-kind="live-context-reply">
+        模型回复 约 {formatTokens(parts.modelReplies)}
+      </span>
       <div className="mb-1 flex text-1 text-ink-3">
         <span>上下文</span>
         <span className="flex-1" />
@@ -79,13 +84,13 @@ function CtxBar({ used, window, parts }: { used: number; window: number; parts?:
 function LiveCard({ task }: { task: MonitorTaskSummary }) {
   const projectName = useProjectName(task.projectId);
   const tick = useTick();
-  const detail = useMonitorStore((state) => state.details[task.taskId]);
-  const error = useMonitorStore((state) => state.detailErrors[task.taskId]);
+  const detail = useMonitorStore((state) => state.details[detailKeyOf(task.taskId, task.attemptId)]);
+  const error = useMonitorStore((state) => state.detailErrors[detailKeyOf(task.taskId, task.attemptId)]);
   const loadTask = useMonitorStore((state) => state.loadTask);
 
   useEffect(() => {
-    if (!detail) void loadTask(task.taskId);
-  }, [detail, loadTask, task.taskId]);
+    if (!detail) void loadTask(task.taskId, task.attemptId ?? undefined);
+  }, [detail, loadTask, task.attemptId, task.taskId]);
 
   const events = detail?.events ?? [];
   const now = nowOf(events);
@@ -130,11 +135,11 @@ function LiveCard({ task }: { task: MonitorTaskSummary }) {
 
       <div className="grid grid-cols-4 gap-2">
         <div>
-          <div className="brand-type truncate text-3 text-ink">{task.costUsd == null ? <Missing /> : '$' + task.costUsd.toFixed(3)}</div>
+          <div data-kind="live-cost" className="brand-type truncate text-3 text-ink">{task.costUsd == null ? <Missing /> : '$' + task.costUsd.toFixed(3)}</div>
           <div className="text-1 text-ink-3">花费</div>
         </div>
         <div>
-          <div className="brand-type truncate text-3 text-ink">{formatTokens(task.inputTokens + task.outputTokens)}</div>
+          <div data-kind="live-token" className="brand-type truncate text-3 text-ink">{formatTokens(task.inputTokens + task.outputTokens)}</div>
           <div className="text-1 text-ink-3">token</div>
         </div>
         <div>
@@ -142,7 +147,7 @@ function LiveCard({ task }: { task: MonitorTaskSummary }) {
           <div className="text-1 text-ink-3">跑了</div>
         </div>
         <div>
-          <div className="brand-type truncate text-3 text-ink">{events.length ? String(stepCount(events)) : <Missing />}</div>
+          <div data-kind="live-step-count" className="brand-type truncate text-3 text-ink">{events.length ? String(stepCount(events)) : <Missing />}</div>
           <div className="text-1 text-ink-3">步数</div>
         </div>
       </div>
@@ -160,7 +165,7 @@ function LiveCard({ task }: { task: MonitorTaskSummary }) {
           <span className="brand-type">{todoDone}/{detail.todo.length}</span>
         </div>
       ) : (
-        <div className="text-1"><Missing what="待办没列" /></div>
+        <div className="text-1"><Missing what="没列过待办" /></div>
       )}
 
       {detail?.events.length ? null : (

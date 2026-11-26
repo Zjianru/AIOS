@@ -1897,7 +1897,7 @@ pub struct ActionActResponse {
 ///
 /// 连接上的旧价格乘数后来整条删掉，不升版本：两个请求里的这个字段本来就可省略，旧页再发
 /// 由 serde 当未知字段忽略；响应里少了它，旧页读到 undefined 也不会拿去定价。
-pub const PROTOCOL_VERSION: u64 = 31;
+pub const PROTOCOL_VERSION: u64 = 32;
 
 /// 日历读取：不带 appointmentId 读全部；带 week 时额外给那周的计划点。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -2159,6 +2159,9 @@ pub struct MonitorTaskRequest {
 pub struct MonitorUsageRow {
     pub key: String,
     pub label: String,
+    /// 排行按项目拆：项目 id；个人/Kind 为空。只增字段，旧页面忽略。
+    #[serde(rename = "projectId", default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
     pub requests: u64,
     #[serde(rename = "inputTokens")]
     pub input_tokens: u64,
@@ -2227,6 +2230,9 @@ pub struct MonitorRings {
     pub request_ms: u64,
     #[serde(rename = "toolMs")]
     pub tool_ms: u64,
+    /// 时间环「命令」段：bash call→result 的配对累加（与工具分开）。
+    #[serde(rename = "commandMs")]
+    pub command_ms: u64,
     pub tokens: u64,
 }
 
@@ -2249,6 +2255,17 @@ pub struct MonitorRunning {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct MonitorDayGroup {
+    /// 项目 id；个人和 Kind 对话为空，用 label 区分。
+    #[serde(rename = "projectId", default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    pub label: String,
+    #[serde(rename = "costUsd", default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    pub unpriced: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct MonitorDay {
     /// 用户时区下的 YYYY-MM-DD。
     pub day: String,
@@ -2264,6 +2281,9 @@ pub struct MonitorDay {
     pub tool_calls: u64,
     #[serde(rename = "commandCalls")]
     pub command_calls: u64,
+    /// 日柱按项目叠色：项目组 + 个人 + Kind 对话（projectId 空）分开算。
+    #[serde(default)]
+    pub groups: Vec<MonitorDayGroup>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]

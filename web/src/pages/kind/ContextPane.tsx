@@ -2,8 +2,8 @@
  * Kind 右栏「Kind 现在带着」。
  *
  * 色条总长用现有 ContextUsage（used/window 真值）；块名照原型列。
- * 各块多少 token 内核没有这个数：照空状态写「还没有分块估算」，不编数字（reply s）。
- * 分块估算列后续（协调线排 早先票 后）。
+ * 各块多少 token 内核没有这个数：照空状态写「还没有分块估算」，不编数字。
+ * 分块估算列后续（协调线后续排）。
  */
 
 import { useState } from 'react';

@@ -1252,11 +1252,23 @@ impl TaskRuntime {
         request: crate::protocol::MonitorSnapshotRequest,
         kind_events: &[session::Event],
     ) -> Result<crate::protocol::MonitorSnapshotResponse, ServiceError> {
+        let project_labels = self
+            .projects
+            .as_ref()
+            .and_then(|store| store.list().ok())
+            .map(|projects| {
+                projects
+                    .into_iter()
+                    .map(|project| (project.id, project.name))
+                    .collect()
+            })
+            .unwrap_or_default();
         crate::monitor_facts::snapshot(
             &self.store,
             &self.data_dir,
             request.range,
             &request.timezone,
+            &project_labels,
             &self.running_tasks(),
             &self.running_request_times(),
             self.exec_seats.load(Ordering::SeqCst) as u64,
