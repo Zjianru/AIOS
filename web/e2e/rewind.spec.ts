@@ -426,6 +426,28 @@ test('总结到这里为止：刷新/翻页后分隔还在原位，后续说话�
   expect(laterDivider).not.toBeNull();
   expect(laterThird).not.toBeNull();
   expect(laterDivider!.y).toBeLessThan(laterThird!.y);
+
+  // F2：上翻加载更早的页后，upTo 分隔仍在第三句前。
+  await page.locator('[data-pane="conversation"]').hover();
+  for (let index = 0; index < 12; index += 1) {
+    await page.mouse.wheel(0, -3000);
+    await page.waitForTimeout(150);
+    if (await page.locator('[data-kind="user-bubble"]').filter({ hasText: '第一句' }).count()) break;
+  }
+  await expect(
+    page.locator('[data-kind="user-bubble"]').filter({ hasText: '第一句' }),
+  ).toHaveCount(1, { timeout: 60_000 });
+  const pagedDivider = await page
+    .locator('[data-kind="compaction"][data-manual="upTo"]')
+    .boundingBox();
+  const pagedThird = await page
+    .locator('[data-kind="user-bubble"]')
+    .filter({ hasText: '第三句' })
+    .first()
+    .boundingBox();
+  expect(pagedDivider).not.toBeNull();
+  expect(pagedThird).not.toBeNull();
+  expect(pagedDivider!.y).toBeLessThan(pagedThird!.y);
 });
 
 test('恢复对话：目标不在首屏时原文也能回输入框', async ({ page, request }) => {
@@ -439,10 +461,17 @@ test('恢复对话：目标不在首屏时原文也能回输入框', async ({ pa
   await expect(
     page.locator('[data-kind="user-bubble"]').filter({ hasText: '第一句' }),
   ).toHaveCount(0);
+  // 已加载的较新轮还在：恢复后它们必须立即消失（F1 用户故事 4），不能等刷新。
+  await expect(
+    page.locator('[data-kind="user-bubble"]').filter({ hasText: '第七句' }),
+  ).toHaveCount(1);
   await openMenu(page);
   await selectRow(page, '第一句');
   await menu(page).locator('[data-kind="rewind-action"][data-action="restore"]').click();
   await expect(menu(page)).toHaveCount(0);
+  await expect(
+    page.locator('[data-kind="user-bubble"]').filter({ hasText: '第七句' }),
+  ).toHaveCount(0);
   await expect(input(page)).toHaveValue('第一句');
 });
 test('只有引用卡时：两下 Esc 清空（不开菜单），↑ 找回引用卡，引用卡在时不误召回', async ({ page, request }) => {

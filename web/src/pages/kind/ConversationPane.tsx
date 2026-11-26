@@ -15,7 +15,6 @@ import { TurnRow } from './TurnRow';
 import { rewindSourceOf, useKindStore } from './kindStore';
 import { RewindPanel } from './RewindPanel';
 import type { RewindAction } from './RewindPanel';
-import { viewOfSeq } from './rewind.ts';
 import type { RewindRow } from './rewind.ts';
 import { ServiceHttpError, fetchEventsPage, rewindApply, rewindList } from '@/data/service';
 import { rewindSourceOfMessage } from './rewind.ts';
@@ -340,12 +339,10 @@ export function ConversationPane() {
         const response = await rewindApply(action, seq);
         if (!response.applied) throw new Error('服务没有回写入结果');
         if (action === 'restore') {
-          const view = viewOfSeq(useKindStore.getState().views, seq);
-          if (view) {
-            useKindStore
-              .getState()
-              .dropViewsFrom(view.id, response.applied.startSeq, response.applied.endSeq);
-          }
+          // T095.6 F1：按区间起点收起已加载的较新轮（目标不在首屏也立即消失）。
+          useKindStore
+            .getState()
+            .dropViewsFromSeq(response.applied.startSeq, response.applied.endSeq);
           if (source) composerRef.current?.putBack(source);
           closeRewind();
           return;
