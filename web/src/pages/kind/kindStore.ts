@@ -753,17 +753,8 @@ export const useKindStore = create<KindState>()((set, get) => ({
   },
 
   stop: () => {
-    // 停止的是「这一轮」，不是「用户已经写下的字」。问题卡等待回答时，用户点停止
-    // 的本意通常是关掉问题卡；走 cancel 会清空 next-turn，把问题卡期间手打的消息一起吞掉。
-    const views = get().views;
-    const last = views[views.length - 1];
-    if (last?.question?.status === 'pending') {
-      void dismissQuestions().catch(() => {
-        toast('没关掉问题卡', { description: '连上内核再试一次' });
-      });
-      return;
-    }
     // 真实取消；页面状态由日志 turn/end(aborted) 驱动（不本地猜）。
+    // next-turn 的用户消息由 Agent::cancel 保留，停止不会吞掉已经排队的字。
     void cancelTurn().catch(() => {
       toast('停不下来', { description: '连上内核再试；或等这一轮自己结束' });
     });
