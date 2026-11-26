@@ -130,11 +130,11 @@ function LiveCard({ task }: { task: MonitorTaskSummary }) {
 
       <div className="grid grid-cols-4 gap-2">
         <div>
-          <div className="brand-type truncate text-3 text-ink">{task.costUsd == null ? <Missing /> : '$' + task.costUsd.toFixed(3)}</div>
+          <div data-kind="live-cost" className="brand-type truncate text-3 text-ink">{task.costUsd == null ? <Missing /> : '$' + task.costUsd.toFixed(3)}</div>
           <div className="text-1 text-ink-3">花费</div>
         </div>
         <div>
-          <div className="brand-type truncate text-3 text-ink">{formatTokens(task.inputTokens + task.outputTokens)}</div>
+          <div data-kind="live-token" className="brand-type truncate text-3 text-ink">{formatTokens(task.inputTokens + task.outputTokens)}</div>
           <div className="text-1 text-ink-3">token</div>
         </div>
         <div>
@@ -142,7 +142,7 @@ function LiveCard({ task }: { task: MonitorTaskSummary }) {
           <div className="text-1 text-ink-3">跑了</div>
         </div>
         <div>
-          <div className="brand-type truncate text-3 text-ink">{events.length ? String(stepCount(events)) : <Missing />}</div>
+          <div data-kind="live-step-count" className="brand-type truncate text-3 text-ink">{events.length ? String(stepCount(events)) : <Missing />}</div>
           <div className="text-1 text-ink-3">步数</div>
         </div>
       </div>

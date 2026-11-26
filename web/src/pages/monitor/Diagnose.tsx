@@ -6,8 +6,7 @@
 import { useEffect, useState } from 'react';
 import { ArrowLeft, X } from 'lucide-react';
 import { go } from '@/app/navigate';
-import { monitorTask } from '@/data/service';
-import type { MonitorAttempt, MonitorContextParts, MonitorTaskResponse, ServiceEvent } from '@/data/service';
+import type { MonitorAttempt, MonitorContextParts, ServiceEvent } from '@/data/service';
 import { formatTokens } from '@/lib/numbers';
 import { elapsedSeconds } from './diagnoseTime';
 import { TraceTimeline } from './TraceTimeline';
@@ -102,26 +101,18 @@ export function Diagnose({ taskId }: { taskId: string }) {
   const snapshot = useMonitorStore((state) => state.snapshot);
   const summary = snapshot?.tasks.find((task) => task.taskId === taskId);
   const [attemptId, setAttemptId] = useState<number | null>(null);
-  const [detail, setDetail] = useState<MonitorTaskResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const detail = useMonitorStore((state) => state.details[taskId]);
+  const error = useMonitorStore((state) => state.detailErrors[taskId] ?? null);
+  const loadTask = useMonitorStore((state) => state.loadTask);
   const [selected, setSelected] = useState<ServiceEvent | null>(null);
   const [traceRange, setTraceRange] = useState<{ from: number; to: number } | null>(null);
   const projectName = useProjectName(detail?.task.projectId);
 
+  // 诊断页不再自己取一次就停：读 store 的 details，跟同一路 WS 由事件刷新；
+  // Attempt 切换仍按需重读（带 attemptId）。
   useEffect(() => {
-    let cancelled = false;
-    setError(null);
-    monitorTask(taskId, attemptId ?? undefined)
-      .then((next) => {
-        if (!cancelled) setDetail(next);
-      })
-      .catch((reason: unknown) => {
-        if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [attemptId, taskId]);
+    void loadTask(taskId, attemptId ?? undefined);
+  }, [attemptId, loadTask, taskId]);
 
   const events = detail?.events ?? [];
   const traceEvents = traceRange

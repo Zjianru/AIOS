@@ -194,3 +194,85 @@ test('监控 WS：开页后新任务 TaskEvent，双任务 seq 差大重连不�
     await fixture.close();
   }
 });
+test('监控跟着任务走：在跑卡不用刷新出现，诊断链路自己长', async ({ page, browser }) => {
+  test.setTimeout(240_000);
+  const fixture = await startKernelFixture({ taskResult: 'live', slowMs: 2500 });
+  try {
+    await page.goto(urlOf(fixture, '#monitor?tab=live'));
+    await expect(page.locator('[data-page="monitor"]')).toBeVisible({ timeout: 30_000 });
+    const kindPage = await browser.newPage();
+    try {
+      await kindPage.goto(urlOf(fixture, '#kind'));
+      await sendKind(kindPage, '帮我查一下新闻归档里的判重规则');
+      // 页面在任务开始前就开着：卡出现=快照跟事件刷了，没有手动刷新。
+      const card = page.locator('[data-kind="live-card"]').first();
+      await expect(card).toBeVisible({ timeout: 90_000 });
+      await expect(page.locator('[data-kind="kpis"]')).toContainText('在跑');
+
+      // 诊断页跟同一路 WS：事件表行数自己变多。
+      await card.click();
+      await expect(page.locator('[data-page="monitor-task"]')).toBeVisible({ timeout: 30_000 });
+      const rows = page.locator('[data-kind="event-table"] tbody tr');
+      await expect(rows.first()).toBeVisible({ timeout: 30_000 });
+      const rowCount = await rows.count();
+      await expect
+        .poll(async () => rows.count(), { timeout: 90_000 })
+        .toBeGreaterThan(rowCount);
+    } finally {
+      await kindPage.close();
+    }
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('慢的旧快照不会盖掉新数据（代次丢弃）', async ({ page, browser }) => {
+  test.setTimeout(180_000);
+  const fixture = await startKernelFixture({ taskResult: 'live' });
+  let snapshotCalls = 0;
+  try {
+    await page.route('**/api', async (route) => {
+      let method = '';
+      try {
+        method = (route.request().postDataJSON() as { method?: string }).method ?? '';
+      } catch {
+        // 非 JSON 请求原样放行。
+      }
+      if (method !== 'monitor-snapshot') {
+        await route.continue();
+        return;
+      }
+      snapshotCalls += 1;
+      if (snapshotCalls === 1) {
+        // 第一次快照故意慢 1500ms，并带一个一眼能认出的旧值；第二次及以后是真实新值。
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        const response = await route.fetch();
+        const body = (await response.json()) as {
+          tasks?: { costUsd?: number | null }[];
+          running?: { tasks?: { costUsd?: number | null }[] };
+        };
+        for (const task of body.tasks ?? []) task.costUsd = 999.999;
+        for (const task of body.running?.tasks ?? []) task.costUsd = 999.999;
+        await route.fulfill({ response, json: body });
+        return;
+      }
+      await route.continue();
+    });
+    await page.goto(urlOf(fixture, '#monitor?tab=live'));
+    await expect(page.locator('[data-page="monitor"]')).toBeVisible({ timeout: 30_000 });
+    const kindPage = await browser.newPage();
+    try {
+      await kindPage.goto(urlOf(fixture, '#kind'));
+      await sendKind(kindPage, '帮我查一下新闻归档里的判重规则');
+      await expect(page.locator('[data-kind="live-card"]').first()).toBeVisible({ timeout: 90_000 });
+      // 第一次慢快照在第二次之后回来；代次丢弃后页面不能出现旧值。
+      await page.waitForTimeout(2500);
+      await expect(page.locator('[data-kind="live-card"]').first()).toBeVisible();
+      await expect(page.getByText('999.999')).toHaveCount(0);
+    } finally {
+      await kindPage.close();
+    }
+  } finally {
+    await fixture.close();
+  }
+});
