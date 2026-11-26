@@ -909,6 +909,8 @@ async fn cancel_clears_only_user_messages_and_keeps_program_messages() {
     server.wait_ready().await;
 
     // 用户消息和程序消息交替排队（next-turn）：两段用户消息中间夹一条程序消息。
+    // 本测试只发 FollowUp（不造 NextStep 队列）；NextStep 的程序消息由 service 的
+    // cancel_keeps_queued_program_messages 覆盖。
     agent
         .send(UserMessage::text("用户排队A"), Delivery::FollowUp)
         .await
