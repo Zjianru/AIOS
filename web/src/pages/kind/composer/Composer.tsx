@@ -18,6 +18,7 @@ import { toast } from 'sonner';
 import { useKindStore } from '../kindStore';
 import { fileMentions } from '../atGrammar';
 import type { QueueRestore } from '../inbox';
+import { mimeFromFileName } from '../fileMime.ts';
 import { attachmentGet, attachmentPut, fileReferences } from '@/data/service';
 import type { FileReferenceEntry, SendAttachmentRef } from '@/data/service';
 import { cn } from '@/lib/utils';
@@ -164,7 +165,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const touchedRef = useRef(false);
   const changedDuringSendRef = useRef(false);
   /** 已经放回过的 canceled splice seq；跟草稿一起存，刷新不再重复放回。 */
-  const restoredSplicesRef = useRef<number[]>([]);
+  // 每条放回用 seq+index 唯一标识（N2 逐条放回；同一 splice 可能有多条消息）。
+  const restoredKeysRef = useRef<string[]>([]);
 
   const canSend = text.trim().length > 0 || quotes.length > 0 || pastes.length > 0 || attachments.length > 0;
 
@@ -302,7 +304,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         resultCard?: unknown;
         canvases?: unknown;
         resultCards?: unknown;
-        restoredSplices?: unknown;
+        restoredKeys?: unknown;
       };
       if (typeof draft.text === 'string') setText(draft.text);
       const fromCanvas = draft.canvas as { id?: unknown; title?: unknown } | null | undefined;
@@ -362,12 +364,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               typeof (item as { bytes?: unknown }).bytes === 'number'
             );
           })
-          .map((item) => ({ ...item, mime: item.mime ?? 'text/plain' }));
+          .map((item) => ({ ...item, mime: item.mime ?? mimeFromFileName(item.name) ?? 'text/plain' }));
         setAttachments(files);
       }
-      if (Array.isArray(draft.restoredSplices)) {
-        restoredSplicesRef.current = draft.restoredSplices.filter(
-          (item): item is number => typeof item === 'number',
+      if (Array.isArray(draft.restoredKeys)) {
+        restoredKeysRef.current = draft.restoredKeys.filter(
+          (item): item is string => typeof item === 'string',
         );
       }
     } catch {
@@ -387,7 +389,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       resultCard,
       canvases: [...(fromCanvas ? [fromCanvas] : []), ...extraCanvases],
       resultCards: [...(resultCard ? [resultCard] : []), ...extraResultCards],
-      restoredSplices: restoredSplicesRef.current,
+      restoredKeys: restoredKeysRef.current,
     };
     try {
       localStorage.setItem('aios.kind.draft.' + draftScope, JSON.stringify(draft));
@@ -402,11 +404,11 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   useEffect(() => {
     if (!draftScope || draftLoadedRef.current !== draftScope) return;
     const pending = queueRestores
-      .filter((restore) => !restoredSplicesRef.current.includes(restore.seq))
+      .filter((restore) => !restoredKeysRef.current.includes(restore.key))
       .sort((left, right) => left.seq - right.seq);
     if (pending.length === 0) return;
-    restoredSplicesRef.current = restoredSplicesRef.current.concat(
-      pending.map((restore) => restore.seq),
+    restoredKeysRef.current = restoredKeysRef.current.concat(
+      pending.map((restore) => restore.key),
     );
     const restoredText = pending
       .map((restore) => restore.text)
@@ -428,7 +430,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     if (pastes.length > 0) setPastes((previous) => previous.concat(pastes));
     if (attachments.length > 0) {
       setAttachments((previous) =>
-        previous.concat(attachments.map((item) => ({ ...item, mime: item.mime ?? 'text/plain' }))),
+        previous.concat(
+          attachments.map((item) => ({
+            ...item,
+            mime: item.mime ?? mimeFromFileName(item.name) ?? 'text/plain',
+          })),
+        ),
       );
     }
     if (resultCards.length > 0) {
