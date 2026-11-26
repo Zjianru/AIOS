@@ -1,5 +1,5 @@
 /**
- * Kind 右栏「Kind 现在带着」（本票）。
+ * Kind 右栏「Kind 现在带着」。
  *
  * 色条总长用现有 ContextUsage（used/window 真值）；块名照原型列。
  * 各块多少 token 内核没有这个数：照空状态写「还没有分块估算」，不编数字（reply s）。

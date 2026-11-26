@@ -1,5 +1,5 @@
 /**
- * Kind 右栏（本票）：上「聚焦」+ 下「Kind 现在带着」，两块同时在。
+ * Kind 右栏：上「聚焦」+ 下「Kind 现在带着」，两块同时在。
  */
 
 import { FocusPane } from './FocusPane';

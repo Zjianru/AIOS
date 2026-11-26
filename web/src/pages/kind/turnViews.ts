@@ -87,7 +87,7 @@ export function compactionViewOf(
   };
 }
 
-/** 本票/.6：两种总结的 sourceCommandId 标记（agent rewind_summarize_* 写入，
+/** 两种总结的 sourceCommandId 标记（agent rewind_summarize_* 写入，
  * 形如 rewind:from:<seq> / rewind:up-to:<seq>；旧标记没有 seq 也认）。 */
 export function manualSummaryOf(sourceCommandId: unknown): ManualSummaryMark | undefined {
   if (typeof sourceCommandId !== 'string') return undefined;
@@ -100,7 +100,7 @@ export function manualSummaryOf(sourceCommandId: unknown): ManualSummaryMark | u
   };
 }
 
-/** 总结分隔的伪一轮（不属于任何 turn；本票：刷新/翻页后也能重建）。 */
+/** 总结分隔的伪一轮（不属于任何 turn；刷新/翻页后也能重建）。 */
 function dividerViewOf(
   id: string,
   compaction: CompactionView,
@@ -155,7 +155,7 @@ function insertDivider(views: TurnViewData[], divider: TurnViewData): void {
   views.push(divider);
 }
 
-/** 本票：刷新/翻页/实时追加后，把总结分隔按 targetSeq/seq 重新放回轮次之间。 */
+/** 刷新/翻页/实时追加后，把总结分隔按 targetSeq/seq 重新放回轮次之间。 */
 export function placeManualDividers(views: TurnViewData[]): TurnViewData[] {
   const dividers = views.filter((view) => view.compaction?.manual);
   if (dividers.length === 0) return views;
@@ -258,7 +258,7 @@ export function deriveTurnViews(
   }
   // T010.4：每次压缩摘要等「压缩后第一条响应」来算 after。
   const pendingCompaction = new Map<number, { view: CompactionView; window?: number }>();
-  /** 本票：没有 turn 的 compaction/summary（手动压缩、两种总结）先收起来，等轮建完再插。 */
+  /** 没有 turn 的 compaction/summary（手动压缩、两种总结）先收起来，等轮建完再插。 */
   const orphanDividers: { seq: number; view: CompactionView }[] = [];
   let currentSeq = 0;
   const ensure = (turn: number): Raw => {
@@ -490,7 +490,7 @@ export function deriveTurnViews(
     }
     const turn = typeof data.turn === 'number' ? data.turn : null;
     if (turn === null) {
-      // 本票：没有 turn 的 compaction/summary（手动压缩、两种总结）也要出分隔；
+      // 没有 turn 的 compaction/summary（手动压缩、两种总结）也要出分隔；
       // 先收起来，等轮次建完按 seq/targetSeq 插回原位。
       if (event.type === 'compaction/summary') {
         const manual = manualSummaryOf(data.sourceCommandId);
@@ -647,7 +647,7 @@ export function deriveTurnViews(
         // T013.5：按 call id 配对（不再用「最后一条 running」猜），并留下 meta。
         const message = (data.message ?? {}) as Record<string, unknown>;
         const callId = String(message.toolCallId ?? message.tool_call_id ?? '');
-        // 问题卡等回答时用户直接发送：agent 在工具结果 meta 写结构化标记（本票/N3），
+        // 问题卡等回答时用户直接发送：agent 在工具结果 meta 写结构化标记（N3），
         // 页面只从 meta 派生 replied，不再匹配工具结果正文（文案改了回执也不丢）。
         const resultMeta = data.meta as { ask_direct_reply?: unknown } | undefined;
         if (
@@ -663,7 +663,7 @@ export function deriveTurnViews(
               questions: raw.question.questions,
             };
           } else if (resultMeta === undefined) {
-            // 本票：旧日志没有 meta——不判答没答；收成一行显示工具结果原文，不回填日志。
+            // 旧日志没有 meta——不判答没答；收成一行显示工具结果原文，不回填日志。
             const text = (textOfToolResult(data.message) || textOf(data.message)).trim();
             if (text) {
               raw.question = {

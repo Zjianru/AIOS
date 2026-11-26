@@ -1,5 +1,5 @@
 /**
- * Kind 右栏「聚焦」：等你 / 出了问题 / 在跑三组（本票）。
+ * Kind 右栏「聚焦」：等你 / 出了问题 / 在跑三组。
  *
  * 数据用产品现有事实：工作快照（work.wait / problemsOf / tasks.running）+ graphModel.deriveGraphs
  * 的节点深度算「第几站」。站进度线只表达现在停在第几站，不编进度百分比（内核没有）。

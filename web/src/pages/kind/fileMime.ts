@@ -1,4 +1,4 @@
-// 文件名后缀 → MIME 兜底：旧日志的 file 块没有 mime，放回时按名字推回类型（本票 F1①）。
+// 文件名后缀 → MIME 兜底：旧日志的 file 块没有 mime，放回时按名字推回类型（F1①）。
 // 认不出返回 null，调用方再退到 text/plain。
 
 const EXTENSION_MIME: Record<string, string> = {

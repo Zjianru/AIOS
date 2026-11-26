@@ -23,7 +23,7 @@ pub(crate) fn page_events(
     }
     let min_messages = min_messages.unwrap_or(50).min(max_messages);
     let min_turns = min_turns.unwrap_or(2).max(1);
-    // 本票：恢复区间里的历史不进页面分页（区间唯一来源是 session::rewound_ranges）。
+    // 恢复区间里的历史不进页面分页（区间唯一来源是 session::rewound_ranges）。
     let rewound = session::rewound_ranges(all);
     let mut selected: Vec<&session::Event> = Vec::new();
     let mut messages = 0_usize;

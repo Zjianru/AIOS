@@ -5,6 +5,6 @@
  */
 export type SendAttachment = { id: string, name: string, bytes: number,
 /**
- * 本票：附件原类型（旧页面/旧日志没有；按扩展名兜底）。
+ * 附件原类型（旧页面/旧日志没有；按扩展名兜底）。
  */
 mime?: string | null, };

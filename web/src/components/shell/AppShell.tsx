@@ -40,7 +40,7 @@ export function AppShell() {
   );
   const scene = sceneOf(route);
   const def = sceneDef(scene);
-  // 本票：Kind 恢复两栏（对话 | 右栏），右栏 = 聚焦 + Kind 现在带着。
+  // Kind 恢复两栏（对话 | 右栏），右栏 = 聚焦 + Kind 现在带着。
   const panes = def.panes;
   const dockKey = scene;
   const theme = useAppStore((s) => s.theme);
