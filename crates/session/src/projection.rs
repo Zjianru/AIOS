@@ -76,8 +76,13 @@ pub fn canvas_versions(events: &[Event]) -> Vec<CanvasVersion> {
 ///
 /// 同一画布后出现的版本胜出（日志顺序即版本顺序），与 `canvas_versions` 同源。
 pub fn canvases(events: &[Event]) -> Vec<CanvasState> {
+    // 恢复对话后当前版跟着重算：被恢复区间藏掉的画布版本不算（T095.4）。
+    let rewound = crate::event::rewound_ranges(events);
     let mut out: Vec<CanvasState> = Vec::new();
-    for version in canvas_versions(events) {
+    for version in canvas_versions(events)
+        .into_iter()
+        .filter(|version| !crate::event::is_rewound(version.seq, &rewound))
+    {
         match out.iter_mut().find(|item| item.id == version.state.id) {
             Some(item) => *item = version.state,
             None => out.push(version.state),

@@ -17,7 +17,7 @@ pub use event::{
     AbortCause, CardDecision, CardDecisionPhase, ContextParts, Event, EventKind, FORMAT_VERSION,
     InboxOutcome, InboxTarget, JobToolCallData, LlmFailure, MIN_READ_VERSION, ModelSelection,
     RetryId, RetryMode, SessionHeader, ShadowedRange, SurfaceOp, TodoItem, TodoStatus, ToolError,
-    TurnEndReason, last_model_selection, last_todos,
+    TurnEndReason, is_rewound, last_model_selection, last_todos, rewound_ranges,
 };
 pub use id::SessionId;
 pub use projection::{

@@ -545,6 +545,7 @@ fn all_event_kinds() -> Vec<EventKind> {
             inserted: vec![Message::text(Role::User, "排队")],
             outcome: Some(InboxOutcome::Canceled),
         },
+        EventKind::ConversationRewound {},
         EventKind::AssistantMessage {
             effort: None,
             effort_wanted: None,
@@ -740,6 +741,7 @@ fn every_variant_is_named(kind: &EventKind) {
         | EventKind::CompactionEnd { .. }
         | EventKind::SessionModel { .. }
         | EventKind::CardDecision { .. }
+        | EventKind::ConversationRewound { .. }
         | EventKind::MemoryCard { .. } => {}
     }
 }
@@ -753,7 +755,7 @@ fn event_kind_serde_tag_matches_type_name() {
     for kind in &kinds {
         every_variant_is_named(kind);
     }
-    assert_eq!(kinds.len(), 27, "all_event_kinds 要覆盖全部变体");
+    assert_eq!(kinds.len(), 28, "all_event_kinds 要覆盖全部变体");
     for kind in kinds {
         let value = serde_json::to_value(&kind).expect("事件序列化");
         assert_eq!(
@@ -1250,4 +1252,42 @@ fn tool_call_stream_records_match_dsh() {
         EventKind::AssistantAttempt { stream, .. }
             if matches!(stream[1], AssistantStreamRecord::ToolCallChunks { .. })
     ));
+}
+
+/// T095.4：conversation/rewound 事件 + 外壳 replace 区间可写可读；rewound_ranges 只取它。
+#[test]
+fn conversation_rewound_roundtrips_and_is_the_only_range_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = crate::SessionStore::create(dir.path(), dir.path()).unwrap();
+    let id = store.id().clone();
+    let seqs = store
+        .append_surface(
+            EventKind::ConversationRewound {},
+            crate::SurfaceOp::Replace {
+                start_seq: 7,
+                end_seq: 12,
+            },
+            vec![7, 12],
+        )
+        .unwrap();
+    assert_eq!(seqs.len(), 1);
+    drop(store);
+    let reopened = crate::SessionStore::open_read_only(dir.path(), &id).unwrap();
+    let events = reopened.events();
+    let rewound = events
+        .iter()
+        .find(|event| matches!(event.kind, EventKind::ConversationRewound { .. }))
+        .expect("恢复事件要落日志");
+    assert_eq!(
+        rewound.surface_op,
+        Some(crate::SurfaceOp::Replace {
+            start_seq: 7,
+            end_seq: 12
+        })
+    );
+    assert_eq!(crate::rewound_ranges(events), vec![(7, 12)]);
+    let wire = serde_json::to_value(rewound).unwrap();
+    assert_eq!(wire["type"], "conversation/rewound");
+    assert_eq!(wire["surfaceOp"]["op"], "replace");
+    assert_eq!(crate::FORMAT_VERSION, 20);
 }

@@ -51,6 +51,7 @@ pub(crate) fn derive_messages_with_seqs(events: &[Event]) -> Vec<(u64, Message)>
             | EventKind::CompactionStart { .. }
             | EventKind::CompactionSummary { .. }
             | EventKind::CompactionEnd { .. }
+            | EventKind::ConversationRewound { .. }
             | EventKind::TodoWrite { .. }
             | EventKind::QuestionAsked { .. }
             | EventKind::QuestionAnswered { .. }
