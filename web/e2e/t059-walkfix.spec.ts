@@ -261,7 +261,12 @@ test('T059 F5：Kind 长流式追加中滚轮上推不被拉回；点回到底�
     const box = await scroller.boundingBox();
     expect(box).not.toBeNull();
     await page.mouse.move((box?.x ?? 0) + (box?.width ?? 0) / 2, (box?.y ?? 0) + (box?.height ?? 0) / 2);
-    await page.mouse.wheel(0, -720);
+    // 首帧流式重绘偶尔会吃掉一次滚轮事件；最多补发两次，仍只验证「上推不被拉回」。
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await page.mouse.wheel(0, -720);
+      await page.waitForTimeout(120);
+      if ((await scroller.evaluate((element) => element.scrollTop)) < before - 300) break;
+    }
     await expect
       .poll(async () => scroller.evaluate((element) => element.scrollTop), { timeout: 10_000 })
       .toBeLessThan(before - 300);

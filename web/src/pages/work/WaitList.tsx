@@ -9,6 +9,7 @@ import { useKindStore, waitForKindChange, waitForKindLoad } from '@/pages/kind/k
 import { openAppointment } from '@/pages/calendar/CalendarPane';
 import { cn } from '@/lib/utils';
 import { WAIT_ACTION, WAIT_LABEL, stageLabel, waitGroups } from './workModel';
+import { plainText } from '@/lib/plain';
 import { useWorkStore } from './workStore';
 
 async function revealKindTurn(turn: number): Promise<boolean> {
@@ -130,7 +131,7 @@ export function WaitRow({ item, className }: { item: WaitItem; className?: strin
         {item.title}
       </div>
       <div className="mt-0.5 line-clamp-2 text-1 leading-4 text-ink-2" data-kind="wait-body">
-        {item.body}
+        {plainText(item.body)}
       </div>
       {item.also?.length ? (
         <div className="mt-0.5 text-1 text-ink-3" data-kind="wait-also">
