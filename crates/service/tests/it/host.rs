@@ -171,6 +171,8 @@ fn send_request(request_id: &str, text: &str) -> SendRequest {
         attachments: Vec::new(),
         canvas: None,
         result_card: None,
+        result_cards: Vec::new(),
+        canvases: Vec::new(),
     }
 }
 
@@ -528,6 +530,7 @@ async fn typing_with_pastes_and_attachments_while_a_question_waits_answers_with_
             attachment_id: "att-legacy-1".to_owned(),
             name: "排队附件.txt".to_owned(),
             bytes: 42,
+            mime: None,
             path: Some("/tmp/legacy/attachments/att-legacy-1.txt".to_owned()),
         },
         ContentBlock::from_result_card("task-legacy", "结果卡标题", 2),

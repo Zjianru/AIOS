@@ -244,6 +244,12 @@ pub struct SendRequest {
         skip_serializing_if = "Option::is_none"
     )]
     pub result_card: Option<SendResultCard>,
+    /// T095.2（N2）：一次放回多条结果卡时按顺序排列（旧字段 resultCard 保留兼容）。
+    #[serde(default, rename = "resultCards", skip_serializing_if = "Vec::is_empty")]
+    pub result_cards: Vec<SendResultCard>,
+    /// T095.2（N2）：一次放回多个画布标记时按顺序排列（旧字段 canvas 保留兼容）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub canvases: Vec<SendCanvas>,
 }
 
 /// T054.2：随消息带进 Kind 输入框的一张任务结果卡。
@@ -262,6 +268,9 @@ pub struct SendAttachment {
     pub id: String,
     pub name: String,
     pub bytes: u64,
+    /// T095.2：附件原类型（旧页面/旧日志没有；按扩展名兜底）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime: Option<String>,
 }
 
 /// 画布放进输入框的那一句带来的画布（页面从日志的 meta.canvas 拿 id 和标题）。
@@ -1834,7 +1843,7 @@ pub struct ActionActResponse {
 ///
 /// 连接上的旧价格乘数后来整条删掉，不升版本：两个请求里的这个字段本来就可省略，旧页再发
 /// 由 serde 当未知字段忽略；响应里少了它，旧页读到 undefined 也不会拿去定价。
-pub const PROTOCOL_VERSION: u64 = 30;
+pub const PROTOCOL_VERSION: u64 = 31;
 
 /// 日历读取：不带 appointmentId 读全部；带 week 时额外给那周的计划点。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]

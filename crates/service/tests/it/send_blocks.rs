@@ -21,6 +21,8 @@ fn request(content: &str) -> SendRequest {
         attachments: Vec::new(),
         canvas: None,
         result_card: None,
+        result_cards: Vec::new(),
+        canvases: Vec::new(),
     }
 }
 
@@ -82,6 +84,7 @@ async fn send_builds_blocks_in_order_content_then_pastes_then_files() {
         id: id.clone(),
         name: "notes.txt".to_owned(),
         bytes: 5,
+        mime: None,
     }];
     host.dispatch(Call::Send(send)).await.expect("send");
     let blocks = wait_user_blocks(&host, data.path()).await;
@@ -160,6 +163,7 @@ async fn attachment_name_and_bytes_use_the_request_values() {
         id,
         name: "b.txt".to_owned(),
         bytes: 99,
+        mime: None,
     }];
     host.dispatch(Call::Send(send)).await.expect("send");
     let blocks = wait_user_blocks(&host, data.path()).await;
@@ -194,6 +198,7 @@ async fn unknown_attachment_is_rejected() {
         id: "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_owned(),
         name: "missing.txt".to_owned(),
         bytes: 1,
+        mime: None,
     }];
     let error = host
         .dispatch(Call::Send(send))

@@ -73,6 +73,8 @@ async fn kind_root_request_contains_about_you_and_index() {
         attachments: Vec::new(),
         canvas: None,
         result_card: None,
+        result_cards: Vec::new(),
+        canvases: Vec::new(),
     })
     .await
     .unwrap();
@@ -202,6 +204,8 @@ async fn send_once(root: &service::RootSession, id: &str, text: &str) {
         attachments: Vec::new(),
         canvas: None,
         result_card: None,
+        result_cards: Vec::new(),
+        canvases: Vec::new(),
     })
     .await
     .unwrap();
@@ -379,6 +383,8 @@ async fn search_tool_end_to_end_finds_indexed_conversation() {
         attachments: Vec::new(),
         canvas: None,
         result_card: None,
+        result_cards: Vec::new(),
+        canvases: Vec::new(),
     })
     .await
     .unwrap();
@@ -420,6 +426,8 @@ async fn search_tool_end_to_end_finds_indexed_conversation() {
         attachments: Vec::new(),
         canvas: None,
         result_card: None,
+        result_cards: Vec::new(),
+        canvases: Vec::new(),
     })
     .await
     .unwrap();
@@ -512,6 +520,8 @@ async fn send_page_turn(root: &service::RootHost, id: &str, text: &str) {
         attachments: Vec::new(),
         canvas: None,
         result_card: None,
+        result_cards: Vec::new(),
+        canvases: Vec::new(),
     }))
     .await
     .expect("send");

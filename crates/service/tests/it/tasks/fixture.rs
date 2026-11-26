@@ -623,6 +623,8 @@ pub(super) fn send(_host: &RootHost, request_id: &str, text: &str) -> SendReques
         attachments: Vec::new(),
         canvas: None,
         result_card: None,
+        result_cards: Vec::new(),
+        canvases: Vec::new(),
     }
 }
 

@@ -212,6 +212,8 @@ async fn root_forward_recognizes_a_real_task_report_message() {
         attachments: Vec::new(),
         canvas: None,
         result_card: None,
+        result_cards: Vec::new(),
+        canvases: Vec::new(),
     }))
     .await
     .expect("发送报回事件");

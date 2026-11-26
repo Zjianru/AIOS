@@ -98,6 +98,20 @@ impl RootHost {
                 canvas.title.clone(),
             )));
         }
+        // T095.2（N2）：一次放回多条结果卡/画布标记，按页面上的顺序追加（旧单字段保留兼容）。
+        for card in &request.result_cards {
+            blocks.push(model::ContentBlock::from_result_card(
+                card.task_id.clone(),
+                card.title.clone(),
+                card.version,
+            ));
+        }
+        for canvas in &request.canvases {
+            blocks.push(model::ContentBlock::from_canvas(model::CanvasSource::new(
+                canvas.id.clone(),
+                canvas.title.clone(),
+            )));
+        }
         if !request.content.is_empty() {
             blocks.push(model::ContentBlock::text(request.content.clone()));
         }
@@ -115,6 +129,7 @@ impl RootHost {
                 name: attachment.name.clone(),
                 bytes: attachment.bytes,
                 path: Some(stored.path.to_string_lossy().into_owned()),
+                mime: attachment.mime.clone(),
             });
         }
         if blocks.is_empty() {
