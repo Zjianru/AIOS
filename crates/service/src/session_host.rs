@@ -371,7 +371,9 @@ fn question_reply_text(message: &Message) -> String {
                 task_id,
                 title,
                 version,
-            } => parts.push(format!("结果卡：{title}（任务 {task_id}，第 {version} 版）")),
+            } => parts.push(format!(
+                "结果卡：{title}（任务 {task_id}，第 {version} 版）"
+            )),
             _ => {}
         }
     }

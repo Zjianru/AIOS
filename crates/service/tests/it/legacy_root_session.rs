@@ -3,7 +3,9 @@
 use std::path::Path;
 
 use agent::AgentConfig;
-use service::{Call, DeliveryMode, Response, RootHost, RootSessionOptions, SendRequest, StatusRequest};
+use service::{
+    Call, DeliveryMode, Response, RootHost, RootSessionOptions, SendRequest, StatusRequest,
+};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
