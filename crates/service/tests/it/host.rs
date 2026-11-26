@@ -502,7 +502,10 @@ async fn typing_with_pastes_and_attachments_while_a_question_waits_answers_with_
         "附件：排队附件.txt（42 字节，位置 /tmp/legacy/attachments/att-legacy-1.txt）",
         "结果卡：结果卡标题（任务 task-legacy，第 2 版）",
     ] {
-        assert!(second.contains(expected), "工具结果缺「{expected}」：{second}");
+        assert!(
+            second.contains(expected),
+            "工具结果缺「{expected}」：{second}"
+        );
     }
     assert!(
         !second.contains("ask_user_question was aborted"),

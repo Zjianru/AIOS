@@ -807,8 +807,7 @@ impl Store {
             .find(|report| report.origin != ReportOrigin::Package)
             .cloned()
             .ok_or(TaskError::GateReportChanged)?;
-        if requested_report.origin == ReportOrigin::Package
-            || gate_report != &latest_gate_report.id
+        if requested_report.origin == ReportOrigin::Package || gate_report != &latest_gate_report.id
         {
             return Err(TaskError::GateReportChanged);
         }
