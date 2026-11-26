@@ -138,8 +138,8 @@ export function WaitRow({ item, className }: { item: WaitItem; className?: strin
           还有：{item.also.map((kind) => WAIT_LABEL[kind] ?? kind).join('、')}
         </div>
       ) : null}
-      <div className="mt-1 flex items-center gap-2">
-        <span className="text-1 text-ink-3" data-kind="wait-need">
+      <div className="mt-1 flex flex-wrap items-center gap-2">
+        <span className="min-w-0 text-1 text-ink-3" data-kind="wait-need">
           {item.need}
         </span>
         {pick ? (
@@ -148,7 +148,7 @@ export function WaitRow({ item, className }: { item: WaitItem; className?: strin
             data-action="wait-accept"
             disabled={accepting}
             onClick={() => void acceptOne(pick)}
-            className="ml-auto rounded-btn bg-ink px-2 py-0.5 text-1 text-content transition-opacity hover:opacity-90 disabled:opacity-50"
+            className="ml-auto shrink-0 whitespace-nowrap rounded-btn bg-ink px-2 py-0.5 text-1 text-content transition-opacity hover:opacity-90 disabled:opacity-50"
             style={{ color: 'var(--content)' }}
           >
             接受
@@ -160,7 +160,7 @@ export function WaitRow({ item, className }: { item: WaitItem; className?: strin
             data-action="wait-open"
             onClick={() => void openWaitItem(item, { acceptToTaskchat: true })}
             className={cn(
-              'flex items-center gap-0.5 rounded-btn px-1.5 py-0.5 text-1 text-ink-3 transition-colors hover:bg-hover hover:text-ink-2',
+              'flex shrink-0 items-center gap-0.5 whitespace-nowrap rounded-btn px-1.5 py-0.5 text-1 text-ink-3 transition-colors hover:bg-hover hover:text-ink-2',
               pick ? '' : 'ml-auto',
             )}
           >
