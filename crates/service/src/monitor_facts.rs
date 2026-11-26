@@ -389,15 +389,12 @@ impl Agg {
                         rings.request_ms = rings
                             .request_ms
                             .saturating_add(event.time.saturating_sub(step_at));
-                        rings.busy_ms = rings
-                            .busy_ms
-                            .saturating_add(event.time.saturating_sub(step_at));
                     }
                 }
                 EventKind::ToolCall { call_id, name, .. } => {
                     calls.insert(call_id.clone(), (event.time, name == "bash"));
                     add_count(&mut self.tools, name, project_id.clone());
-                    self.add_day_count(tz, event.time, true, group);
+                    self.add_day_count(tz, event.time, true);
                 }
                 EventKind::ToolResult { message, .. } => {
                     if let Some(call_id) = message.tool_call_id.as_deref()
@@ -416,7 +413,7 @@ impl Agg {
         }
         for fact in crate::commands::command_facts(events) {
             add_count(&mut self.commands, &fact.program, project_id.clone());
-            self.add_day_count(tz, fact.time, false, group);
+            self.add_day_count(tz, fact.time, false);
         }
         for repeat in crate::commands::repeated_commands(events) {
             self.anomalies.push(MonitorAnomaly {
@@ -480,7 +477,7 @@ impl Agg {
         });
     }
 
-    fn add_day_count(&mut self, tz: Tz, time: u64, tool: bool, _group: &CostGroup) {
+    fn add_day_count(&mut self, tz: Tz, time: u64, tool: bool) {
         let day = self.day_entry(tz, time);
         if tool {
             day.tool_calls += 1;
@@ -1292,7 +1289,186 @@ mod bucket_tests {
             .collect();
         assert!(labels.contains(&"项目一"));
         assert!(labels.contains(&"Kind 对话"));
-        assert!(labels.contains(&"个人") == false || labels.contains(&"个人"));
+        assert!(!labels.contains(&"个人"), "没有个人组就不写");
+    }
+
+    #[test]
+    fn rings_ignore_unpaired_and_count_failed_results() {
+        let now = 1_700_000_000_000_u64;
+        let mut agg = Agg {
+            connections: Vec::new(),
+            catalog: model::catalog::snapshot(),
+            models: Vec::new(),
+            tools: Vec::new(),
+            commands: Vec::new(),
+            tasks: Vec::new(),
+            anomalies: Vec::new(),
+            days: BTreeMap::new(),
+            project_labels: HashMap::new(),
+        };
+        let selection = session::ModelSelection {
+            connection: "deepseek".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            effort_wanted: "high".to_owned(),
+        };
+        let events = vec![
+            // 无 result：不配对、不计时。
+            timed_call(1, now, "t-open", "read"),
+            timed_call(2, now + 10, "b-open", "bash"),
+            // 失败 result 也配对（时长是事实，成功/失败都算）。
+            timed_call(3, now + 20, "t-fail", "read"),
+            session::Event::new(
+                4,
+                now + 50,
+                EventKind::ToolResult {
+                    turn: 1,
+                    step: 1,
+                    message: Message::tool_result("t-fail", "failed", true),
+                    error: Some(session::ToolError {
+                        name: "read".to_owned(),
+                        code: "failed".to_owned(),
+                    }),
+                    meta: None,
+                },
+            ),
+        ];
+        let mut rings = MonitorRings::default();
+        agg.add_events(
+            &events,
+            Some("task-1"),
+            &CostGroup::Personal,
+            &selection,
+            chrono_tz::UTC,
+            &mut rings,
+        );
+        assert_eq!(rings.tool_ms, 30, "失败 result 也配对，未配对的 call 不计");
+        assert_eq!(rings.command_ms, 0, "没有 bash result 就不计命令");
+    }
+
+    #[test]
+    fn day_groups_split_multi_project_personal_and_kind() {
+        let now = 1_700_000_000_000_u64;
+        let mut agg = Agg {
+            connections: Vec::new(),
+            catalog: model::catalog::snapshot(),
+            models: Vec::new(),
+            tools: Vec::new(),
+            commands: Vec::new(),
+            tasks: Vec::new(),
+            anomalies: Vec::new(),
+            days: BTreeMap::new(),
+            project_labels: HashMap::from([
+                ("p1".to_owned(), "项目一".to_owned()),
+                ("p2".to_owned(), "项目二".to_owned()),
+            ]),
+        };
+        let selection = session::ModelSelection {
+            connection: "deepseek".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            effort_wanted: "high".to_owned(),
+        };
+        let assistant = |seq: u64, time: u64| {
+            session::Event::new(
+                seq,
+                time,
+                EventKind::AssistantMessage {
+                    turn: 1,
+                    step: 1,
+                    message: Message::assistant(
+                        vec![model::ContentBlock::text("ok")],
+                        "deepseek",
+                        "deepseek-flash",
+                    ),
+                    stream: Vec::new(),
+                    usage: Some(model::Usage {
+                        input_tokens: Some(100),
+                        output_tokens: Some(10),
+                        cache_read_input_tokens: Some(0),
+                        cache_creation_input_tokens: Some(0),
+                    }),
+                    interrupted: None,
+                    effort: None,
+                    effort_wanted: None,
+                    request_at: Some(time),
+                    context_parts: None,
+                },
+            )
+        };
+        let mut rings = MonitorRings::default();
+        agg.add_events(
+            &[assistant(1, now)],
+            Some("task-p1"),
+            &CostGroup::Project("p1".to_owned()),
+            &selection,
+            chrono_tz::UTC,
+            &mut rings,
+        );
+        agg.add_events(
+            &[assistant(2, now + 1)],
+            Some("task-p2"),
+            &CostGroup::Project("p2".to_owned()),
+            &selection,
+            chrono_tz::UTC,
+            &mut rings,
+        );
+        agg.add_events(
+            &[assistant(3, now + 2)],
+            Some("task-personal"),
+            &CostGroup::Personal,
+            &selection,
+            chrono_tz::UTC,
+            &mut rings,
+        );
+        agg.add_events(
+            &[assistant(4, now + 3)],
+            None,
+            &CostGroup::Kind,
+            &selection,
+            chrono_tz::UTC,
+            &mut rings,
+        );
+
+        let day = agg.days.values().next().expect("同一天一根柱");
+        let labels: Vec<&str> = day
+            .groups
+            .iter()
+            .map(|group| group.label.as_str())
+            .collect();
+        assert_eq!(labels.len(), 4, "项目一/项目二/个人/Kind 各一组");
+        for expected in ["项目一", "项目二", "个人", "Kind 对话"] {
+            assert!(labels.contains(&expected), "缺组 {expected}");
+        }
+        let personal = day
+            .groups
+            .iter()
+            .find(|group| group.label == "个人")
+            .unwrap();
+        assert_eq!(personal.project_id, None, "个人组 projectId 空");
+        let kind = day
+            .groups
+            .iter()
+            .find(|group| group.label == "Kind 对话")
+            .unwrap();
+        assert_eq!(kind.project_id, None, "Kind 组 projectId 空");
+
+        // 排行：Kind 与个人的 projectId 都空，会同 key 合并（协议只增字段下已知语义）。
+        let none_rows: Vec<&MonitorUsageRow> = agg
+            .models
+            .iter()
+            .filter(|row| row.key == "deepseek-flash" && row.project_id.is_none())
+            .collect();
+        assert_eq!(none_rows.len(), 1, "个人+Kind 合并成一行");
+        assert_eq!(none_rows[0].requests, 2, "两边的请求合在一起");
+        assert!(
+            agg.models
+                .iter()
+                .any(|row| row.key == "deepseek-flash" && row.project_id.as_deref() == Some("p1"))
+        );
+        assert!(
+            agg.models
+                .iter()
+                .any(|row| row.key == "deepseek-flash" && row.project_id.as_deref() == Some("p2"))
+        );
     }
 }
 
@@ -1904,6 +2080,25 @@ mod t075_usage_tests {
         assert_eq!(attempt.input_tokens, 8_540);
         assert!(attempt.cost_usd.is_some(), "Attempt 花费按自己的日志现算");
         assert!(!attempt.unpriced, "有价目录里不能标无价");
+    }
+
+    #[test]
+    fn attempt_without_price_is_unpriced_not_zero() {
+        let (data, cwd, store) = super::tests::temp_store();
+        let task_fixture = task_with_usage(data.path(), cwd.path(), &store, &[1_000]);
+        let detail = task(
+            &store,
+            data.path(),
+            MonitorTaskRequest {
+                task_id: task_fixture.id.as_str().to_owned(),
+                attempt_id: None,
+            },
+            false,
+        )
+        .unwrap();
+        let attempt = detail.attempts.first().expect("有一个 Attempt");
+        assert_eq!(attempt.cost_usd, None, "没价格不能算 0");
+        assert!(attempt.unpriced, "没价格标不标无价");
     }
 }
 
