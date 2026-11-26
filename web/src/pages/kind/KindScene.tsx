@@ -16,7 +16,7 @@ export function KindScene({ pane }: { pane: string }) {
   const gateDetail = useKindStore((state) => state.gateDetail);
   const recheck = useKindStore((state) => state.recheck);
 
-  // T098.2：Kind 恢复两栏后 bootstrap/断开只由对话栏做一次；右栏不再各开一条连接
+  // Kind 恢复两栏后 bootstrap/断开只由对话栏做一次；右栏不再各开一条连接
   // （两条连接会互相顶掉 activeSocket，首用/门说明页也会重复渲染一份）。
   const active = pane === 'conversation';
   useEffect(() => {
