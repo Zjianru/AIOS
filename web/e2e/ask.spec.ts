@@ -41,6 +41,20 @@ test('提问整批：选项 + 自己写作答', async ({ page }) => {
   await expect(page.getByText('我自己写的答', { exact: true })).toBeVisible();
 });
 
+/// 问题卡不是 dialog，Esc 不能走停止整轮（否则会清空 next-turn 的排队消息）。
+test('问题卡上按 Esc：只关问题卡，不停整轮', async ({ page, request }) => {
+  await openAndAsk(page);
+  const before = await cancelledQuestions(request);
+  await page.keyboard.press('Escape');
+  await expect(page.getByText('（T007 e2e 假回放）')).toBeVisible({ timeout: 20_000 });
+  await expect.poll(() => cancelledQuestions(request), { timeout: 15_000 }).toBeGreaterThan(before);
+  const body = await call(request, { method: 'follow', lastSeq: 0 });
+  const aborted = (body.events as { type?: string; data?: { reason?: { kind?: string } } }[]).some(
+    (event) => event.type === 'turn/end' && event.data?.reason?.kind === 'aborted',
+  );
+  expect(aborted, 'Esc 关问题卡不应把整轮 aborted').toBeFalsy();
+});
+
 /// T007.6 清单 4：整批不答，模型收到用户没答后照常收尾。
 test('提问整批：整批不答', async ({ page, request }) => {
   await openAndAsk(page);

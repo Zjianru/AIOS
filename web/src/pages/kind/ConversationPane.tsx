@@ -43,12 +43,14 @@ export function ConversationPane() {
   const setAtBottom = useKindStore((state) => state.setAtBottom);
   const send = useKindStore((state) => state.send);
   const stop = useKindStore((state) => state.stop);
+  const dismiss = useKindStore((state) => state.dismiss);
   const streamingTurnId = useKindStore((state) => state.streamingTurnId);
   const connection = useKindStore((state) => state.connection);
   const waitingQuestion = useKindStore((state) => {
     const last = state.views[state.views.length - 1];
     return last?.question?.status === 'pending';
   });
+  const lastViewId = useKindStore((state) => state.views[state.views.length - 1]?.id ?? '');
   const running = streamingTurnId !== null;
   const offline = connection.state !== 'online';
   const sessionId = useKindStore((state) => state.sessionId);
@@ -267,17 +269,23 @@ export function ConversationPane() {
 
 
   // 停止（D12）：运行中按 Esc 随时停；有弹层开着时让弹层先处理 Esc。
+  // 问题卡没有 dialog/menu 角色，但此时 Esc 的本意是关掉问题卡，不是停整轮；
+  // 直接 stop 会走 Agent::cancel 清空 next-turn，把问题卡期间手打的消息一起吞掉。
   useEffect(() => {
     if (!running) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented) return;
       if (document.querySelector('[role="dialog"],[role="menu"]')) return;
       event.preventDefault();
+      if (waitingQuestion) {
+        dismiss(lastViewId);
+        return;
+      }
       stop();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [running, stop]);
+  }, [dismiss, lastViewId, running, stop, waitingQuestion]);
 
   const composerRef = useRef<ComposerHandle | null>(null);
 
