@@ -22,6 +22,7 @@
     "test:usage-wait": "node --experimental-strip-types scripts/usage-wait.test.mjs",
     "test:inbox-pages": "node --experimental-strip-types scripts/inbox-pages.test.mjs",
     "test:turn-views": "node --experimental-strip-types scripts/turn-views.test.mjs",
+    "test:rewind": "node --experimental-strip-types scripts/rewind.test.mjs",
     "test:work-groups": "node --experimental-strip-types scripts/work-groups.test.mjs",
     "test:program-messages": "node --experimental-strip-types scripts/program-messages.test.mjs",
     "test:monitor-ws": "node scripts/monitor-ws.test.mjs"

@@ -29,7 +29,8 @@ import type { TaskReadHeader } from '@/data/generated/TaskReadHeader';
 import type { TurnLabels } from './turnViews';
 import type { TurnViewData } from './turnViews';
 import { applyTaskCardStates } from './taskCardState';
-import { canvasTracks, compactionViewOf, deriveTurnViews, mergeCanvasTracks, prependOlderViews, reconcileTaskCards, taskCcFacts } from './turnViews';
+import { canvasTracks, compactionViewOf, deriveTurnViews, manualSummaryOf, mergeCanvasTracks, prependOlderViews, reconcileTaskCards, taskCcFacts } from './turnViews';
+import { rewindSourceOfMessage } from './rewind.ts';
 import { contextPercent, contextTokens } from '@/data/turnUsage';
 import { partialKindReactId, partialKindSayParts } from './kindOutput';
 import { getModelSettings } from '@/data/keyring';
@@ -125,6 +126,14 @@ let liveEvents: ServiceEvent[] = [];
 let contextWindow = 0;
 let pendingCompactionAuto = true;
 let livePendingCompaction: { id: string; window?: number } | null = null;
+
+/** T095.5：按日志 seq 取那一条用户消息的原文（恢复时放回输入框用）。 */
+export function rewindSourceOf(seq: number) {
+  const event = liveEvents.find((item) => item.seq === seq && item.type === 'user/message');
+  if (!event) return null;
+  const message = event.data?.message as { content?: unknown } | undefined;
+  return rewindSourceOfMessage(message);
+}
 let liveTurn: number | null = null;
 let liveStream = '';
 /**
@@ -325,11 +334,13 @@ function applyLiveEvent(event: ServiceEvent): void {
     return;
   }
   if (event.type === 'compaction/summary') {
-    const auto =
-      event.data.sourceCommandId === undefined || event.data.sourceCommandId === null
+    const manual = manualSummaryOf(event.data.sourceCommandId);
+    const auto = manual
+      ? false
+      : event.data.sourceCommandId === undefined || event.data.sourceCommandId === null
         ? pendingCompactionAuto
         : false;
-    const compaction = compactionViewOf(event.data, auto);
+    const compaction = compactionViewOf(event.data, auto, manual);
     const window = useKindStore.getState().modelWindows[String(event.data.model ?? '')];
     compaction.before = contextPercent(contextTokens(event.data.usage), window) ?? undefined;
     const compactionId = String(event.data.compactionId ?? String(event.seq));
@@ -362,6 +373,21 @@ function applyLiveEvent(event: ServiceEvent): void {
         stoppedAt: null,
       };
       livePendingCompaction = { id, window };
+      if (manual === 'upTo' && state.rewindDividerBeforeId) {
+        // 总结到这里为止：分隔插在选中的那句之前，而不是末尾。
+        const target = state.rewindDividerBeforeId;
+        const before = state.views.slice();
+        const index = before.findIndex((item) => item.id === target);
+        if (index >= 0) {
+          before.splice(index, 0, view);
+          return {
+            views: before,
+            byId: indexOf(before),
+            ...decorate(before),
+            rewindDividerBeforeId: null,
+          };
+        }
+      }
       const exists = state.views.some((item) => item.id === id);
       const views = (exists ? state.views.map((item) => (item.id === id ? view : item)) : state.views.concat(view)).sort(
         (left, right) => Number(left.id.split('-')[1]) - Number(right.id.split('-')[1]),
@@ -523,6 +549,20 @@ export const useKindStore = create<KindState>()((set, get) => ({
   composerResultCard: null,
   queueRestores: [],
   restoreMissing: false,
+  rewindDividerBeforeId: null,
+  setRewindDividerBeforeId: (id) => set({ rewindDividerBeforeId: id }),
+  dropViewsFrom: (viewId, startSeq, endSeq) =>
+    set((state) => {
+      const index = state.views.findIndex((view) => view.id === viewId);
+      if (index < 0) return {};
+      const views = state.views.slice(0, index);
+      // 恢复区间里的历史不再参与画布当前版（T095.5：第 2 版被收起，当前版回到第 1 版）。
+      liveEvents = liveEvents.filter(
+        (event) => event.seq < startSeq || event.seq > endSeq,
+      );
+      const tracks = canvasTracks(liveEvents);
+      return { views, byId: indexOf(views), ...decorate(views), canvasTracks: tracks };
+    }),
   reveal: null,
   revealTurn: (turnId) => set({ reveal: { turnId, at: Date.now() } }),
   revealTaskResult: async (taskId, preferredTurn) => {

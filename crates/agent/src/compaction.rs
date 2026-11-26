@@ -674,7 +674,7 @@ pub(crate) async fn rewind_summarize_from(
     let (outcome, checkpoint_seq) = compact_transaction(
         host,
         None,
-        None,
+        Some("rewind:from".to_owned()),
         CompactionTrigger::Manual,
         range,
         seqs,
@@ -742,7 +742,7 @@ pub(crate) async fn rewind_summarize_up_to(
     let (outcome, checkpoint_seq) = compact_transaction(
         host,
         None,
-        None,
+        Some("rewind:up-to".to_owned()),
         CompactionTrigger::Manual,
         range,
         seqs,

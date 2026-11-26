@@ -45,6 +45,8 @@ export type QuestionView =
 /** 压缩：在对话里是一条分隔线，不是一轮。 */
 export interface CompactionView {
   auto: boolean;
+  /** T095.5：两种总结的分隔（从这里起 / 到这里为止）；普通压缩没有。 */
+  manual?: 'from' | 'upTo';
  /** ：压缩前占窗口的百分比（窗口/前后任一拿不到就不显示）。 */
   before?: number;
  /** ：压缩后第一条响应占窗口的百分比。 */
@@ -70,6 +72,8 @@ export interface TurnUserView {
   resultCard: { taskId: string; title: string; version: number } | null;
  /** 服务端给这条消息的 rpcId（续改说明靠它认，不靠正文）。 */
   rpcId: string | null;
+  /** T095.5：日志里这条 user/message 的 seq（回退菜单用它定位原文）。 */
+  seq?: number;
 }
 
 

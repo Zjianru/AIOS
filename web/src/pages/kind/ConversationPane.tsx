@@ -12,7 +12,12 @@ import type { ListRange, VirtuosoHandle } from 'react-virtuoso';
 import { ArrowDown, SendHorizontal, Square, WifiOff } from 'lucide-react';
 import { toast } from 'sonner';
 import { TurnRow } from './TurnRow';
-import { useKindStore } from './kindStore';
+import { rewindSourceOf, useKindStore } from './kindStore';
+import { RewindPanel } from './RewindPanel';
+import type { RewindAction } from './RewindPanel';
+import { viewOfSeq } from './rewind.ts';
+import type { RewindRow } from './rewind.ts';
+import { ServiceHttpError, rewindApply, rewindList } from '@/data/service';
 import { ModelPicker } from './ModelPicker';
 import { ComposerDock } from './ComposerDock';
 import { Composer } from './composer/Composer';
@@ -268,18 +273,124 @@ export function ConversationPane() {
   }, [reveal, firstItemIndex, viewCount]);
 
 
-  // 停止（D12）：运行中按 Esc 随时停；有弹层开着时让弹层先处理 Esc。
+  // T095.5：双击 Esc 的菜单与第一下提示。
+  const [rewindPhase, setRewindPhase] = useState<'closed' | 'list' | 'actions'>('closed');
+  const [rewindRows, setRewindRows] = useState<RewindRow[]>([]);
+  const [rewindSelected, setRewindSelected] = useState<number | null>(null);
+  const [rewindNotice, setRewindNotice] = useState<string | null>(null);
+  const [escHint, setEscHint] = useState<string | null>(null);
+  const lastEscRef = useRef(0);
+
+  const closeRewind = useCallback(() => {
+    setRewindPhase('closed');
+    setRewindNotice(null);
+    setRewindSelected(null);
+    requestAnimationFrame(() => composerRef.current?.focus());
+  }, []);
+
+  const openRewind = useCallback(async () => {
+    try {
+      const response = await rewindList();
+      const rows = response.messages ?? [];
+      setRewindRows(rows);
+      setRewindSelected(rows.length > 0 ? (rows[rows.length - 1]?.seq ?? null) : null);
+      setRewindNotice(null);
+      setRewindPhase('list');
+    } catch (error) {
+      toast('回退菜单没打开', { description: error instanceof Error ? error.message : '再试一次' });
+    }
+  }, []);
+
+  const applyRewind = useCallback(
+    async (action: RewindAction) => {
+      const seq = rewindSelected;
+      if (seq === null) return;
+      if (useKindStore.getState().streamingTurnId) {
+        setRewindNotice('Kind 正在做事。先按 Esc 停下，再选。');
+        setRewindPhase('list');
+        return;
+      }
+      // 总结到这里为止：分隔线要落在选中的那句之前。live 事件可能比 HTTP 回执先到，
+      // 所以先把目标轮记下，事件到时按它插；被拒再清掉。
+      const upToViewId =
+        action === 'summarize-up-to'
+          ? (viewOfSeq(useKindStore.getState().views, seq)?.id ?? null)
+          : null;
+      if (upToViewId) useKindStore.getState().setRewindDividerBeforeId(upToViewId);
+      try {
+        const response = await rewindApply(action, seq);
+        if (!response.applied) throw new Error('服务没有回写入结果');
+        if (action === 'restore') {
+          const view = viewOfSeq(useKindStore.getState().views, seq);
+          const source = rewindSourceOf(seq);
+          if (view) {
+            useKindStore
+              .getState()
+              .dropViewsFrom(view.id, response.applied.startSeq, response.applied.endSeq);
+          }
+          if (source) composerRef.current?.putBack(source);
+          closeRewind();
+          return;
+        }
+        if (action === 'summarize-from') {
+          const source = rewindSourceOf(seq);
+          if (source) composerRef.current?.putBack(source);
+          closeRewind();
+          return;
+        }
+        // 总结到这里为止：分隔线要落在选中的那句之前（live 事件到时按这个 id 插）。
+        const view = viewOfSeq(useKindStore.getState().views, seq);
+        useKindStore.getState().setRewindDividerBeforeId(view?.id ?? null);
+        closeRewind();
+      } catch (error) {
+        if (upToViewId) useKindStore.getState().setRewindDividerBeforeId(null);
+        const detail =
+          error instanceof ServiceHttpError
+            ? error.detail ?? error.message
+            : error instanceof Error
+              ? error.message
+              : '这句现在回退不了';
+        setRewindNotice(detail);
+        setRewindPhase('list');
+      }
+    },
+    [closeRewind, rewindSelected],
+  );
+
+  // T095.5：Esc 照 Claude Code——跑着按一下先停（D12）；停着 500ms 内两下：有字清空（↑ 找回），空着开菜单。
+  // 有弹层/菜单开着时让它们先处理 Esc。
   useEffect(() => {
-    if (!running) return;
+    let timer = 0;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing) return;
       if (document.querySelector('[role="dialog"],[role="menu"]')) return;
       event.preventDefault();
-      stop();
+      window.clearTimeout(timer);
+      if (useKindStore.getState().streamingTurnId) {
+        lastEscRef.current = 0;
+        setEscHint(null);
+        stop();
+        return;
+      }
+      const hasDraft = composerRef.current?.hasDraftContent() ?? false;
+      const now = Date.now();
+      if (now - lastEscRef.current < 500) {
+        lastEscRef.current = 0;
+        setEscHint(null);
+        if (hasDraft) composerRef.current?.clearToHistory();
+        else void openRewind();
+        return;
+      }
+      lastEscRef.current = now;
+      setEscHint(hasDraft ? '再按一次 Esc 清空输入框' : '再按一次 Esc 回到之前说过的一句');
+      timer = window.setTimeout(() => setEscHint(null), 500);
     };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [running, stop]);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [openRewind, stop]);
 
   const composerRef = useRef<ComposerHandle | null>(null);
 
@@ -434,9 +545,25 @@ export function ConversationPane() {
               有一句排队的话没找回来
             </div>
           ) : null}
-          <div className={cn('rounded-card border border-line-2 bg-raised/70 px-3 py-2 transition-colors')}>
-            
-            <Composer
+          <div className="relative">
+            {rewindPhase !== 'closed' ? (
+              <RewindPanel
+                phase={rewindPhase}
+                rows={rewindRows}
+                views={views}
+                selectedSeq={rewindSelected}
+                notice={rewindNotice}
+                onSelect={(seq) => {
+                  setRewindSelected(seq);
+                  setRewindPhase('actions');
+                }}
+                onBack={() => setRewindPhase('list')}
+                onClose={closeRewind}
+                onApply={(action) => void applyRewind(action)}
+              />
+            ) : null}
+            <div className={cn('rounded-card border border-line-2 bg-raised/70 px-3 py-2 transition-colors')}>
+              <Composer
               ref={composerRef}
               offline={offline}
               onSend={onComposerSend}
@@ -470,13 +597,19 @@ export function ConversationPane() {
                   <SendHorizontal className="size-3.5" />
                 </button>
               )}
-            </Composer>
+              </Composer>
+            </div>
           </div>
           <ComposerDock
             running={running}
             waitingQuestion={waitingQuestion}
             onJumpToQuestion={scrollToLatest}
           />
+          {escHint ? (
+            <p className="mt-1 text-1 leading-4 text-ink-2" data-kind="esc-hint">
+              {escHint}
+            </p>
+          ) : null}
         </div>
       </div>
     </div>

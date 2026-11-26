@@ -35,6 +35,7 @@ import type { ProjectUpdateRequest } from './generated/ProjectUpdateRequest';
 import type { ProjectUpdateResponse } from './generated/ProjectUpdateResponse';
 import type { TaskSetProjectResponse } from './generated/TaskSetProjectResponse';
 import type { Response } from './generated/Response';
+import type { RewindResponse } from './generated/RewindResponse';
 import type { RootState } from './generated/RootState';
 import type { ServiceAnswer } from './generated/ServiceAnswer';
 import type { SessionModelSelectRequest } from './generated/SessionModelSelectRequest';
@@ -313,6 +314,19 @@ export async function cardAct(
 /** 手动压缩（T007.8）：把之前的对话换成一份摘要，原文留在日志里。 */
 export async function compactThread(commandId: string): Promise<void> {
   await post({ method: 'compact', commandId });
+}
+
+/** T095.5：回退菜单的候选（最后一次压缩之后、可见的用户消息，最新在下）。 */
+export async function rewindList(): Promise<RewindResponse> {
+  return post({ method: 'rewind', action: 'list' });
+}
+
+/** T095.5：执行一个回退动作；被拒时服务端回可读原因。 */
+export async function rewindApply(
+  action: 'restore' | 'summarize-from' | 'summarize-up-to',
+  fromSeq: number,
+): Promise<RewindResponse> {
+  return post({ method: 'rewind', action, fromSeq });
 }
 
 export async function recheckRoot(): Promise<RootState> {

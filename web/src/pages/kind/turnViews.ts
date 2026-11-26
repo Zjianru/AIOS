@@ -68,8 +68,19 @@ export function summaryTextOf(data: Record<string, unknown>): string {
     .join('');
 }
 
-export function compactionViewOf(data: Record<string, unknown>, auto: boolean): CompactionView {
-  return { auto, summary: summaryTextOf(data) };
+export function compactionViewOf(
+  data: Record<string, unknown>,
+  auto: boolean,
+  manual?: 'from' | 'upTo',
+): CompactionView {
+  return { auto, ...(manual ? { manual } : {}), summary: summaryTextOf(data) };
+}
+
+/** T095.5：两种总结的 sourceCommandId 标记（agent rewind_summarize_* 写入）。 */
+export function manualSummaryOf(sourceCommandId: unknown): 'from' | 'upTo' | undefined {
+  if (sourceCommandId === 'rewind:from') return 'from';
+  if (sourceCommandId === 'rewind:up-to') return 'upTo';
+  return undefined;
 }
 
 export function deriveTurnViews(
@@ -453,7 +464,10 @@ export function deriveTurnViews(
           typeof source?.source === 'string' ? source.source : source?.source?.kind;
         if (kind !== undefined && kind !== 'user' && kind !== 'skill-invocation') break;
         const view = userOf(data.message, userRpcIdOf(data.message));
-        if (view) ensure(turn).user = view;
+        if (view) {
+          view.seq = event.seq;
+          ensure(turn).user = view;
+        }
         break;
       }
       case 'assistant/message': {
@@ -714,9 +728,11 @@ export function deriveTurnViews(
       }
       case 'compaction/summary': {
         const raw = ensure(turn);
-        const auto =
-          data.sourceCommandId === undefined || data.sourceCommandId === null;
-        const view = compactionViewOf(data, auto);
+        const manual = manualSummaryOf(data.sourceCommandId);
+        const auto = manual
+          ? false
+          : data.sourceCommandId === undefined || data.sourceCommandId === null;
+        const view = compactionViewOf(data, auto, manual);
         const window = labels.modelWindows?.[String(data.model ?? '')];
         view.before = contextPercent(contextTokens(data.usage), window) ?? undefined;
         raw.compaction = view;

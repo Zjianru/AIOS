@@ -19,6 +19,7 @@ import { useKindStore } from '../kindStore';
 import { fileMentions } from '../atGrammar';
 import type { QueueRestore } from '../inbox';
 import { mimeFromFileName } from '../fileMime.ts';
+import type { RewindSource } from '../rewind.ts';
 import { attachmentGet, attachmentPut, fileReferences } from '@/data/service';
 import type { FileReferenceEntry, SendAttachmentRef } from '@/data/service';
 import { cn } from '@/lib/utils';
@@ -53,6 +54,24 @@ export interface ComposerHandle {
   focus: () => void;
   /** T015.4：画布里的按钮把一句话放进输入框（接在已经写的后面，不发送）。 */
   putFromCanvas: (text: string, canvas: { id: string; title: string }) => void;
+  /** T095.5：输入框里有没有东西（两下 Esc 决定清空还是开菜单）。 */
+  hasDraftContent: () => boolean;
+  /** T095.5：两下 Esc 清空：草稿压进 cleared，↑ 能取回。 */
+  clearToHistory: () => void;
+  /** T095.5：↑ 取回最近清掉的一条。 */
+  recallCleared: () => boolean;
+  /** T095.5：恢复对话时把原文（字/粘贴/附件/结果卡/画布标记）放回输入框。 */
+  putBack: (source: RewindSource) => void;
+}
+
+interface ClearedDraft {
+  text: string;
+  pastes: string[];
+  attachments: { id: string; name: string; bytes: number; mime: string }[];
+  fromCanvas: { id: string; title: string } | null;
+  resultCard: { taskId: string; title: string; version: number } | null;
+  extraCanvases: { id: string; title: string }[];
+  extraResultCards: { taskId: string; title: string; version: number }[];
 }
 
 interface ComposerProps {
@@ -140,6 +159,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const [extraResultCards, setExtraResultCards] = useState<
     { taskId: string; title: string; version: number }[]
   >([]);
+  // T095.5：两下 Esc 清掉的草稿，↑ 取最近一条；跟草稿一起存 localStorage。
+  const [cleared, setCleared] = useState<ClearedDraft[]>([]);
   /** T054.2：结果卡「要求修改」放进输入框的那张卡（一次一张，再点别的卡就换掉）。 */
   const [resultCard, setResultCard] = useState<{
     taskId: string;
@@ -305,6 +326,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         canvases?: unknown;
         resultCards?: unknown;
         restoredKeys?: unknown;
+        cleared?: unknown;
       };
       if (typeof draft.text === 'string') setText(draft.text);
       const fromCanvas = draft.canvas as { id?: unknown; title?: unknown } | null | undefined;
@@ -372,6 +394,17 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           (item): item is string => typeof item === 'string',
         );
       }
+      if (Array.isArray(draft.cleared)) {
+        setCleared(
+          draft.cleared.filter(
+            (item): item is ClearedDraft =>
+              Boolean(item) &&
+              typeof item === 'object' &&
+              typeof (item as { text?: unknown }).text === 'string' &&
+              Array.isArray((item as { pastes?: unknown }).pastes),
+          ),
+        );
+      }
     } catch {
       // 读不出或格式不对：当空草稿，不打扰用户。
     }
@@ -390,13 +423,14 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       canvases: [...(fromCanvas ? [fromCanvas] : []), ...extraCanvases],
       resultCards: [...(resultCard ? [resultCard] : []), ...extraResultCards],
       restoredKeys: restoredKeysRef.current,
+      cleared,
     };
     try {
       localStorage.setItem('aios.kind.draft.' + draftScope, JSON.stringify(draft));
     } catch {
       // 存不下（隐私模式）就算了。
     }
-  }, [attachments, draftScope, extraCanvases, extraResultCards, fromCanvas, pastes, quotes, resultCard, text]);
+  }, [attachments, cleared, draftScope, extraCanvases, extraResultCards, fromCanvas, pastes, quotes, resultCard, text]);
 
   // 停止时内核照 DSH clear 清掉排队消息；把 canceled splice 里被删的、
   // 页面从日志折叠回来的用户消息放回输入框。每条 seq 最多放回一次：放回过的 seq 跟草稿
@@ -581,6 +615,127 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     }
   }, [attachments, draftScope, extraCanvases, extraResultCards, fromCanvas, offline, onSend, pastes, quote, quotes, resize, resultCard, text]);
 
+
+  const hasDraftContent = useCallback(
+    () =>
+      Boolean(
+        text.trim() ||
+          pastes.length > 0 ||
+          attachments.length > 0 ||
+          fromCanvas ||
+          resultCard ||
+          extraCanvases.length > 0 ||
+          extraResultCards.length > 0,
+      ),
+    [attachments.length, extraCanvases.length, extraResultCards.length, fromCanvas, pastes.length, resultCard, text],
+  );
+
+  /** T095.5：两下 Esc 清空输入框；清掉的东西压进 cleared，↑ 能取回。 */
+  const clearToHistory = useCallback(() => {
+    if (!hasDraftContent()) return;
+    touchedRef.current = true;
+    changedDuringSendRef.current = true;
+    setCleared((previous) =>
+      previous.concat({
+        text,
+        pastes,
+        attachments: attachments.map(({ id, name, bytes, mime }) => ({ id, name, bytes, mime })),
+        fromCanvas,
+        resultCard,
+        extraCanvases,
+        extraResultCards,
+      }),
+    );
+    setText('');
+    setQuotes([]);
+    setPastes([]);
+    setAttachments([]);
+    setFromCanvas(null);
+    setResultCard(null);
+    setExtraCanvases([]);
+    setExtraResultCards([]);
+    setAtMenu(null);
+    requestAnimationFrame(() => resize());
+  }, [attachments, extraCanvases, extraResultCards, fromCanvas, hasDraftContent, pastes, resize, resultCard, text]);
+
+  /** T095.5：输入框空着按 ↑，取回最近清掉的一条。 */
+  const recallCleared = useCallback(() => {
+    const recalled = cleared[cleared.length - 1];
+    if (!recalled) return false;
+    touchedRef.current = true;
+    changedDuringSendRef.current = true;
+    setCleared((previous) => previous.slice(0, -1));
+    setText(recalled.text);
+    setQuotes([]);
+    setPastes(recalled.pastes);
+    setAttachments(recalled.attachments);
+    setFromCanvas(recalled.fromCanvas);
+    setResultCard(recalled.resultCard);
+    setExtraCanvases(recalled.extraCanvases);
+    setExtraResultCards(recalled.extraResultCards);
+    requestAnimationFrame(() => {
+      resize();
+      const input = inputRef.current;
+      if (!input) return;
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    });
+    return true;
+  }, [cleared, resize]);
+
+  /** T095.5：恢复对话时把原文放回输入框（字接在已有字后面；附带的东西按顺序加在后面）。 */
+  const putBack = useCallback(
+    (source: RewindSource) => {
+      touchedRef.current = true;
+      changedDuringSendRef.current = true;
+      if (source.text) {
+        setText((previous) =>
+          !previous.trim()
+            ? source.text
+            : previous.replace(/\s+$/, '') + String.fromCharCode(10) + source.text,
+        );
+      }
+      if (source.pastes.length > 0) setPastes((previous) => previous.concat(source.pastes));
+      if (source.files.length > 0) {
+        setAttachments((previous) =>
+          previous.concat(
+            source.files.map((file) => ({
+              id: file.id,
+              name: file.name,
+              bytes: file.bytes,
+              mime: file.mime ?? mimeFromFileName(file.name) ?? 'text/plain',
+            })),
+          ),
+        );
+      }
+      if (source.resultCards.length > 0) {
+        if (resultCard === null) {
+          setResultCard(source.resultCards[0] ?? null);
+          if (source.resultCards.length > 1) {
+            setExtraResultCards((previous) => previous.concat(source.resultCards.slice(1)));
+          }
+        } else {
+          setExtraResultCards((previous) => previous.concat(source.resultCards));
+        }
+      }
+      if (source.canvases.length > 0) {
+        if (fromCanvas === null) {
+          setFromCanvas(source.canvases[0] ?? null);
+          if (source.canvases.length > 1) {
+            setExtraCanvases((previous) => previous.concat(source.canvases.slice(1)));
+          }
+        } else {
+          setExtraCanvases((previous) => previous.concat(source.canvases));
+        }
+      }
+      requestAnimationFrame(() => {
+        resize();
+        inputRef.current?.focus();
+      });
+    },
+    [fromCanvas, resize, resultCard],
+  );
+
   useImperativeHandle(
     ref,
     () => ({
@@ -597,8 +752,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           inputRef.current?.focus();
         });
       },
+      hasDraftContent,
+      clearToHistory,
+      recallCleared,
+      putBack,
     }),
-    [resize, submit],
+    [clearToHistory, hasDraftContent, putBack, recallCleared, resize, submit],
   );
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -623,6 +782,20 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       if (event.key === 'Escape') {
         event.preventDefault();
         setAtMenu(null);
+        return;
+      }
+    }
+    if (event.key === 'ArrowUp' && !atMenu) {
+      const empty =
+        !text.trim() &&
+        pastes.length === 0 &&
+        attachments.length === 0 &&
+        !fromCanvas &&
+        !resultCard &&
+        extraCanvases.length === 0 &&
+        extraResultCards.length === 0;
+      if (empty && recallCleared()) {
+        event.preventDefault();
         return;
       }
     }
@@ -703,23 +876,26 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           />
         ))}
         {fromCanvas ? (
-          <FromCanvasChip
+          <span data-kind="attachment-canvas" className="mb-1.5 block">
+            <FromCanvasChip
             title={fromCanvas.title}
             onRemove={() => {
               touchedRef.current = true;
               changedDuringSendRef.current = true;
               setFromCanvas(null);
             }}
-            className="mb-1.5"
-          />
+              className="mb-1.5"
+            />
+          </span>
         ) : null}
         {extraCanvases.map((canvas, index) => (
-          <FromCanvasChip
-            key={'extra-canvas-' + index}
-            title={canvas.title}
-            onRemove={() => setExtraCanvases((previous) => previous.filter((_, position) => position !== index))}
-            className="mb-1.5"
-          />
+          <span key={'extra-canvas-' + index} data-kind="attachment-canvas" className="mb-1.5 block">
+            <FromCanvasChip
+              title={canvas.title}
+              onRemove={() => setExtraCanvases((previous) => previous.filter((_, position) => position !== index))}
+              className="mb-1.5"
+            />
+          </span>
         ))}
         {quotes.length > 0 || pastes.length > 0 || attachments.length > 0 ? (
           <div ref={cardsRef} className="mb-1.5 flex gap-1.5 overflow-x-auto pb-1" data-kind="composer-cards">
