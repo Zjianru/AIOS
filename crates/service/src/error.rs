@@ -44,6 +44,9 @@ pub enum ServiceError {
     /// 记忆库没开或读写失败；文字已是可读原因。
     #[error("记忆不可用：{0}")]
     MemoryUnavailable(String),
+    /// 恢复/总结被拒（跑着、目标不在最后 checkpoint 之后、不是用户消息、已被藏）。
+    #[error("{0}")]
+    RewindRejected(String),
 }
 
 /// 服务的结构化错误码（DSH remote-error 形状：`<namespace>/<kind>`，小写连字符）。
@@ -71,11 +74,12 @@ pub enum ServiceErrorCode {
     RequestInvalidMessage,
     TaskUnavailable,
     MemoryUnavailable,
+    RewindRejected,
 }
 
 impl ServiceErrorCode {
     /// 码表全集（覆盖检查用：多一个少一个都要失败）。
-    pub const ALL: [ServiceErrorCode; 20] = [
+    pub const ALL: [ServiceErrorCode; 21] = [
         ServiceErrorCode::AgentInternal,
         ServiceErrorCode::QuestionAnswerRejected,
         ServiceErrorCode::RootUnavailable,
@@ -96,6 +100,7 @@ impl ServiceErrorCode {
         ServiceErrorCode::RequestInvalidMessage,
         ServiceErrorCode::TaskUnavailable,
         ServiceErrorCode::MemoryUnavailable,
+        ServiceErrorCode::RewindRejected,
     ];
 
     /// 线上的码名。
@@ -121,6 +126,7 @@ impl ServiceErrorCode {
             Self::RequestInvalidMessage => "request/invalid-message",
             Self::TaskUnavailable => "task/unavailable",
             Self::MemoryUnavailable => "memory/unavailable",
+            Self::RewindRejected => "rewind/rejected",
         }
     }
 }
@@ -158,6 +164,7 @@ impl ServiceError {
             Self::MessageEmpty => ServiceErrorCode::RequestInvalidMessage,
             Self::TaskUnavailable(_) => ServiceErrorCode::TaskUnavailable,
             Self::MemoryUnavailable(_) => ServiceErrorCode::MemoryUnavailable,
+            Self::RewindRejected(_) => ServiceErrorCode::RewindRejected,
         }
     }
 }

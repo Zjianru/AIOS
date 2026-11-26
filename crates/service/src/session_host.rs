@@ -13,8 +13,9 @@ use crate::protocol::{
     AnswerRequest, AnswerResponse, Call, CancelRequest, CancelResponse, CardActResponse,
     CompactCounts, CompactRequest, CompactResponse, DeliveryMode, DismissQuestionsRequest,
     DismissQuestionsResponse, EventsRequest, EventsResponse, FollowRequest, FollowResponse,
-    HostLocation, MonitorReportResponse, Object, RecheckResponse, Response, RootState, SendRequest,
-    SendResponse, ServiceEvent, StatusRequest, StatusResponse,
+    HostLocation, MonitorReportResponse, Object, RecheckResponse, Response, RewindAction,
+    RewindApplied, RewindRequest, RewindResponse, RootState, SendRequest, SendResponse,
+    ServiceEvent, StatusRequest, StatusResponse,
 };
 
 /// 与载体无关的服务宿主：绑定一个 Agent/会话，调用经 dispatch 进入，事件从广播流出。
@@ -106,6 +107,7 @@ impl ServiceHost {
                 .await
                 .map(Response::DismissQuestions),
             Call::Compact(request) => self.compact(request).await.map(Response::Compact),
+            Call::Rewind(request) => self.rewind(request).await.map(Response::Rewind),
             Call::Status(request) => self.status(request).await.map(Response::Status),
             Call::Follow(request) => self.follow(request).await.map(Response::Follow),
             Call::Events(request) => self.events(request).await.map(Response::Events),
@@ -294,6 +296,41 @@ impl ServiceHost {
             compacted: outcome.map(|outcome| CompactCounts {
                 shadowed_items: outcome.shadowed_items,
                 shadowed_tokens: outcome.shadowed_tokens,
+            }),
+        })
+    }
+
+    /// T095.4：恢复/总结（list 只读；apply 三个动作写日志并返回区间）。
+    pub async fn rewind(&self, request: RewindRequest) -> Result<RewindResponse, ServiceError> {
+        if request.action == RewindAction::List {
+            return Ok(RewindResponse {
+                messages: crate::rewind::candidates(&self.agent.session_events_from(0)),
+                applied: None,
+            });
+        }
+        let from_seq = request
+            .from_seq
+            .ok_or_else(|| ServiceError::RewindRejected("没有指定从那句开始".to_owned()))?;
+        if self.agent.is_running() {
+            return Err(ServiceError::RewindRejected(
+                "Kind 正在跑这一轮，先停止再回退或总结".to_owned(),
+            ));
+        }
+        let events = self.agent.session_events_from(0);
+        crate::rewind::validate(&events, from_seq, request.action)?;
+        let outcome = match request.action {
+            RewindAction::Restore => self.agent.rewind_restore(from_seq).await?,
+            RewindAction::SummarizeFrom => self.agent.rewind_summarize_from(from_seq).await?,
+            RewindAction::SummarizeUpTo => self.agent.rewind_summarize_up_to(from_seq).await?,
+            RewindAction::List => unreachable!("list 在上面已返回"),
+        };
+        Ok(RewindResponse {
+            messages: Vec::new(),
+            applied: Some(RewindApplied {
+                event_seq: outcome.event_seq,
+                checkpoint_seq: outcome.checkpoint_seq,
+                start_seq: outcome.start_seq,
+                end_seq: outcome.end_seq,
             }),
         })
     }

@@ -17,6 +17,7 @@ mod host;
 mod legacy_root_session;
 mod memory;
 mod memory_index;
+mod rewind;
 mod root;
 mod root_hotfix;
 mod root_states;

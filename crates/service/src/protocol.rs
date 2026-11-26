@@ -44,6 +44,8 @@ pub enum Call {
     Answer(AnswerRequest),
     DismissQuestions(DismissQuestionsRequest),
     Compact(CompactRequest),
+    /// T095.4：恢复/总结（list + 三个 apply 动作）。
+    Rewind(RewindRequest),
     Status(StatusRequest),
     Follow(FollowRequest),
     Events(EventsRequest),
@@ -145,6 +147,7 @@ pub enum Response {
     Answer(AnswerResponse),
     DismissQuestions(DismissQuestionsResponse),
     Compact(CompactResponse),
+    Rewind(RewindResponse),
     Status(StatusResponse),
     Follow(FollowResponse),
     Events(EventsResponse),
@@ -357,6 +360,57 @@ pub struct CompactCounts {
 pub struct CompactResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compacted: Option<CompactCounts>,
+}
+
+/// T095.4：恢复/总结的四个动作（list 只读，其余三个写日志）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "kebab-case")]
+pub enum RewindAction {
+    List,
+    Restore,
+    SummarizeFrom,
+    SummarizeUpTo,
+}
+
+/// T095.4：恢复/总结请求；fromSeq 是选中的那条用户消息的 seq。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct RewindRequest {
+    pub action: RewindAction,
+    #[serde(default, rename = "fromSeq", skip_serializing_if = "Option::is_none")]
+    pub from_seq: Option<u64>,
+}
+
+/// 菜单里的一条用户消息（时间 + 开头一行）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct RewindMessage {
+    pub seq: u64,
+    pub time: u64,
+    pub text: String,
+}
+
+/// apply 的回执：写了哪条事件、区间和（总结时的）checkpoint seq。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct RewindApplied {
+    #[serde(rename = "eventSeq")]
+    pub event_seq: u64,
+    #[serde(
+        default,
+        rename = "checkpointSeq",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub checkpoint_seq: Option<u64>,
+    #[serde(rename = "startSeq")]
+    pub start_seq: u64,
+    #[serde(rename = "endSeq")]
+    pub end_seq: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct RewindResponse {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub messages: Vec<RewindMessage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied: Option<RewindApplied>,
 }
 
 /// 被动状态（DSH state 的第一版子集）。

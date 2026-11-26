@@ -84,6 +84,7 @@ mod projects;
 mod propose;
 mod protocol;
 mod result_cards;
+mod rewind;
 mod root_lifecycle;
 mod routing;
 mod session_host;
