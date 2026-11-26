@@ -24,14 +24,27 @@ test('项目页：跟 Kind 说、目录说明/建于、项目记忆/监控入口
     await expect(page.locator('[data-page="project"]')).toBeVisible({ timeout: 30_000 });
 
     await expect(page.locator('[data-kind="project-kind-say"]')).toContainText('跟 Kind 说');
-    await expect(page.getByText('默认目录只用来给派任务预填工作目录', { exact: false })).toBeVisible();
-    await expect(page.locator('[data-kind="project-created-at"]')).toContainText('建于');
-    await expect(page.locator('[data-kind="project-memory-count"]')).toContainText('项目记忆');
-    await expect(page.locator('[data-kind="project-memory-count"]')).toContainText('你定的');
-    await expect(page.locator('[data-kind="project-memory-count"]')).toContainText('Kind 记的');
-    await expect(page.locator('[data-kind="project-monitor-link"]')).toBeVisible();
-    await expect(page.locator('[data-kind="project-work-link"]')).toBeVisible();
+    // 大标题 + 一句目标 + 入口一行（不是标签表单/三 pill）。
+    await expect(page.locator('[data-kind="project-name"]')).toContainText('T098 项目页对照');
+    await expect(page.getByText('把项目页照原型补齐', { exact: false })).toBeVisible();
+    await expect(page.getByText('派任务时预填成任务的目录', { exact: false })).toBeVisible();
+    await expect(page.locator('[data-kind="project-created-at"]')).toContainText('月');
+    await expect(page.locator('[data-kind="project-memory-count"]')).toHaveAttribute('data-project-memory-mine', '0');
+    await expect(page.locator('[data-kind="project-memory-count"]')).toHaveAttribute('data-project-memory-kinds', '0');
+    await expect(page.locator('[data-kind="project-memory-link"]')).toContainText('项目记忆');
+    await expect(page.locator('[data-kind="project-monitor-link"]')).toContainText('监控');
+    await expect(page.locator('[data-kind="project-work-link"]')).toContainText('在工作页看这个项目');
     await expect(page.locator('[data-kind="project-empty"]')).toContainText('这个项目还没有任务');
+
+    // 「目标」「默认目录」是原型的一行可改字：点笔出输入框，Esc 退出不保存。
+    await page.locator('[data-kind="project-edit-goal"]').click();
+    const goalInput = page.locator('[data-kind="project-goal"] input');
+    await expect(goalInput).toHaveValue('把项目页照原型补齐');
+    await goalInput.press('Escape');
+    await page.locator('[data-kind="project-edit-dir"]').click();
+    const dirInput = page.locator('[data-kind="project-dir"] input');
+    await expect(dirInput).toHaveAttribute('placeholder', '不设');
+    await dirInput.press('Escape');
 
     // 在工作页看这个项目：带项目筛选过去。
     await page.locator('[data-kind="project-work-link"]').click();
@@ -57,9 +70,25 @@ test('新建项目对话框：名字/一句目标/默认目录、取消/创建',
     await expect(dialog).toBeVisible();
     await expect(dialog).toContainText('新建项目');
     await expect(dialog).toContainText('名字必有；目标和默认目录可以以后改');
-    await expect(dialog.locator('[data-kind="new-project-name"]')).toBeVisible();
+    const nameInput = dialog.locator('[data-kind="new-project-name"]');
+    const goalInput = dialog.locator('[data-kind="new-project-goal"]');
+    const dirInput = dialog.locator('[data-kind="new-project-dir"]');
+    await expect(nameInput).toBeVisible();
+    await expect(goalInput).toBeVisible();
+    await expect(goalInput).toHaveAttribute('placeholder', '这个项目要变成什么');
+    await expect(dirInput).toBeVisible();
+    await expect(dirInput).toHaveAttribute('placeholder', '~/projects/...');
     await expect(dialog.getByText('取消', { exact: true })).toBeVisible();
     await expect(dialog.getByText('创建', { exact: true })).toBeVisible();
+
+    // 走创建：建完跳项目页，名字/目标都在。
+    await nameInput.fill('对话框建的项目');
+    await goalInput.fill('建完能跳进去');
+    await dialog.locator('[data-kind="new-project-submit"]').click();
+    await expect(page).toHaveURL(/#project:/, { timeout: 30_000 });
+    await expect(page.locator('[data-page="project"]')).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator('[data-kind="project-name"]')).toContainText('对话框建的项目');
+    await expect(page.getByText('建完能跳进去', { exact: false })).toBeVisible();
   } finally {
     await fixture.close();
   }

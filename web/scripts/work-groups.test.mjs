@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { STAGE_LABEL, columnOf, problemsOf, weekDone } from '../src/pages/work/workModel.ts';
+import {
+  STAGE_LABEL,
+  columnOf,
+  filterWorkForProject,
+  problemsOf,
+  weekDone,
+} from '../src/pages/work/workModel.ts';
 
 const fixture = JSON.parse(fs.readFileSync(new URL('../src/pages/work/work-grouping.fixture.json', import.meta.url)));
 const wait = new Set(fixture.waitTaskIds);
@@ -10,6 +16,26 @@ for (const task of fixture.tasks) {
 }
 assert.deepEqual(groups, fixture.groups);
 assert.deepEqual(STAGE_LABEL, fixture.stageLabels);
+
+// T098.6：没绑任务的等你项算个人——全部/个人下显示，选具体项目才藏。
+const filterTasks = [
+  { id: 'p1', projectId: 'proj' },
+  { id: 'mine', projectId: null },
+];
+const filterWait = [
+  { key: 'a', taskId: 'p1' },
+  { key: 'b', taskId: 'mine' },
+  { key: 'c' },
+  { key: 'd', taskId: null },
+];
+const all = filterWorkForProject(filterTasks, filterWait, null);
+assert.deepEqual(all.wait.map((item) => item.key), ['a', 'b', 'c', 'd']);
+const personal = filterWorkForProject(filterTasks, filterWait, 'personal');
+assert.deepEqual(personal.tasks.map((task) => task.id), ['mine']);
+assert.deepEqual(personal.wait.map((item) => item.key), ['b', 'c', 'd']);
+const oneProject = filterWorkForProject(filterTasks, filterWait, 'proj');
+assert.deepEqual(oneProject.tasks.map((task) => task.id), ['p1']);
+assert.deepEqual(oneProject.wait.map((item) => item.key), ['a']);
 const waitItems = fixture.waitTaskIds.map((taskId) => ({ taskId }));
 assert.deepEqual(
   problemsOf(fixture.tasks, waitItems).map((task) => task.id),

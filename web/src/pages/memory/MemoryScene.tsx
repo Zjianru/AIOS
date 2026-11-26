@@ -29,6 +29,9 @@ const SECTIONS = [
 ] as const;
 import { mountMemoryLive, useMemoryState } from './memoryStore';
 
+/** 关于你没有页面直写协议：点「加一条」把一句草稿带进 Kind 输入框，由对话写记忆。 */
+const PENDING_DRAFT_KEY = 'aios.kind.pending-draft';
+
 function clock(at: number | null | undefined): string {
   if (!at) return '未知';
   const date = new Date(at);
@@ -64,11 +67,13 @@ function Section({
   id,
   title,
   hint,
+  actions,
   children,
 }: {
   id: string;
   title: string;
   hint?: string;
+  actions?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
@@ -76,6 +81,7 @@ function Section({
       <div className="mb-3 flex items-baseline gap-2">
         <h2 className="text-3 font-medium text-ink">{title}</h2>
         {hint ? <span className="text-2 text-ink-3">{hint}</span> : null}
+        {actions ? <span className="ml-auto">{actions}</span> : null}
       </div>
       {children}
     </section>
@@ -435,7 +441,7 @@ export function MemoryScene() {
       {
         group: '角色',
         items: countOf((entry) => entry.scope === 'role') > 0
-          ? [{ key: 'role', label: '角色', count: countOf((entry) => entry.scope === 'role') }]
+          ? [{ key: 'role', label: '角色（还没分到具体角色）', count: countOf((entry) => entry.scope === 'role') }]
           : [],
       },
     ];
@@ -456,29 +462,31 @@ export function MemoryScene() {
   return (
     <div data-kind="memory-page" className="flex h-full min-h-0 flex-col">
       <header data-kind="memory-header" className="shrink-0 border-b border-line bg-content px-4 py-2.5">
-        <div className="mx-auto flex max-w-3xl flex-wrap items-center gap-x-2 gap-y-1.5">
-          <Bookmark className="size-4 shrink-0 text-brand" strokeWidth={1.8} />
-          <h1 data-kind="memory-title" className="shrink-0 text-3 font-medium text-ink">记忆</h1>
-          <form
-            className="flex min-w-[180px] flex-1 items-center gap-2"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void load(query);
-            }}
-          >
-            <div className="flex min-w-0 flex-1 items-center gap-2 rounded-btn border border-line-2 bg-pane px-2 py-1">
-              <Search className="size-3.5 shrink-0 text-ink-3" strokeWidth={1.8} />
-              <input
-                data-kind="memory-search-input"
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="搜记忆、日记、Kind 对话"
-                className="min-w-0 flex-1 bg-transparent text-2 text-ink outline-none"
-              />
-            </div>
-            <button type="submit" data-action="memory-search" className={btn}>搜</button>
-          </form>
-          <nav data-kind="memory-sections" className="flex items-center gap-0.5">
+        <div className="mx-auto max-w-3xl">
+          <div className="flex items-center gap-2">
+            <Bookmark className="size-4 shrink-0 text-brand" strokeWidth={1.8} />
+            <h1 data-kind="memory-title" className="shrink-0 text-3 font-medium text-ink">记忆</h1>
+            <form
+              className="flex min-w-[180px] flex-1 items-center gap-2"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void load(query);
+              }}
+            >
+              <div className="flex min-w-0 flex-1 items-center gap-2 rounded-btn border border-line-2 bg-pane px-2 py-1">
+                <Search className="size-3.5 shrink-0 text-ink-3" strokeWidth={1.8} />
+                <input
+                  data-kind="memory-search-input"
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder="搜记忆、日记、Kind 对话"
+                  className="min-w-0 flex-1 bg-transparent text-2 text-ink outline-none"
+                />
+              </div>
+              <button type="submit" data-action="memory-search" className={btn}>搜</button>
+            </form>
+          </div>
+          <nav data-kind="memory-sections" className="mt-2 flex items-center gap-0.5 overflow-x-auto">
             {SECTIONS.map((section) => (
               <button
                 key={section.id}
@@ -490,10 +498,11 @@ export function MemoryScene() {
                 {section.label}
               </button>
             ))}
+            <span className="flex-1" />
+            <button type="button" data-kind="memory-back-kind" onClick={() => go('kind')} className={btn}>
+              回 Kind 对话
+            </button>
           </nav>
-          <button type="button" data-kind="memory-back-kind" onClick={() => go('kind')} className={btn}>
-            回 Kind 对话
-          </button>
         </div>
       </header>
 
@@ -537,7 +546,24 @@ export function MemoryScene() {
             </Section>
           ) : null}
 
-          <Section id="about" title="关于你" hint="只有你能写 · 每次对话都带上">
+          <Section
+            id="about"
+            title="关于你"
+            hint="只有你能写 · 每次对话都带上"
+            actions={
+              <button
+                type="button"
+                data-kind="memory-add-about"
+                onClick={() => {
+                  localStorage.setItem(PENDING_DRAFT_KEY, '记住：');
+                  go('kind');
+                }}
+                className={btn}
+              >
+                加一条
+              </button>
+            }
+          >
             <div data-kind="memory-about">
               {(data?.aboutYou ?? []).map((item) => (
                 <div key={item.id}>
@@ -594,6 +620,7 @@ export function MemoryScene() {
                 <div data-kind="memory-group" data-group="binding" className="rounded-card border border-line p-2">
                   <p className="px-1 pb-1 text-1 text-ink-3">
                     你定的 <span className="brand-type">{mine.length}</span>
+                    <span className="ml-2">有约束力，Kind 和这个范围里的任务都照做</span>
                   </p>
                   {mine.map((item) => (
                     <ItemRow
@@ -610,6 +637,7 @@ export function MemoryScene() {
                 <div data-kind="memory-group" data-group="note" className="rounded-card border border-dashed border-line-2 p-2">
                   <p className="px-1 pb-1 text-1 text-ink-3">
                     Kind 记的（可错） <span className="brand-type">{kinds.length}</span>
+                    <span className="ml-2">可错的参考，用之前核对原始记录；觉得该当真就点「定下来」</span>
                   </p>
                   {kinds.map((item) => (
                     <ItemRow

@@ -15,6 +15,8 @@ import type { TaskGraph } from '@/pages/work/graphModel';
 import { WaitRow } from '@/pages/work/WaitList';
 import { advancingOf, boardOf, problemsOf, stageLabel, weekDone } from '@/pages/work/workModel';
 import { useWorkPolling, useWorkStore } from '@/pages/work/workStore';
+import { useSettingsState } from '@/lib/settingsState';
+import { clockOf, formatCost } from '@/lib/numbers';
 import { monitorSnapshot } from '@/data/service';
 import type { MonitorTaskSummary } from '@/data/generated/MonitorTaskSummary';
 import type { TaskFact } from '@/data/generated/TaskFact';
@@ -45,9 +47,10 @@ function fmtTokens(tokens: number): string {
   return String(tokens);
 }
 
-function fmtCost(cost: number | null): string {
-  if (cost == null) return '没价格';
-  return '$' + cost.toFixed(cost < 0.01 ? 3 : 2);
+/** 问题卡头行时间：任务最近一份报告的时间，没有就用建任务时间。 */
+function problemTime(task: TaskFact): string {
+  const at = task.latest?.at ?? task.createdAt;
+  return at ? clockOf(at / 1000) : '';
 }
 
 function GroupHeader({ tone, label, count, hint }: { tone: string; label: string; count: number; hint?: string }) {
@@ -96,6 +99,10 @@ interface AdvancingCard {
   cost: number | null;
   /** 有事实行但没价格（unpriced）→ 显示「没价格」。 */
   unpriced: boolean;
+  /** 这张卡里等你处理的件数；>0 时头行出「等你 · N」胶囊。 */
+  waiting: number;
+  /** 卡里有没有出了问题的站（等待处理且没等你）。 */
+  troubled: boolean;
 }
 
 function buildAdvancing(
@@ -108,8 +115,12 @@ function buildAdvancing(
   const taskToGraph = new Map<string, TaskGraph>();
   for (const graph of graphs.graphs) for (const node of graph.nodes) taskToGraph.set(node.task.id, graph);
   const waitOf = new Map<string, string>();
+  const waitCount = new Map<string, number>();
   for (const item of work.wait) {
-    if (item.taskId && !waitOf.has(item.taskId)) waitOf.set(item.taskId, plainText(item.need || item.body));
+    if (item.taskId) {
+      waitCount.set(item.taskId, (waitCount.get(item.taskId) ?? 0) + 1);
+      if (!waitOf.has(item.taskId)) waitOf.set(item.taskId, plainText(item.need || item.body));
+    }
   }
   const facts = (ids: string[]) => {
     const rows = ids.map((id) => monitor[id]).filter((row): row is MonitorTaskSummary => Boolean(row));
@@ -143,6 +154,8 @@ function buildAdvancing(
       if (seen.has(graph.id)) continue;
       seen.add(graph.id);
       const members = [...graph.nodes].sort((left, right) => left.depth - right.depth).map((node) => node.task);
+      const waiting = members.reduce((sum, member) => sum + (waitCount.get(member.id) ?? 0), 0);
+      const troubled = members.some((member) => member.stage === 'needs_conditions');
       const stuck =
         members.map((member) => waitOf.get(member.id)).find(Boolean) ??
         members
@@ -168,6 +181,8 @@ function buildAdvancing(
         })),
         stuck,
         ...facts(members.map((member) => member.id)),
+        waiting,
+        troubled,
       });
     } else {
       const stuck =
@@ -185,6 +200,8 @@ function buildAdvancing(
         chain: [{ id: task.id, title: task.title, state: stageLabel(task.stage), running: task.running }],
         stuck,
         ...facts([task.id]),
+        waiting: waitCount.get(task.id) ?? 0,
+        troubled: task.stage === 'needs_conditions',
       });
     }
   }
@@ -192,6 +209,7 @@ function buildAdvancing(
 }
 
 function AdvancingRow({ card }: { card: AdvancingCard }) {
+  const money = useSettingsState((state) => state.money);
   return (
     <article data-kind="now-advancing-card" className="rounded-card border border-line bg-pane/40 p-2.5">
       <div className="flex flex-wrap items-baseline gap-1.5">
@@ -199,6 +217,15 @@ function AdvancingRow({ card }: { card: AdvancingCard }) {
         <span className="shrink-0 text-1 text-ink-3">
           <ProjectLine projectId={card.projectId} />
         </span>
+        {card.waiting > 0 ? (
+          <span data-kind="now-carrying-wait" className="shrink-0 rounded-full bg-wait-soft px-2 py-[1px] text-1 text-wait">
+            等你 · {card.waiting}
+          </span>
+        ) : card.troubled ? (
+          <span data-kind="now-carrying-trouble" className="shrink-0 rounded-full bg-fail-soft px-2 py-[1px] text-1 text-fail">
+            有问题 · Kind 处理中
+          </span>
+        ) : null}
       </div>
       <div className="mt-1.5 flex flex-wrap items-stretch gap-1.5">
         {card.chain.map((station, index) => (
@@ -235,7 +262,13 @@ function AdvancingRow({ card }: { card: AdvancingCard }) {
         <span>·</span>
         <span>{card.tokens != null ? fmtTokens(card.tokens) + ' token' : 'token 没采到'}</span>
         <span>·</span>
-        <span>{card.cost != null ? fmtCost(card.cost) : card.unpriced ? '没价格' : '花费没采到'}</span>
+        <span>
+          {card.cost != null
+            ? formatCost(card.cost, money.currency, money.cnyPerUsd, card.unpriced)
+            : card.unpriced
+              ? '没价格'
+              : '花费没采到'}
+        </span>
         <button
           type="button"
           data-kind="now-advancing-open"
@@ -253,6 +286,12 @@ function ProblemRow({ task }: { task: TaskFact }) {
   const work = useWorkStore((state) => state.work);
   const projectName = useProjectStore((state) => state.projects?.find((project) => project.id === task.projectId)?.name ?? '个人');
   const inDecisions = work?.wait.some((item) => item.taskId === task.id) ?? false;
+  // 类别（LLM/AIOS）内核没有事实：不冒充；这里只陈述发生了什么 + Kind 怎么处理。
+  const what = task.latest?.question
+    ? plainText(task.latest.question)
+    : task.latest?.summary
+      ? plainText(task.latest.summary)
+      : 'Kind 处理不了，停下来等你。';
   const handling = task.latest?.question
     ? 'Kind 已经问过你，还没得到答复，先停在这里。'
     : task.latest?.summary
@@ -266,14 +305,20 @@ function ProblemRow({ task }: { task: TaskFact }) {
       className="block w-full rounded-card border border-line bg-pane/40 p-2.5 text-left transition-colors hover:bg-hover"
     >
       <span className="flex flex-wrap items-center gap-1.5 text-1 text-ink-3">
-        <span className="rounded-badge bg-hover px-1.5 py-[1px]">{stageLabel(task.stage)}</span>
-        <span className="rounded-badge bg-hover px-1.5 py-[1px]">{inDecisions ? '已转为决定' : '处理中'}</span>
-        <span className="ml-auto brand-type">{task.attempts > 0 ? '第 ' + String(task.attempts) + ' 次' : ''}</span>
+        <span className="text-fail">出了问题</span>
+        <span data-kind="now-problem-origin" className="min-w-0 truncate">
+          {projectName} › {task.title}
+        </span>
+        <span className="rounded-badge bg-hover px-1.5 py-[1px]">
+          {inDecisions ? '已转为决定' : '处理中'}
+        </span>
+        <span className="ml-auto brand-type" data-kind="now-problem-time">
+          {problemTime(task)}
+        </span>
       </span>
-      <span className="mt-0.5 block truncate text-1 text-ink-3">
-        {projectName} › {task.title}
+      <span className="mt-1 block text-2 text-ink" data-kind="now-problem-what">
+        {what}
       </span>
-      <span className="mt-0.5 block truncate text-2 text-ink">{task.title}</span>
       <span className="mt-0.5 block truncate text-1 text-ink-2" data-kind="now-problem-handling">
         {handling}
       </span>
@@ -292,6 +337,11 @@ export function NowScene() {
   useEffect(() => {
     setNow(Date.now());
   }, [work]);
+
+  // 花费按设置里的币种显示（CN 用户是 ¥）；取不到就沿用上次值，不写死 $。
+  useEffect(() => {
+    void useSettingsState.getState().refreshMoney();
+  }, []);
 
   useEffect(() => {
     let alive = true;

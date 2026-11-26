@@ -315,9 +315,6 @@ function BoardPane() {
             </section>
           ))}
         </div>
-        <p data-kind="work-board-footer" className="shrink-0 border-t border-line px-3 py-2 text-1 text-ink-3">
-          和「现在」的「等你决定」是同一份。看过、打开不算处理；判定、确认、接着做在 Kind 对话的卡上做。
-        </p>
         </div>
       )}
 
@@ -346,6 +343,12 @@ function WaitingPane() {
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
         {!work ? <div className="text-2 text-ink-3">正在取…</div> : <WaitList items={filtered.wait} />}
       </div>
+      <footer
+        data-kind="waiting-footer"
+        className="shrink-0 border-t border-line px-4 py-2 text-1 leading-4 text-ink-3"
+      >
+        和「现在」的「等你决定」是同一份。看过、打开不算处理；判定、确认、接续在 Kind 对话的卡上做。
+      </footer>
     </div>
   );
 }

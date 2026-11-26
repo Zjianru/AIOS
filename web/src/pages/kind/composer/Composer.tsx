@@ -300,6 +300,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     requestAnimationFrame(() => inputRef.current?.focus());
   }, [pageQuote]);
 
+  // T098：记忆页「加一条」没有页面直写协议，经这个键把一句草稿带进 Kind 输入框。
   // T013.8：会话 id 就绪后读一次草稿（读不出当空）。
   useEffect(() => {
     if (!draftScope || draftLoadedRef.current === draftScope) return;
@@ -320,7 +321,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     if (touchedRef.current) return; // ready 前已经输入：以用户输入为准，草稿不覆盖
     try {
       const raw = localStorage.getItem('aios.kind.draft.' + draftScope);
-      if (!raw) return;
+      const pendingText = localStorage.getItem('aios.kind.pending-draft');
+      if (pendingText !== null) localStorage.removeItem('aios.kind.pending-draft');
+      if (!raw) {
+        if (pendingText !== null) setText(pendingText);
+        return;
+      }
       const draft = JSON.parse(raw) as {
         text?: unknown;
         quotes?: unknown;
@@ -333,7 +339,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         restoredKeys?: unknown;
         cleared?: unknown;
       };
-      if (typeof draft.text === 'string') setText(draft.text);
+      if (typeof draft.text === 'string') setText(pendingText ?? draft.text);
       const fromCanvas = draft.canvas as { id?: unknown; title?: unknown } | null | undefined;
       if (fromCanvas && typeof fromCanvas.id === 'string' && typeof fromCanvas.title === 'string') {
         setFromCanvas({ id: fromCanvas.id, title: fromCanvas.title });

@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { startKernelFixture } from './service-fixture';
+import { apiPost, startKernelFixture } from './service-fixture';
 
 /**
  * T098.3：现在页照原型（D124 / reply s 第 2 节）。
@@ -111,19 +111,106 @@ test('现在页：在推进卡/问题卡字段、摘要纯文字、监控没事�
     await expect(advancing.locator('[data-kind="now-advancing-open"]')).toContainText('展开 · 去看');
     await expect(page.getByText('$0.00')).toHaveCount(0);
 
-    // 问题卡：项目 › 标题、类别（阶段词）、处理状态、Kind 的处理。
+    // 问题卡：Origin「项目 › 任务标题」、正文「出了什么事」、处理状态、Kind 的处理、头行右侧时间；
+    // 类别（LLM/AIOS）内核没有事实：不冒充，页面上不出现 LLM 问题/AIOS 问题标，阶段词也撤了。
     const problem = page.locator('[data-kind="now-problem"]');
     await expect(problem).toHaveCount(1);
-    await expect(problem).toContainText('个人 › 抓取数据核对');
-    await expect(problem).toContainText('待补足条件');
+    await expect(problem.locator('[data-kind="now-problem-origin"]')).toHaveText('个人 › 抓取数据核对');
+    await expect(problem.locator('[data-kind="now-problem-what"]')).toContainText('卡住：等来源恢复再继续。');
     await expect(problem).toContainText('处理中');
+    await expect(problem.locator('[data-kind="now-problem-time"]')).not.toHaveText('');
     await expect(problem.locator('[data-kind="now-problem-handling"]')).toContainText('Kind 的处理');
+    await expect(problem).not.toContainText('待补足条件');
+    await expect(problem).not.toContainText('LLM 问题');
+    await expect(problem).not.toContainText('AIOS 问题');
 
     // 等你决定：摘要不露 Markdown（fixture 保证正文里有 ** 与标题）。
     await expect(page.locator('[data-kind="now-decisions"] [data-kind="wait-item"]')).toContainText('重点');
     const text = await page.locator('[data-scene-page="now"]').innerText();
     expect(text).not.toContain('**');
     expect(text).not.toMatch(/^#{1,6} /m);
+  } finally {
+    await fixture.close();
+  }
+});
+test('现在页：花费按设置币种显示（CN 是 ¥，不是写死 $）', async ({ page, request }) => {
+  test.setTimeout(120_000);
+  const fixture = await startKernelFixture({});
+  try {
+    const saved = await apiPost(request, fixture, { method: 'settings-update', currency: 'cny' });
+    expect(saved.ok()).toBeTruthy();
+    const now = Date.now();
+    const work = {
+      method: 'work',
+      generatedAt: now,
+      tasks: [
+        {
+          id: 'task-run-2',
+          title: '币种显示检查',
+          stage: 'running',
+          running: true,
+          runningSince: now - 30_000,
+          version: 1,
+          attempts: 1,
+          createdAt: now - 60_000,
+          gate: false,
+          program: false,
+          programCommands: 0,
+          after: [],
+          afterWaiting: false,
+        },
+      ],
+      wait: [],
+      graphs: [],
+    };
+    const snapshot = {
+      range: 'today',
+      timezone: 'Asia/Shanghai',
+      generatedAt: now,
+      days: [],
+      tasks: [
+        {
+          taskId: 'task-run-2',
+          title: '币种显示检查',
+          state: 'running',
+          model: 'MiniMax-M3.1-Flash',
+          running: true,
+          startedAt: now - 60_000,
+          requests: 1,
+          inputTokens: 1000,
+          outputTokens: 500,
+          costUsd: 1,
+          unpriced: false,
+          toolCalls: 0,
+          contextUsed: 0,
+          contextWindow: 200000,
+        },
+      ],
+      projects: [],
+      models: [],
+      tools: [],
+      commands: [],
+      rings: { costUsd: 1, unpriced: false, busyMs: 0, requestMs: 0, toolMs: 0, tokens: 0 },
+      anomalies: [],
+      running: { tasks: 1, seats: 1 },
+      queue: [],
+    };
+    await page.route('**/api', async (route) => {
+      const data = route.request().postDataJSON() as { method?: string } | null;
+      if (data?.method === 'work') {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(work) });
+        return;
+      }
+      if (data?.method === 'monitor-snapshot') {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(snapshot) });
+        return;
+      }
+      await route.continue();
+    });
+    await page.goto(urlOf(fixture, '#now'));
+    const meta = page.locator('[data-kind="now-advancing-meta"]');
+    await expect(meta).toContainText('¥', { timeout: 30_000 });
+    await expect(meta).not.toContainText('$');
   } finally {
     await fixture.close();
   }
