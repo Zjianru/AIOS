@@ -1897,7 +1897,7 @@ pub struct ActionActResponse {
 ///
 /// 连接上的旧价格乘数后来整条删掉，不升版本：两个请求里的这个字段本来就可省略，旧页再发
 /// 由 serde 当未知字段忽略；响应里少了它，旧页读到 undefined 也不会拿去定价。
-pub const PROTOCOL_VERSION: u64 = 32;
+pub const PROTOCOL_VERSION: u64 = 33;
 
 /// 日历读取：不带 appointmentId 读全部；带 week 时额外给那周的计划点。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -2162,6 +2162,9 @@ pub struct MonitorUsageRow {
     /// 排行按项目拆：项目 id；个人/Kind 为空。只增字段，旧页面忽略。
     #[serde(rename = "projectId", default, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
+    /// 这一行是 Kind 对话（项目筛选要把它排除）。只增字段。
+    #[serde(rename = "isKind", default)]
+    pub is_kind: bool,
     pub requests: u64,
     #[serde(rename = "inputTokens")]
     pub input_tokens: u64,

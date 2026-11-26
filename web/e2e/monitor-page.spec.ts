@@ -419,8 +419,14 @@ test('监控照原型：五卡、项目标签、日柱叠色、两环、排行�
     const today = dayOf(0);
     const task = {
       taskId: 'task-1', title: '任务一', state: 'running', model: 'deepseek-flash', projectId: projectA,
-      attemptId: 1, running: true, startedAt: now - 60_000, requests: 2, inputTokens: 1_000, outputTokens: 100,
+      attemptId: 1, running: true, startedAt: now - 10_000, requests: 2, inputTokens: 1_000, outputTokens: 100,
       costUsd: 1.5, unpriced: false, toolCalls: 1, contextUsed: 1_000, contextWindow: 100_000,
+    };
+    const task2 = {
+      taskId: 'task-2', title: '任务二', state: 'closed', model: 'deepseek-flash', projectId: projectA,
+      attemptId: 1, running: false, startedAt: now - 120_000, endedAt: now - 60_000, requests: 3,
+      inputTokens: 500, outputTokens: 5_000, costUsd: 0.1, unpriced: false, toolCalls: 0,
+      contextUsed: 0, contextWindow: 0,
     };
     const day = (offset: number, groups: unknown[]) => ({
       day: dayOf(offset), costUsd: 2, unpriced: 0, inputTokens: 1_000, outputTokens: 100,
@@ -435,10 +441,12 @@ test('监控照原型：五卡、项目标签、日柱叠色、两环、排行�
         ]),
         day(1, [{ projectId: projectA, label: '项目甲', costUsd: 1, unpriced: 0 }]),
       ],
-      tasks: [task], projects: [],
+      tasks: [task, task2], projects: [],
       models: [
         { key: 'deepseek-flash', label: 'deepseek-flash', projectId: projectA, requests: 2, inputTokens: 1_000, outputTokens: 100, cacheReadTokens: 500, cacheWriteTokens: 0, costUsd: 1.5, unpriced: false },
         { key: 'deepseek-pro', label: 'deepseek-pro', projectId: projectB, requests: 3, inputTokens: 300, outputTokens: 30, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.5, unpriced: false },
+        { key: 'kind-model', label: 'Kind 模型', isKind: true, requests: 1, inputTokens: 10, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.5, unpriced: false },
+        { key: 'kind-model', label: 'Kind 模型', requests: 1, inputTokens: 10, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: null, unpriced: false },
       ],
       tools: [{ key: 'read', label: 'read', projectId: projectA, requests: 1, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: null, unpriced: false }],
       commands: [{ key: 'ls', label: 'ls', projectId: projectA, requests: 1, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: null, unpriced: false }],
@@ -518,13 +526,39 @@ test('监控照原型：五卡、项目标签、日柱叠色、两环、排行�
       await expect(page.locator('[data-kind="time-donut"]')).toContainText(segment);
     }
 
-    // 排行按项目拆；切项目筛选后只合计这个项目。
+    // 任务卡排序切换：花费按 task-1、token/时长按 task-2。
+    const firstTaskTitle = async () => page.locator('[data-kind="task-card"]').first().innerText();
+    await expect(page.locator('[data-kind="task-card"]').first()).toContainText('任务一');
+    await page.locator('[data-kind="task-sort"]').getByRole('button', { name: '按 token' }).click();
+    await expect(page.locator('[data-kind="task-card"]').first()).toContainText('任务二');
+    await page.locator('[data-kind="task-sort"]').getByRole('button', { name: '按时长' }).click();
+    await expect(page.locator('[data-kind="task-card"]').first()).toContainText('任务二');
+    await page.locator('[data-kind="task-sort"]').getByRole('button', { name: '按花费' }).click();
+    await expect(page.locator('[data-kind="task-card"]').first()).toContainText('任务一');
+    expect(await firstTaskTitle()).toContain('任务一');
+
+    // 排行按项目拆；切项目筛选后只合计这个项目，Kind 被排除。
     await expect(page.locator('[data-kind="rank-row"]').filter({ hasText: '项目甲 · deepseek-flash' }).first()).toBeVisible();
     await expect(page.locator('[data-kind="rank-row"]').filter({ hasText: '项目乙 · deepseek-pro' }).first()).toBeVisible();
+    // 全部筛选下 Kind 与个人同 key/同名也要分得开：一行「个人 · Kind 模型」，一行「Kind 对话 · Kind 模型」。
+    await expect(page.locator('[data-kind="rank-row"]').filter({ hasText: '个人 · Kind 模型' })).toHaveCount(1);
+    await expect(page.locator('[data-kind="rank-row"]').filter({ hasText: 'Kind 对话 · Kind 模型' })).toHaveCount(1);
     await page.locator('[data-kind="monitor-project-tag"][data-project="' + projectA + '"]').click();
-    await expect(page.locator('[data-kind="project-scope-note"]')).toContainText('日柱按 groups 拆（Kind/个人合并）；时间环/在忙/全站合计不能拆');
+    await expect(page.locator('[data-kind="project-scope-note"]')).toHaveText(
+      '选了项目时，每天的花费和排行只算这个项目；在忙和时间环拆不开，还是全部任务的。',
+    );
+    await expect(page.locator('[data-kind="kpis"] [data-kind="kpi"]').filter({ hasText: '花费' })).toContainText('项目甲');
+    await expect(page.locator('[data-kind="kpis"] [data-kind="kpi"]').filter({ hasText: '花费' })).not.toContainText('不混全量');
     await expect(page.locator('[data-kind="rank-row"]').filter({ hasText: 'deepseek-flash' }).first()).toBeVisible();
     await expect(page.locator('[data-kind="rank-row"]').filter({ hasText: '项目乙 · deepseek-pro' })).toHaveCount(0);
+    await expect(page.locator('[data-kind="rank-row"]').filter({ hasText: 'Kind 对话 · Kind 模型' })).toHaveCount(0);
+    await expect(page.locator('[data-kind="cost-bar-group"][data-project-id="kind"]')).toHaveCount(0);
+
+    // 选「个人」：副标写「个人」，Kind 同样不进日柱/排行。
+    await page.locator('[data-kind="monitor-project-tag"][data-project="personal"]').click();
+    await expect(page.locator('[data-kind="kpis"] [data-kind="kpi"]').filter({ hasText: '花费' })).toContainText('个人');
+    await expect(page.locator('[data-kind="rank-row"]').filter({ hasText: 'Kind 对话 · Kind 模型' })).toHaveCount(0);
+    await expect(page.locator('[data-kind="cost-bar-group"][data-project-id="kind"]')).toHaveCount(0);
 
     // 模型回复从上下文蓝条移除；整条悬浮给约值。
     await page.goto(urlOf(fixture, '#monitor?tab=live'));

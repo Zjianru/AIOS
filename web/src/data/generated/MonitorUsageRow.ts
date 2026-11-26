@@ -7,4 +7,8 @@ export type MonitorUsageRow = { key: string, label: string,
 /**
  * 排行按项目拆：项目 id；个人/Kind 为空。只增字段，旧页面忽略。
  */
-projectId?: string | null, requests: number, inputTokens: number, outputTokens: number, cacheReadTokens: number, cacheWriteTokens: number, costUsd?: number | null, unpriced: boolean, };
+projectId?: string | null,
+/**
+ * 这一行是 Kind 对话（项目筛选要把它排除）。只增字段。
+ */
+isKind: boolean, requests: number, inputTokens: number, outputTokens: number, cacheReadTokens: number, cacheWriteTokens: number, costUsd?: number | null, unpriced: boolean, };

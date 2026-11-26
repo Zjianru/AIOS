@@ -288,11 +288,11 @@ test('程序门：改命令出新确认卡 → 确认后第 2 版按新列表重
       commands_version: 2,
     });
 
-    // T066.6：程序门框型：直角、等宽字、data-box=program，状态环/线动效有数据。
+    // T092：程序门框型：3px 圆角、等宽字、data-shape=program。
     await page.goto(urlOf(fixture, '#work?wv=graph'));
-    const programBox = page.locator('[data-kind="graph-node"][data-box="program"]').first();
+    const programBox = page.locator('[data-kind="graph-node"][data-shape="program"]').first();
     await expect(programBox).toBeVisible({ timeout: 30_000 });
-    expect(await programBox.evaluate((el) => getComputedStyle(el).borderRadius)).toBe('0px');
+    expect(await programBox.evaluate((el) => getComputedStyle(el).borderRadius)).toBe('3px');
     expect(await programBox.evaluate((el) => getComputedStyle(el).fontFamily)).toContain('mono');
   } finally {
     await fixture.close();

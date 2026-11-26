@@ -8,7 +8,7 @@
 import type { TaskFact } from '@/data/generated/TaskFact';
 import type { WorkEdgeFact } from '@/data/generated/WorkEdgeFact';
 import type { WorkResponse } from '@/data/generated/WorkResponse';
-import { boardOf, columnOf, nextOf, wordOf } from './workModel';
+import { boardOf, columnOf, nextOf, wordOf } from './workModel.ts';
 import type { BoardTask } from './workModel';
 
 export interface GraphNode {
@@ -199,3 +199,130 @@ export function dotOf(column: BoardTask['column']): string {
 }
 
 export { boardOf };
+
+/* ───────── 排版：最长路径分列 + 重心排序 + 跨列占窄道 ───────── */
+
+export const NODE_W = 210;
+export const NODE_H = 96;
+export const LANE_H = 18;
+export const COL_GAP = 72;
+export const ROW_GAP = 26;
+export const PAD = 24;
+export const PORT_STEP = 12;
+
+export interface GraphPoint {
+  x: number;
+  y: number;
+}
+export interface GraphSlot {
+  key: string;
+  edge: GraphEdge | null; // 窄道属于哪条线；任务是 null
+  h: number;
+}
+export interface RoutedEdge {
+  d: string;
+  end: GraphPoint;
+  mid: GraphPoint;
+}
+export interface GraphLayout {
+  width: number;
+  height: number;
+  nodes: Record<string, GraphPoint & { order: number }>;
+  edges: Record<string, RoutedEdge>;
+}
+
+export function layoutGraph(graph: TaskGraph): GraphLayout {
+  const ids = graph.nodes.map((node) => node.task.id);
+  const depth = new Map(graph.nodes.map((node) => [node.task.id, node.depth]));
+  const edges = graph.edges.filter((edge) => depth.has(edge.from) && depth.has(edge.to));
+  const columns = Math.max(0, ...depth.values()) + 1;
+  const laneKey = (edge: GraphEdge, c: number) => 'lane\u0000' + edge.id + '\u0000' + c;
+
+  const cols: GraphSlot[][] = Array.from({ length: columns }, () => []);
+  ids.forEach((id) => cols[depth.get(id)!].push({ key: id, edge: null, h: NODE_H }));
+  edges.forEach((edge) => {
+    for (let c = depth.get(edge.from)! + 1; c < depth.get(edge.to)!; c += 1) cols[c].push({ key: laneKey(edge, c), edge, h: LANE_H });
+  });
+
+  // 一个槽在上一列 / 下一列连着谁（算重心用）
+  const hop = (edge: GraphEdge, c: number, end: 'from' | 'to') => (depth.get(edge[end]) === c ? edge[end] : laneKey(edge, c));
+  const upstream = (slot: GraphSlot, c: number): string[] =>
+    slot.edge ? [hop(slot.edge, c - 1, 'from')] : edges.filter((edge) => edge.to === slot.key).map((edge) => hop(edge, c - 1, 'from'));
+  const downstream = (slot: GraphSlot, c: number): string[] =>
+    slot.edge ? [hop(slot.edge, c + 1, 'to')] : edges.filter((edge) => edge.from === slot.key).map((edge) => hop(edge, c + 1, 'to'));
+  const rank = new Map<string, number>();
+  cols.forEach((col) => col.forEach((slot, i) => rank.set(slot.key, i)));
+  const sortBy = (c: number, near: (slot: GraphSlot, c: number) => string[]) => {
+    const centre = (slot: GraphSlot) => {
+      const list = near(slot, c).map((key) => rank.get(key)).filter((v): v is number => v !== undefined);
+      return list.length ? list.reduce((a, b) => a + b, 0) / list.length : rank.get(slot.key)!;
+    };
+    cols[c].sort((a, b) => centre(a) - centre(b));
+    cols[c].forEach((slot, i) => rank.set(slot.key, i));
+  };
+  for (let pass = 0; pass < 4; pass += 1) {
+    for (let c = 1; c < columns; c += 1) sortBy(c, upstream);
+    for (let c = columns - 2; c >= 0; c -= 1) sortBy(c, downstream);
+  }
+
+  const heights = cols.map((col) => col.reduce((sum, slot) => sum + slot.h, 0) + Math.max(0, col.length - 1) * ROW_GAP);
+  const tallest = Math.max(NODE_H, ...heights);
+  const at = new Map<string, GraphPoint>();
+  cols.forEach((col, c) => {
+    let y = PAD + (tallest - heights[c]) / 2;
+    col.forEach((slot) => {
+      at.set(slot.key, { x: PAD + c * (NODE_W + COL_GAP), y });
+      y += slot.h + ROW_GAP;
+    });
+  });
+
+  const nodes: GraphLayout['nodes'] = {};
+  let order = 1;
+  cols.forEach((col) =>
+    col.forEach((slot) => {
+      if (!slot.edge) nodes[slot.key] = { ...at.get(slot.key)!, order: order++ };
+    }),
+  );
+
+  // 端口：几条出线（进线）按对面第一跳（最后一跳）的高低错开
+  const span = (edge: GraphEdge) => depth.get(edge.to)! - depth.get(edge.from)!;
+  const firstHop = (edge: GraphEdge) => at.get(span(edge) > 1 ? laneKey(edge, depth.get(edge.from)! + 1) : edge.to)!.y;
+  const lastHop = (edge: GraphEdge) => at.get(span(edge) > 1 ? laneKey(edge, depth.get(edge.to)! - 1) : edge.from)!.y;
+  const port = (list: GraphEdge[], edge: GraphEdge, y: number, key: (edge: GraphEdge) => number) => {
+    const sorted = [...list].sort((a, b) => key(a) - key(b));
+    const i = sorted.indexOf(edge);
+    const spread = Math.min(PORT_STEP, (NODE_H - 24) / Math.max(1, sorted.length - 1));
+    return y + NODE_H / 2 + (i - (sorted.length - 1) / 2) * spread;
+  };
+  const curve = (x1: number, y1: number, x2: number, y2: number) => {
+    const dx = Math.max(24, (x2 - x1) * 0.5);
+    return `C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`;
+  };
+
+  const routed: GraphLayout['edges'] = {};
+  for (const edge of edges) {
+    const from = at.get(edge.from)!;
+    const to = at.get(edge.to)!;
+    const start = { x: from.x + NODE_W, y: port(edges.filter((item) => item.from === edge.from), edge, from.y, firstHop) };
+    const end = { x: to.x - 2, y: port(edges.filter((item) => item.to === edge.to), edge, to.y, lastHop) };
+    let d = `M${start.x},${start.y} `;
+    let cur = start;
+    let mid: GraphPoint | null = null;
+    for (let c = depth.get(edge.from)! + 1; c < depth.get(edge.to)!; c += 1) {
+      const lane = at.get(laneKey(edge, c))!;
+      const ly = lane.y + LANE_H / 2;
+      d += curve(cur.x, cur.y, lane.x, ly) + ` L${lane.x + NODE_W},${ly} `;
+      mid ??= { x: lane.x + NODE_W / 2, y: ly };
+      cur = { x: lane.x + NODE_W, y: ly };
+    }
+    d += curve(cur.x, cur.y, end.x, end.y);
+    routed[edge.id] = { d, end, mid: mid ?? { x: (cur.x + end.x) / 2, y: (cur.y + end.y) / 2 } };
+  }
+
+  return { width: PAD * 2 + columns * NODE_W + (columns - 1) * COL_GAP, height: PAD * 2 + tallest, nodes, edges: routed };
+}
+
+/** 图的形状（任务和线）变了才重排；状态变了不动位置。 */
+export const shapeOf = (graph: TaskGraph) => graph.id + '|' + graph.nodes.map((node) => node.task.id).join(',') + '|' + graph.edges.map((edge) => edge.id).join(',');
+
+

@@ -1,10 +1,10 @@
 use super::*;
 
 #[test]
-fn protocol_version_is_32() {
+fn protocol_version_is_33() {
     assert_eq!(
-        PROTOCOL_VERSION, 32,
-        "监控 Attempt 花费/rings 命令段/日柱分组/排行分组只增字段，升到 32"
+        PROTOCOL_VERSION, 33,
+        "监控排行行加 isKind（区分 Kind 对话），只增字段，升到 33"
     );
 }
 
