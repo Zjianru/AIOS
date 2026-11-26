@@ -899,6 +899,137 @@ fn gate_pass_judgement_releases_guarded_downstream_and_stage_moves_to_requiremen
 }
 
 #[test]
+fn judging_a_package_report_is_refused_and_the_latest_real_report_still_judges() {
+    let directory = tempfile::tempdir().unwrap();
+    let cwd = directory.path();
+    let store = open_store().1;
+    let root = store.create_graph(gated_graph(cwd), T0).unwrap();
+    store.confirm_graph(&root.id, T0 + 1).unwrap();
+    let children = store.children(&root.id).unwrap();
+    let (guarded, gate) = (children[0].clone(), children[1].clone());
+    let claim = store
+        .claim_effect(EffectKind::Launch, T0 + 2)
+        .unwrap()
+        .unwrap();
+    store.complete_effect(&claim).unwrap();
+    let attempt = store.begin_attempt(&guarded.id, T0 + 3).unwrap();
+    store
+        .record_report(
+            &guarded.id,
+            attempt,
+            NewReport {
+                state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
+                summary: "第一次结果".to_owned(),
+                question: None,
+            },
+            T0 + 4,
+        )
+        .unwrap();
+    let claim = store
+        .claim_effect(EffectKind::Launch, T0 + 5)
+        .unwrap()
+        .unwrap();
+    store.complete_effect(&claim).unwrap();
+    let first_report = store
+        .task(&guarded.id)
+        .unwrap()
+        .unwrap()
+        .latest_report()
+        .cloned()
+        .unwrap();
+    let handoff = Handoff {
+        report_id: first_report.id.clone(),
+        requirement_version: first_report.version,
+        summary: first_report.summary.clone(),
+    };
+    let gate_attempt = store
+        .begin_attempt_with(
+            &gate.id,
+            T0 + 6,
+            AttemptTrigger::GateRecheck {
+                candidate: GateCandidate {
+                    report_id: first_report.id.clone(),
+                    requirement_version: first_report.version,
+                },
+            },
+            vec![handoff],
+        )
+        .unwrap();
+    store
+        .record_report(
+            &gate.id,
+            gate_attempt,
+            NewReport {
+                state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
+                summary: "核查通过".to_owned(),
+                question: None,
+            },
+            T0 + 7,
+        )
+        .unwrap();
+    store
+        .end_attempt(&gate.id, gate_attempt, T0 + 7, AttemptEnd::Reported)
+        .unwrap();
+    let ready_gate_report = store
+        .task(&gate.id)
+        .unwrap()
+        .unwrap()
+        .latest_report()
+        .cloned()
+        .unwrap();
+
+    // 门后来又落一份 Package（任务包错误）报告：它不是候选，只影响「最近一份报告」的取法。
+    let package_attempt = store.begin_attempt(&gate.id, T0 + 8).unwrap();
+    let package_report = store
+        .record_report(
+            &gate.id,
+            package_attempt,
+            NewReport {
+                state: ReportState::Blocked,
+                origin: ReportOrigin::Package,
+                summary: "任务包缺：账本超出上限".to_owned(),
+                question: None,
+            },
+            T0 + 9,
+        )
+        .unwrap();
+    store
+        .end_attempt(&gate.id, package_attempt, T0 + 9, AttemptEnd::Reported)
+        .unwrap();
+
+    // 钉 Package 报告的卡：已经变了、不记判定（不能悄悄换成最近真实报告再记）。
+    assert!(matches!(
+        store.judge_gate(
+            &gate.id,
+            &package_report,
+            GateConclusion::Pass,
+            None,
+            T0 + 10
+        ),
+        Err(TaskError::GateReportChanged)
+    ));
+    assert!(
+        store.task(&gate.id).unwrap().unwrap().verdicts.is_empty(),
+        "钉 Package 报告不记判定"
+    );
+
+    // 钉最近一份真实报告的卡：仍能判，落的就是这份报告（跳过 Package 找 latest 保留）。
+    let outcome = store
+        .judge_gate(
+            &gate.id,
+            &ready_gate_report.id,
+            GateConclusion::Pass,
+            None,
+            T0 + 11,
+        )
+        .unwrap();
+    assert_eq!(outcome.verdict.gate_report, ready_gate_report.id);
+    assert_ne!(outcome.verdict.gate_report, package_report);
+}
+
+#[test]
 fn second_candidate_reruns_gate_and_old_gate_report_is_already_changed() {
     let directory = tempfile::tempdir().unwrap();
     let cwd = directory.path();
