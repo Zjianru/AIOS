@@ -12,9 +12,10 @@ use session::EventKind;
 use tasks::{Stage, Store, Task, TaskId};
 
 use crate::protocol::{
-    MonitorAnomaly, MonitorAttempt, MonitorContextParts, MonitorDay, MonitorProject, MonitorRange,
-    MonitorRings, MonitorRunning, MonitorSnapshotResponse, MonitorTaskInfo, MonitorTaskRequest,
-    MonitorTaskResponse, MonitorTaskSummary, MonitorTodo, MonitorUsageRow,
+    MonitorAnomaly, MonitorAttempt, MonitorContextParts, MonitorDay, MonitorDayGroup,
+    MonitorProject, MonitorRange, MonitorRings, MonitorRunning, MonitorSnapshotResponse,
+    MonitorTaskInfo, MonitorTaskRequest, MonitorTaskResponse, MonitorTaskSummary, MonitorTodo,
+    MonitorUsageRow,
 };
 use crate::{ServiceError, stats};
 
@@ -27,6 +28,32 @@ struct Agg {
     tasks: Vec<MonitorTaskSummary>,
     anomalies: Vec<MonitorAnomaly>,
     days: BTreeMap<String, MonitorDay>,
+    project_labels: HashMap<String, String>,
+}
+
+/// 花费/排行的归属：项目、个人任务、Kind 对话（后两者 projectId 都空，靠 label 区分）。
+#[derive(Debug, Clone)]
+enum CostGroup {
+    Project(String),
+    Personal,
+    Kind,
+}
+
+impl CostGroup {
+    fn project_id(&self) -> Option<&str> {
+        match self {
+            CostGroup::Project(id) => Some(id),
+            CostGroup::Personal | CostGroup::Kind => None,
+        }
+    }
+
+    fn label(&self, labels: &HashMap<String, String>) -> String {
+        match self {
+            CostGroup::Project(id) => labels.get(id).cloned().unwrap_or_else(|| id.clone()),
+            CostGroup::Personal => "个人".to_owned(),
+            CostGroup::Kind => "Kind 对话".to_owned(),
+        }
+    }
 }
 
 /// 监控消耗：按用户时区口径现算全部任务；Kind 对话不在任务库里，本票先不混入。
@@ -36,6 +63,7 @@ pub(crate) fn snapshot(
     data_dir: &Path,
     range: MonitorRange,
     timezone: &str,
+    project_labels: &HashMap<String, String>,
     running: &[String],
     running_request_at: &HashMap<String, u64>,
     seats: u64,
@@ -62,6 +90,7 @@ pub(crate) fn snapshot(
         tasks: Vec::new(),
         anomalies: Vec::new(),
         days: BTreeMap::new(),
+        project_labels: project_labels.clone(),
     };
     let mut rings = MonitorRings::default();
     for task in tasks {
@@ -104,7 +133,14 @@ pub(crate) fn snapshot(
                 _ => {}
             }
             rings.unpriced |= stats.unpriced;
-            agg.add_events(&filtered, None, &selection, tz, &mut rings);
+            agg.add_events(
+                &filtered,
+                None,
+                &CostGroup::Kind,
+                &selection,
+                tz,
+                &mut rings,
+            );
         }
     }
     let mut running_tasks = Vec::new();
@@ -151,6 +187,11 @@ pub(crate) fn snapshot(
             rings.unpriced |= cost.is_none();
         }
     }
+    // 「在忙」= 时间环五段之和里能采到的请求+工具+命令（等首字/没采到由前端按事实算）。
+    rings.busy_ms = rings
+        .request_ms
+        .saturating_add(rings.tool_ms)
+        .saturating_add(rings.command_ms);
     let models = std::mem::take(&mut agg.models);
     let tools = std::mem::take(&mut agg.tools);
     let commands = std::mem::take(&mut agg.commands);
@@ -222,6 +263,10 @@ impl Agg {
             .stage(&task.id)
             .map(stage_name)
             .unwrap_or_else(|_| "pending".to_owned());
+        let group = match task.project_id.clone() {
+            Some(id) => CostGroup::Project(id),
+            None => CostGroup::Personal,
+        };
         let mut latest_events = Vec::new();
         let mut task_events = Vec::new();
         for attempt in task.runs.iter().flat_map(|run| &run.attempts) {
@@ -267,7 +312,14 @@ impl Agg {
                 _ => {}
             }
             rings.unpriced |= stats.unpriced;
-            self.add_events(&filtered, Some(task.id.as_str()), &selection, tz, rings);
+            self.add_events(
+                &filtered,
+                Some(task.id.as_str()),
+                &group,
+                &selection,
+                tz,
+                rings,
+            );
         }
         if let Some(anomaly) = longest_request_anomaly(
             &task_events,
@@ -295,11 +347,14 @@ impl Agg {
         &mut self,
         events: &[session::Event],
         task_id: Option<&str>,
+        group: &CostGroup,
         selection: &session::ModelSelection,
         tz: Tz,
         rings: &mut MonitorRings,
     ) {
         let mut step_at = 0_u64;
+        let mut calls: HashMap<String, (u64, bool)> = HashMap::new();
+        let project_id = group.project_id().map(str::to_owned);
         // 按会话日志切换连接：session/model 到下一个 TurnStart 才生效，和 session_stats 同口径。
         let mut round_connection = selection.connection.clone();
         let mut pending_connection: Option<String> = None;
@@ -324,8 +379,8 @@ impl Agg {
                         _ => selection.model.clone(),
                     };
                     let cost = self.price(&round_connection, &model_name, usage);
-                    self.add_usage(&model_name, usage, cost);
-                    self.add_day_usage(tz, event.time, usage, cost);
+                    self.add_usage(&model_name, usage, cost, group);
+                    self.add_day_usage(tz, event.time, usage, cost, group);
                     rings.tokens = rings
                         .tokens
                         .saturating_add(usage.input_tokens.unwrap_or(0))
@@ -339,16 +394,29 @@ impl Agg {
                             .saturating_add(event.time.saturating_sub(step_at));
                     }
                 }
-                EventKind::ToolCall { name, .. } => {
-                    add_count(&mut self.tools, name);
-                    self.add_day_count(tz, event.time, true);
+                EventKind::ToolCall { call_id, name, .. } => {
+                    calls.insert(call_id.clone(), (event.time, name == "bash"));
+                    add_count(&mut self.tools, name, project_id.clone());
+                    self.add_day_count(tz, event.time, true, group);
+                }
+                EventKind::ToolResult { message, .. } => {
+                    if let Some(call_id) = message.tool_call_id.as_deref()
+                        && let Some((started, bash)) = calls.remove(call_id)
+                    {
+                        let delta = event.time.saturating_sub(started);
+                        if bash {
+                            rings.command_ms = rings.command_ms.saturating_add(delta);
+                        } else {
+                            rings.tool_ms = rings.tool_ms.saturating_add(delta);
+                        }
+                    }
                 }
                 _ => {}
             }
         }
         for fact in crate::commands::command_facts(events) {
-            add_count(&mut self.commands, &fact.program);
-            self.add_day_count(tz, fact.time, false);
+            add_count(&mut self.commands, &fact.program, project_id.clone());
+            self.add_day_count(tz, fact.time, false, group);
         }
         for repeat in crate::commands::repeated_commands(events) {
             self.anomalies.push(MonitorAnomaly {
@@ -369,7 +437,16 @@ impl Agg {
         stats::usage_cost_usd(usage, &price)
     }
 
-    fn add_day_usage(&mut self, tz: Tz, time: u64, usage: &Usage, cost: Option<f64>) {
+    fn add_day_usage(
+        &mut self,
+        tz: Tz,
+        time: u64,
+        usage: &Usage,
+        cost: Option<f64>,
+        group: &CostGroup,
+    ) {
+        let label = group.label(&self.project_labels);
+        let project = group.project_id().map(str::to_owned);
         let day = self.day_entry(tz, time);
         day.requests += 1;
         day.input_tokens += usage.input_tokens.unwrap_or(0);
@@ -382,9 +459,28 @@ impl Agg {
         if cost.is_none() && has_usage(usage) {
             day.unpriced += 1;
         }
+        let group_entry = day
+            .groups
+            .iter_mut()
+            .find(|item| item.project_id.as_deref() == project.as_deref() && item.label == label);
+        if let Some(item) = group_entry {
+            item.unpriced += u64::from(cost.is_none() && has_usage(usage));
+            match (item.cost_usd, cost) {
+                (Some(left), Some(right)) => item.cost_usd = Some(left + right),
+                (None, Some(right)) => item.cost_usd = Some(right),
+                _ => {}
+            }
+            return;
+        }
+        day.groups.push(MonitorDayGroup {
+            project_id: project,
+            label,
+            cost_usd: cost,
+            unpriced: u64::from(cost.is_none() && has_usage(usage)),
+        });
     }
 
-    fn add_day_count(&mut self, tz: Tz, time: u64, tool: bool) {
+    fn add_day_count(&mut self, tz: Tz, time: u64, tool: bool, _group: &CostGroup) {
         let day = self.day_entry(tz, time);
         if tool {
             day.tool_calls += 1;
@@ -404,11 +500,17 @@ impl Agg {
             requests: 0,
             tool_calls: 0,
             command_calls: 0,
+            groups: Vec::new(),
         })
     }
 
-    fn add_usage(&mut self, key: &str, usage: &Usage, cost: Option<f64>) {
-        if let Some(row) = self.models.iter_mut().find(|row| row.key == key) {
+    fn add_usage(&mut self, key: &str, usage: &Usage, cost: Option<f64>, group: &CostGroup) {
+        let project_id = group.project_id().map(str::to_owned);
+        if let Some(row) = self
+            .models
+            .iter_mut()
+            .find(|row| row.key == key && row.project_id == project_id)
+        {
             row.requests += 1;
             row.input_tokens += usage.input_tokens.unwrap_or(0);
             row.output_tokens += usage.output_tokens.unwrap_or(0);
@@ -425,6 +527,7 @@ impl Agg {
         self.models.push(MonitorUsageRow {
             key: key.to_owned(),
             label: key.to_owned(),
+            project_id,
             requests: 1,
             input_tokens: usage.input_tokens.unwrap_or(0),
             output_tokens: usage.output_tokens.unwrap_or(0),
@@ -436,14 +539,18 @@ impl Agg {
     }
 }
 
-fn add_count(rows: &mut Vec<MonitorUsageRow>, key: &str) {
-    if let Some(row) = rows.iter_mut().find(|row| row.key == key) {
+fn add_count(rows: &mut Vec<MonitorUsageRow>, key: &str, project_id: Option<String>) {
+    if let Some(row) = rows
+        .iter_mut()
+        .find(|row| row.key == key && row.project_id == project_id)
+    {
         row.requests += 1;
         return;
     }
     rows.push(MonitorUsageRow {
         key: key.to_owned(),
         label: key.to_owned(),
+        project_id,
         requests: 1,
         input_tokens: 0,
         output_tokens: 0,
@@ -470,6 +577,12 @@ pub(crate) fn task(
         model: task.model.model.clone(),
         effort_wanted: task.model.effort_wanted.clone(),
     };
+    let keyring = credentials::Keyring::open_read_only(data_dir.to_path_buf(), None).ok();
+    let connections = keyring
+        .as_ref()
+        .map(|keyring| keyring.view().connections)
+        .unwrap_or_default();
+    let catalog = model::catalog::global().unwrap_or_else(model::catalog::snapshot);
     let mut attempts = Vec::new();
     let mut wanted_events = Vec::new();
     for attempt in task.runs.iter().flat_map(|run| &run.attempts) {
@@ -481,6 +594,8 @@ pub(crate) fn task(
             events = session.events().to_vec();
         }
         let requests = assistant_count(&events);
+        // 每个 Attempt 的花费按它自己的会话日志 usage + 同一套价格口径现算。
+        let attempt_stats = stats::session_stats(&events, &connections, &catalog, &selection, 0, 0);
         attempts.push(MonitorAttempt {
             attempt_id: attempt.id.0,
             started_at: attempt.started_at,
@@ -492,8 +607,8 @@ pub(crate) fn task(
             requests,
             input_tokens: sum_usage(&events, |usage| usage.input_tokens),
             output_tokens: sum_usage(&events, |usage| usage.output_tokens),
-            cost_usd: None,
-            unpriced: false,
+            cost_usd: attempt_stats.cost_usd,
+            unpriced: attempt_stats.unpriced,
         });
         if request.attempt_id.is_none() || request.attempt_id == Some(attempt.id.0) {
             wanted_events = events;
@@ -685,6 +800,7 @@ fn fill_days(days: &mut BTreeMap<String, MonitorDay>, range: MonitorRange, tz: T
             requests: 0,
             tool_calls: 0,
             command_calls: 0,
+            groups: Vec::new(),
         });
         date += Duration::days(1);
     }
@@ -778,6 +894,7 @@ mod tests {
             data.path(),
             MonitorRange::Today,
             "UTC",
+            &HashMap::new(),
             &[],
             &HashMap::new(),
             3,
@@ -886,6 +1003,7 @@ mod tests {
             data.path(),
             MonitorRange::Month,
             "UTC",
+            &HashMap::new(),
             &[],
             &HashMap::new(),
             3,
@@ -943,6 +1061,7 @@ mod bucket_tests {
             tasks: Vec::new(),
             anomalies: Vec::new(),
             days: BTreeMap::new(),
+            project_labels: HashMap::new(),
         };
         let events = vec![
             call("t1", "ls", serde_json::json!({})),
@@ -966,6 +1085,7 @@ mod bucket_tests {
         agg.add_events(
             &events,
             Some("task-1"),
+            &CostGroup::Personal,
             &selection,
             chrono_tz::UTC,
             &mut MonitorRings::default(),
@@ -1021,6 +1141,158 @@ mod bucket_tests {
                 .requests,
             1
         );
+    }
+
+    fn timed_call(seq: u64, time: u64, call_id: &str, name: &str) -> session::Event {
+        session::Event::new(
+            seq,
+            time,
+            EventKind::ToolCall {
+                turn: 1,
+                step: 1,
+                call_id: call_id.to_owned(),
+                name: name.to_owned(),
+                arguments: if name == "bash" {
+                    serde_json::json!({"command": "ls"}).to_string()
+                } else {
+                    "{}".to_owned()
+                },
+            },
+        )
+    }
+
+    fn timed_result(seq: u64, time: u64, call_id: &str) -> session::Event {
+        session::Event::new(
+            seq,
+            time,
+            EventKind::ToolResult {
+                turn: 1,
+                step: 1,
+                message: Message::tool_result(call_id, "ok", false),
+                error: None,
+                meta: None,
+            },
+        )
+    }
+
+    #[test]
+    fn rings_split_tool_and_command_and_day_groups_by_project() {
+        let now = 1_700_000_000_000_u64;
+        let assistant = session::Event::new(
+            0,
+            now,
+            EventKind::AssistantMessage {
+                turn: 1,
+                step: 1,
+                message: Message::assistant(
+                    vec![model::ContentBlock::text("ok")],
+                    "deepseek",
+                    "deepseek-flash",
+                ),
+                stream: Vec::new(),
+                usage: Some(model::Usage {
+                    input_tokens: Some(1_000),
+                    output_tokens: Some(10),
+                    cache_read_input_tokens: Some(0),
+                    cache_creation_input_tokens: Some(0),
+                }),
+                interrupted: None,
+                effort: None,
+                effort_wanted: None,
+                request_at: Some(now),
+                context_parts: None,
+            },
+        );
+        let events = vec![
+            assistant,
+            timed_call(1, now, "t1", "read"),
+            timed_result(2, now + 25, "t1"),
+            timed_call(3, now + 40, "b1", "bash"),
+            timed_result(4, now + 100, "b1"),
+        ];
+        let mut agg = Agg {
+            connections: Vec::new(),
+            catalog: model::catalog::snapshot(),
+            models: Vec::new(),
+            tools: Vec::new(),
+            commands: Vec::new(),
+            tasks: Vec::new(),
+            anomalies: Vec::new(),
+            days: BTreeMap::new(),
+            project_labels: HashMap::from([("p1".to_owned(), "项目一".to_owned())]),
+        };
+        let selection = session::ModelSelection {
+            connection: "deepseek".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            effort_wanted: "high".to_owned(),
+        };
+        let mut rings = MonitorRings::default();
+        agg.add_events(
+            &events,
+            Some("task-1"),
+            &CostGroup::Project("p1".to_owned()),
+            &selection,
+            chrono_tz::UTC,
+            &mut rings,
+        );
+        assert_eq!(rings.tool_ms, 25, "工具 call→result 配对");
+        assert_eq!(rings.command_ms, 60, "bash call→result 配对");
+        assert_eq!(rings.tool_ms + rings.command_ms, 85, "两段不混");
+        assert!(
+            agg.models
+                .iter()
+                .all(|row| row.project_id.as_deref() == Some("p1"))
+        );
+        assert_eq!(agg.tools[0].project_id.as_deref(), Some("p1"));
+        assert_eq!(agg.commands[0].project_id.as_deref(), Some("p1"));
+        let day = agg.days.values().next().expect("今天有一根柱");
+        assert_eq!(day.groups.len(), 1);
+        assert_eq!(day.groups[0].label, "项目一");
+        assert_eq!(day.groups[0].project_id.as_deref(), Some("p1"));
+
+        // Kind 对话同一天单独一组（projectId 空，label 区分）。
+        let mut kind_events = vec![session::Event::new(
+            9,
+            now + 10,
+            EventKind::AssistantMessage {
+                turn: 1,
+                step: 1,
+                message: Message::assistant(
+                    vec![model::ContentBlock::text("ok")],
+                    "deepseek",
+                    "deepseek-flash",
+                ),
+                stream: Vec::new(),
+                usage: Some(model::Usage {
+                    input_tokens: Some(10),
+                    output_tokens: Some(1),
+                    cache_read_input_tokens: Some(0),
+                    cache_creation_input_tokens: Some(0),
+                }),
+                interrupted: None,
+                effort: None,
+                effort_wanted: None,
+                request_at: Some(now + 10),
+                context_parts: None,
+            },
+        )];
+        agg.add_events(
+            &mut kind_events,
+            None,
+            &CostGroup::Kind,
+            &selection,
+            chrono_tz::UTC,
+            &mut rings,
+        );
+        let day = agg.days.values().next().unwrap();
+        let labels: Vec<&str> = day
+            .groups
+            .iter()
+            .map(|group| group.label.as_str())
+            .collect();
+        assert!(labels.contains(&"项目一"));
+        assert!(labels.contains(&"Kind 对话"));
+        assert!(labels.contains(&"个人") == false || labels.contains(&"个人"));
     }
 }
 
@@ -1090,6 +1362,7 @@ mod daily_tests {
             tasks: Vec::new(),
             anomalies: Vec::new(),
             days: BTreeMap::new(),
+            project_labels: HashMap::new(),
         };
         let selection = session::ModelSelection {
             connection: "deepseek".to_owned(),
@@ -1099,6 +1372,7 @@ mod daily_tests {
         agg.add_events(
             &[assistant(day_one, 1_000), assistant(day_two, 1_000)],
             Some("task-1"),
+            &CostGroup::Personal,
             &selection,
             shanghai,
             &mut MonitorRings::default(),
@@ -1144,6 +1418,7 @@ mod daily_tests {
             tasks: Vec::new(),
             anomalies: Vec::new(),
             days: BTreeMap::new(),
+            project_labels: HashMap::new(),
         };
         let events = vec![tool(day_one, "ls"), tool(day_two, "calendar")];
         let selection = session::ModelSelection {
@@ -1154,6 +1429,7 @@ mod daily_tests {
         agg.add_events(
             &events,
             Some("task-1"),
+            &CostGroup::Personal,
             &selection,
             shanghai,
             &mut MonitorRings::default(),
@@ -1263,6 +1539,7 @@ mod t075_usage_tests {
             data.path(),
             MonitorRange::Today,
             "UTC",
+            &HashMap::new(),
             &[],
             &HashMap::new(),
             3,
@@ -1379,6 +1656,7 @@ mod t075_usage_tests {
             data.path(),
             MonitorRange::Today,
             "UTC",
+            &HashMap::new(),
             &[],
             &HashMap::new(),
             3,
@@ -1569,6 +1847,7 @@ mod t075_usage_tests {
             data.path(),
             MonitorRange::Today,
             "UTC",
+            &HashMap::new(),
             &[],
             &HashMap::new(),
             3,
@@ -1582,6 +1861,49 @@ mod t075_usage_tests {
             .expect("任务在快照里");
         assert_eq!(entry.input_tokens, 9_540, "多 Attempt 每个会话只加一遍");
         assert_eq!(entry.requests, 3);
+    }
+
+    #[test]
+    fn attempt_cost_is_computed_from_its_own_usage() {
+        let (data, cwd, store) = super::tests::temp_store();
+        let keyring = credentials::Keyring::open_read_only(data.path().to_path_buf(), None)
+            .expect("空 keyring 也能打开");
+        keyring
+            .save_connection(credentials::NewConnection {
+                id: "deepseek".to_owned(),
+                name: "DeepSeek".to_owned(),
+                model: "deepseek-flash".to_owned(),
+                endpoint: "https://api.deepseek.com".to_owned(),
+                api_key: "sk-test".to_owned(),
+                preset: None,
+                models: Some(vec![credentials::ModelRow {
+                    id: "deepseek-flash".to_owned(),
+                    name: None,
+                    context_window: None,
+                    max_tokens: None,
+                    price_input: Some(1.0),
+                    price_output: Some(2.0),
+                    price_cache_read: Some(0.0),
+                    price_cache_write: Some(0.0),
+                }]),
+                auth_header: None,
+            })
+            .expect("存连接");
+        let task_fixture = task_with_usage(data.path(), cwd.path(), &store, &[8_054, 486]);
+        let detail = task(
+            &store,
+            data.path(),
+            MonitorTaskRequest {
+                task_id: task_fixture.id.as_str().to_owned(),
+                attempt_id: None,
+            },
+            false,
+        )
+        .unwrap();
+        let attempt = detail.attempts.first().expect("有一个 Attempt");
+        assert_eq!(attempt.input_tokens, 8_540);
+        assert!(attempt.cost_usd.is_some(), "Attempt 花费按自己的日志现算");
+        assert!(!attempt.unpriced, "有价目录里不能标无价");
     }
 }
 
@@ -1651,6 +1973,7 @@ mod t075_price_tests {
             tasks: Vec::new(),
             anomalies: Vec::new(),
             days: BTreeMap::new(),
+            project_labels: HashMap::new(),
         }
     }
 
@@ -1665,6 +1988,7 @@ mod t075_price_tests {
                 event(2, time),
             ],
             None,
+            &CostGroup::Kind,
             &session::ModelSelection {
                 connection: "cheap".to_owned(),
                 model: "priced-model".to_owned(),
@@ -1686,6 +2010,7 @@ mod t075_price_tests {
         expensive.add_events(
             &[event(2, time)],
             None,
+            &CostGroup::Kind,
             &session::ModelSelection {
                 connection: "expensive".to_owned(),
                 model: "priced-model".to_owned(),
@@ -1708,6 +2033,7 @@ mod t075_price_tests {
         agg.add_events(
             &[event(2, 1_700_000_000_000)],
             None,
+            &CostGroup::Kind,
             &session::ModelSelection {
                 connection: "missing".to_owned(),
                 model: "priced-model".to_owned(),

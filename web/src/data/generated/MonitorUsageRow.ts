@@ -3,4 +3,8 @@
 /**
  * 一条任务/模型/工具/命令的耗用事实。金额没有价时为 None，unpriced=true。
  */
-export type MonitorUsageRow = { key: string, label: string, requests: number, inputTokens: number, outputTokens: number, cacheReadTokens: number, cacheWriteTokens: number, costUsd?: number | null, unpriced: boolean, };
+export type MonitorUsageRow = { key: string, label: string,
+/**
+ * 排行按项目拆：项目 id；个人/Kind 为空。只增字段，旧页面忽略。
+ */
+projectId?: string | null, requests: number, inputTokens: number, outputTokens: number, cacheReadTokens: number, cacheWriteTokens: number, costUsd?: number | null, unpriced: boolean, };
