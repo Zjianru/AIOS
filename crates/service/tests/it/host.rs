@@ -111,6 +111,24 @@ async fn setup(server: &MockServer) -> (Agent, tempfile::TempDir, SessionId) {
     (agent, data_dir, id)
 }
 
+fn user_texts(body: &serde_json::Value) -> Vec<String> {
+    let mut texts = Vec::new();
+    if let Some(messages) = body["messages"].as_array() {
+        for message in messages {
+            if let Some(content) = message["content"].as_array() {
+                for block in content {
+                    if block["type"] == "text"
+                        && let Some(text) = block["text"].as_str()
+                    {
+                        texts.push(text.to_owned());
+                    }
+                }
+            }
+        }
+    }
+    texts
+}
+
 fn send_request(request_id: &str, text: &str) -> SendRequest {
     SendRequest {
         request_id: request_id.to_owned(),
@@ -869,4 +887,79 @@ async fn shutdown_cancels_active_turn_and_keeps_log_resumable() {
     drop(store);
     drop(service);
     drop(agent);
+}
+
+#[tokio::test]
+async fn cancel_keeps_queued_program_messages() {
+    let server = MockServer::start().await;
+    mount(
+        &server,
+        vec![
+            sse(FINAL_TEXT_SSE).set_delay(Duration::from_secs(10)),
+            sse(FINAL_TEXT_SSE),
+        ],
+        2,
+    )
+    .await;
+    let (agent, data_dir, id) = setup(&server).await;
+    let service = ServiceHost::new(agent.clone());
+    let mut events = service.subscribe_events();
+
+    service
+        .send(send_request("req-run", "跑一轮"))
+        .await
+        .unwrap();
+    wait_for(&mut events, "turn/start", 1).await;
+    let queued = service.send(send_request("req-user-a", "用户A")).await;
+    assert!(queued.is_ok(), "排队用户消息应受理：{queued:?}");
+    assert!(queued.unwrap().accepted, "排队用户消息要 accepted");
+    service
+        .send_message(
+            "task-report:task-1:report-1",
+            UserMessage::text("任务报回了"),
+            DeliveryMode::FollowUp,
+        )
+        .await
+        .unwrap();
+
+    service.cancel(CancelRequest {}).await.unwrap();
+    service
+        .send(send_request("req-after", "取消后新话"))
+        .await
+        .unwrap();
+    agent.idle().await;
+
+    let bodies = server.received_requests().await.unwrap();
+    assert_eq!(bodies.len(), 2, "取消 + 新话只发两次模型请求");
+    let second: serde_json::Value = serde_json::from_slice(&bodies[1].body).unwrap();
+    let texts = user_texts(&second);
+    assert!(
+        texts.contains(&"任务报回了".to_owned()),
+        "程序消息要照旧送到下一轮：{texts:?}"
+    );
+    assert!(texts.contains(&"取消后新话".to_owned()));
+    assert!(
+        !texts.contains(&"用户A".to_owned()),
+        "用户排队话应被停掉：{texts:?}"
+    );
+
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
+    let canceled = store
+        .events()
+        .iter()
+        .filter(|event| {
+            matches!(
+                &event.kind,
+                session::EventKind::InboxSpliced {
+                    outcome: Some(session::InboxOutcome::Canceled),
+                    ..
+                }
+            )
+        })
+        .count();
+    assert!(canceled >= 1, "用户排队话要落 canceled splice");
+    assert!(
+        !turn_ends(data_dir.path(), &id).is_empty(),
+        "取消后这一轮要收尾"
+    );
 }

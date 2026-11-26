@@ -6,7 +6,7 @@ use crate::common::{
 };
 use agent::{Agent, AgentConfig, AgentEvent, Delivery, Deps, TurnOutcome};
 use model::{ContentBlock, DeepSeek, UserMessage};
-use session::{EventKind, SessionStore, TurnEndReason};
+use session::{EventKind, InboxOutcome, SessionStore, TurnEndReason};
 use tokio::sync::mpsc;
 use tools::{ToolConcurrency, ToolSet};
 use wiremock::matchers::{method, path};
@@ -882,4 +882,105 @@ async fn steer_wakes_idle_loop() {
     let requests = server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 1);
     assert!(user_texts(&parse_body(&requests[0])).contains(&"插一句".to_owned()));
+}
+
+#[tokio::test]
+async fn cancel_clears_only_user_messages_and_keeps_program_messages() {
+    let mut server = ScriptedSseServer::start(vec![
+        SseScript {
+            frames: PARTIAL_TEXT_SSE.to_owned(),
+            hold: true,
+        },
+        SseScript {
+            frames: FINAL_TEXT_SSE.to_owned(),
+            hold: false,
+        },
+        SseScript {
+            frames: FINAL_TEXT_SSE.to_owned(),
+            hold: false,
+        },
+    ]);
+    let (agent, data_dir, _cwd, session_id) =
+        new_agent(&server.base_url(), ToolSet::empty(), 10).await;
+    agent
+        .send(UserMessage::text("开始"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    server.wait_ready().await;
+
+    // 用户消息和程序消息交替排队：next-turn 两段用户 + 中间一条程序消息；
+    // next-step 一段用户 + 一条程序消息。
+    agent
+        .send(UserMessage::text("用户排队A"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    agent
+        .send(
+            UserMessage::text_with_request_id("任务报回了", "task-report:t:r"),
+            Delivery::FollowUp,
+        )
+        .await
+        .unwrap();
+    agent
+        .send(UserMessage::text("用户排队B"), Delivery::FollowUp)
+        .await
+        .unwrap();
+
+    agent.cancel().await.unwrap();
+    // 取消后再发一句；程序消息留在队列里会先自己开一轮，新话随后再开一轮。
+    agent
+        .send(UserMessage::text("取消后新话"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    server.release();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(10), agent.idle())
+            .await
+            .is_ok(),
+        "取消后 idle() 必须返回"
+    );
+
+    let bodies = server.request_bodies();
+    assert_eq!(
+        bodies.len(),
+        3,
+        "aborted 后程序消息一轮 + 新话一轮，共三次模型请求"
+    );
+    let program_body: serde_json::Value = serde_json::from_slice(&bodies[1]).unwrap();
+    let program_texts = user_texts(&program_body);
+    assert!(
+        program_texts.contains(&"任务报回了".to_owned()),
+        "程序消息 task-report 要照旧送到：{program_texts:?}"
+    );
+    let after_texts = user_texts(&serde_json::from_slice(bodies.last().unwrap()).unwrap());
+    assert!(after_texts.contains(&"取消后新话".to_owned()));
+    for cleared in ["用户排队A", "用户排队B"] {
+        assert!(
+            !program_texts.contains(&cleared.to_owned()),
+            "用户排队话 {cleared} 应被停掉：{program_texts:?}"
+        );
+        assert!(
+            !after_texts.contains(&cleared.to_owned()),
+            "用户排队话 {cleared} 不能再出现：{after_texts:?}"
+        );
+    }
+
+    let reopened = SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
+    let canceled = reopened
+        .events()
+        .iter()
+        .filter(|event| {
+            matches!(
+                &event.kind,
+                EventKind::InboxSpliced {
+                    outcome: Some(InboxOutcome::Canceled),
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(
+        canceled, 2,
+        "next-turn 里用户 A、B 两段，各一条 canceled splice"
+    );
 }
