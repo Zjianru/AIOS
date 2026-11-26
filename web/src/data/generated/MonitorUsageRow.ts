@@ -9,6 +9,6 @@ export type MonitorUsageRow = { key: string, label: string,
  */
 projectId?: string | null,
 /**
- * T092 附记：这一行是 Kind 对话（项目筛选要把它排除）。只增字段。
+ * 这一行是 Kind 对话（项目筛选要把它排除）。只增字段。
  */
 isKind: boolean, requests: number, inputTokens: number, outputTokens: number, cacheReadTokens: number, cacheWriteTokens: number, costUsd?: number | null, unpriced: boolean, };

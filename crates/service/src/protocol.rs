@@ -2162,7 +2162,7 @@ pub struct MonitorUsageRow {
     /// 排行按项目拆：项目 id；个人/Kind 为空。只增字段，旧页面忽略。
     #[serde(rename = "projectId", default, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
-    /// T092 附记：这一行是 Kind 对话（项目筛选要把它排除）。只增字段。
+    /// 这一行是 Kind 对话（项目筛选要把它排除）。只增字段。
     #[serde(rename = "isKind", default)]
     pub is_kind: bool,
     pub requests: u64,

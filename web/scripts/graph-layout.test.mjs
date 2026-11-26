@@ -1,4 +1,4 @@
-// T092.1：任务图布局几何（最长路径分列/重心/竖直居中/lane/端口）。
+// 任务图布局几何（最长路径分列/重心/竖直居中/lane/端口）。
 import assert from 'node:assert/strict';
 import { COL_GAP, NODE_H, NODE_W, PAD, layoutGraph } from '../src/pages/work/graphModel.ts';
 
