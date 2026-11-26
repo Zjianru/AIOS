@@ -1,6 +1,6 @@
 // T095.5：回退前端的纯函数（原文还原顺序、菜单禁用条件）。
 import assert from 'node:assert/strict';
-import { hasBefore, rewindSourceOfMessage, viewOfSeq } from '../src/pages/kind/rewind.ts';
+import { canRecallCleared, hasBefore, rewindSourceOfMessage, viewOfSeq } from '../src/pages/kind/rewind.ts';
 
 const source = rewindSourceOfMessage({
   content: [
@@ -28,4 +28,25 @@ assert.equal(hasBefore(rows, 20), true);
 assert.equal(hasBefore(rows, null), false);
 assert.equal(viewOfSeq([{ id: 'turn-1', user: { seq: 10 } }], 10)?.id, 'turn-1');
 assert.equal(viewOfSeq([], 10), undefined);
+const blank = {
+  hasText: false,
+  hasPastes: false,
+  hasAttachments: false,
+  hasCanvas: false,
+  hasResultCard: false,
+  hasExtraCanvases: false,
+  hasExtraResultCards: false,
+};
+assert.equal(canRecallCleared(blank), true, '空输入可以 ↑ 找回');
+for (const key of [
+  'hasText',
+  'hasPastes',
+  'hasAttachments',
+  'hasCanvas',
+  'hasResultCard',
+  'hasExtraCanvases',
+  'hasExtraResultCards',
+]) {
+  assert.equal(canRecallCleared({ ...blank, [key]: true }), false, key + ' 存在时不召回');
+}
 console.log('rewind.test.mjs: all assertions passed');

@@ -80,6 +80,27 @@ export function rewindSourceOfMessage(message: unknown): RewindSource | null {
   return source;
 }
 
+/** T095.5：输入框空着才允许 ↑ 找回（字/粘贴/附件/结果卡/画布任一存在就不召回）。 */
+export function canRecallCleared(input: {
+  hasText: boolean;
+  hasPastes: boolean;
+  hasAttachments: boolean;
+  hasCanvas: boolean;
+  hasResultCard: boolean;
+  hasExtraCanvases: boolean;
+  hasExtraResultCards: boolean;
+}): boolean {
+  return (
+    !input.hasText &&
+    !input.hasPastes &&
+    !input.hasAttachments &&
+    !input.hasCanvas &&
+    !input.hasResultCard &&
+    !input.hasExtraCanvases &&
+    !input.hasExtraResultCards
+  );
+}
+
 /** 服务 rewind list 的一行（seq 是日志里那条 user/message 的 seq）。 */
 export interface RewindRow {
   seq: number;

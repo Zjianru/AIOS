@@ -19,6 +19,7 @@ import { useKindStore } from '../kindStore';
 import { fileMentions } from '../atGrammar';
 import type { QueueRestore } from '../inbox';
 import { mimeFromFileName } from '../fileMime.ts';
+import { canRecallCleared } from '../rewind.ts';
 import type { RewindSource } from '../rewind.ts';
 import { attachmentGet, attachmentPut, fileReferences } from '@/data/service';
 import type { FileReferenceEntry, SendAttachmentRef } from '@/data/service';
@@ -786,14 +787,15 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       }
     }
     if (event.key === 'ArrowUp' && !atMenu) {
-      const empty =
-        !text.trim() &&
-        pastes.length === 0 &&
-        attachments.length === 0 &&
-        !fromCanvas &&
-        !resultCard &&
-        extraCanvases.length === 0 &&
-        extraResultCards.length === 0;
+      const empty = canRecallCleared({
+        hasText: text.trim().length > 0,
+        hasPastes: pastes.length > 0,
+        hasAttachments: attachments.length > 0,
+        hasCanvas: fromCanvas !== null,
+        hasResultCard: resultCard !== null,
+        hasExtraCanvases: extraCanvases.length > 0,
+        hasExtraResultCards: extraResultCards.length > 0,
+      });
       if (empty && recallCleared()) {
         event.preventDefault();
         return;

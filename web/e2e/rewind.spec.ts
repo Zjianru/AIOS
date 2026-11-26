@@ -67,15 +67,73 @@ async function selectRow(page: Page, text: string): Promise<void> {
   await expect(menu(page)).toHaveAttribute('data-phase', 'actions');
 }
 
-test('输入框有字：两下 Esc 清空，↑ 找回', async ({ page }) => {
+test('输入框有字：第一下 Esc 提示 500ms 后消失；两下清空，↑ 找回且光标在末尾', async ({ page }) => {
   await openKind(page);
   await input(page).fill('草稿别丢');
   await page.keyboard.press('Escape');
-  await expect(page.locator('[data-kind="esc-hint"]')).toHaveText('再按一次 Esc 清空输入框');
+  const hint = page.locator('[data-kind="esc-hint"]');
+  await expect(hint).toHaveText('再按一次 Esc 清空输入框');
+  // F1①：500ms 内没有第二下，提示自己消失，输入框内容不动。
+  await expect(hint).toHaveCount(0, { timeout: 2000 });
+  await expect(input(page)).toHaveValue('草稿别丢');
+  await page.keyboard.press('Escape');
+  await expect(hint).toHaveText('再按一次 Esc 清空输入框');
   await page.keyboard.press('Escape');
   await expect(input(page)).toHaveValue('');
   await input(page).press('ArrowUp');
   await expect(input(page)).toHaveValue('草稿别丢');
+  // F1④：找回后光标在末尾。
+  const caretAtEnd = await input(page).evaluate((element) => {
+    const textarea = element as HTMLTextAreaElement;
+    return textarea.selectionStart === textarea.value.length;
+  });
+  expect(caretAtEnd).toBe(true);
+});
+
+test('↑ 找回：两次清空后进先出、草稿按会话 id 存；有附件时不召回', async ({ page, request }) => {
+  await openKind(page);
+  const statusResponse = await apiPost(request, fixture, { method: 'status' });
+  const status = (await statusResponse.json()) as { object?: { sessionId?: string } };
+  const sessionId = status.object?.sessionId ?? '';
+  expect(sessionId).not.toBe('');
+
+  await input(page).fill('第一条');
+  await doubleEsc(page);
+  await expect(input(page)).toHaveValue('');
+  // F1⑤：草稿存在 aios.kind.draft.<会话 id>，清掉的也跟草稿一起存。
+  const stored = await page.evaluate(
+    (key) => localStorage.getItem(key),
+    'aios.kind.draft.' + sessionId,
+  );
+  expect(stored).toContain('第一条');
+
+  await input(page).fill('第二条');
+  await doubleEsc(page);
+  await expect(input(page)).toHaveValue('');
+
+  // F1③：LIFO——先取回最近清掉的，再取回更早的。
+  await input(page).press('ArrowUp');
+  await expect(input(page)).toHaveValue('第二条');
+  await input(page).fill('');
+  await input(page).press('ArrowUp');
+  await expect(input(page)).toHaveValue('第一条');
+
+  // F1②：输入框里有附件时按 ↑ 不召回（草稿栈里还有一条可被误取）。
+  await input(page).fill('');
+  await input(page).fill('会被清掉的');
+  await doubleEsc(page);
+  await expect(input(page)).toHaveValue('');
+  await input(page).evaluate((element, fileName) => {
+    const data = new DataTransfer();
+    data.items.add(new File(['附件正文'], fileName, { type: 'text/plain' }));
+    const event = new ClipboardEvent('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'clipboardData', { value: data });
+    element.dispatchEvent(event);
+  }, '不召回.txt');
+  await expect(page.locator('[data-kind="file-card"]')).toHaveCount(1);
+  await input(page).press('ArrowUp');
+  await expect(input(page)).toHaveValue('');
+  await expect(page.locator('[data-kind="file-card"]')).toHaveCount(1);
 });
 
 test('空输入两下 Esc：菜单列出说过的话，默认选最新；恢复对话后收起并回输入框，刷新一致', async ({ page, request }) => {
