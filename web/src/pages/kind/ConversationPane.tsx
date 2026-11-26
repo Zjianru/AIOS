@@ -53,6 +53,7 @@ export function ConversationPane() {
   const offline = connection.state !== 'online';
   const sessionId = useKindStore((state) => state.sessionId);
   const queueRestores = useKindStore((state) => state.queueRestores);
+  const restoreMissing = useKindStore((state) => state.restoreMissing);
   const scrollerRef = useRef<HTMLElement | null>(null);
   const topIndexRef = useRef<number | null>(null);
   const capturedForRef = useRef<string | null>(null);
@@ -428,6 +429,11 @@ export function ConversationPane() {
 
       <div className="shrink-0 border-t border-line px-6 pb-2 pt-3">
         <div className="mx-auto w-full max-w-[680px]">
+          {restoreMissing ? (
+            <div className="pb-1 text-2 text-wait" data-kind="restore-missing">
+              有一句排队的话没找回来
+            </div>
+          ) : null}
           <div className={cn('rounded-card border border-line-2 bg-raised/70 px-3 py-2 transition-colors')}>
             
             <Composer

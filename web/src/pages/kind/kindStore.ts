@@ -18,7 +18,7 @@ import type { AgentFrame, KindState } from './types';
 import { applyAcceptEligibility, applyCardSignals, rememberCardSignals } from './cardSignals';
 import { FIRST_INDEX_BASE, canvasTitleOf, decorate, indexOf } from './viewUtils';
 import { addUnsentView, removeView, unsentSends } from './unsent';
-import { applyInboxEvent, emptyProjection, seedProjection } from './inbox';
+import { applyInboxEvent, emptyProjection, loadProjection } from './inbox';
 import { applyRootState } from './rootState';
 import { mergeCcViews } from './ccViews';
 import { catalogCache, useStreamStore } from './streams';
@@ -243,11 +243,15 @@ function applyLiveEvent(event: ServiceEvent): void {
   rememberCardSignals([event]);
   liveEvents.push(event);
   // T090.1：停止清队列的 splice 只带坐标和数量，投影折叠后把被清的消息交给输入框恢复。
-  const queueRestores = applyInboxEvent(inboxProjection, event);
-  if (queueRestores.length > 0) {
+  const folded = applyInboxEvent(inboxProjection, event);
+  if (folded.restores.length > 0) {
     useKindStore.setState((current) => ({
-      queueRestores: current.queueRestores.concat(queueRestores),
+      queueRestores: current.queueRestores.concat(folded.restores),
     }));
+  }
+  if (folded.missing > 0) {
+    // 页面已经开着时投影对不上（正常路径不会发生）：不静默，提示没找回来。
+    useKindStore.setState({ restoreMissing: true });
   }
   // T028.5：抄送 Kind 的行（inbox/spliced 或领取后的 user/message）单独成行，不是一轮。
   if (event.type === 'agent/inbox/spliced' || event.type === 'user/message') {
@@ -518,6 +522,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
   pendingResultCard: null,
   composerResultCard: null,
   queueRestores: [],
+  restoreMissing: false,
   reveal: null,
   revealTurn: (turnId) => set({ reveal: { turnId, at: Date.now() } }),
   revealTaskResult: async (taskId, preferredTurn) => {
@@ -620,7 +625,17 @@ export const useKindStore = create<KindState>()((set, get) => ({
       const page = await fetchEventsPage({ maxMessages: 100, minMessages: 10, minTurns: 5 });
       rememberCardSignals(page.events);
       // T090.1：重建 inbox 投影；页面没开着时发生的取消，打开后从这里补放回。
-      const folded = seedProjection(page.events);
+      // T090.2-B3：canceled splice 要删的消息插在更早页时，用同一个 beforeSeq 读口往前翻，
+      // 只折投影（不进对话列表、不改滚动位置），直到对上或读到日志开头。
+      const folded = await loadProjection(page, async (beforeSeq) => {
+        const older = await fetchEventsPage({
+          beforeSeq,
+          maxMessages: 400,
+          minMessages: 100,
+          minTurns: 20,
+        });
+        return { events: older.events, hasMore: older.hasMore };
+      });
       inboxProjection = folded.projection;
       // 先换上这页日志再折视图：T054.2 F1 的「改要求回执 seq」等派生要读到这一页里的
       // card/decision，否则刷新后旧结果卡的按钮会先按旧规则出来、之后也没人重算。
@@ -645,6 +660,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
       set({
         views,
         queueRestores: folded.restores,
+        restoreMissing: folded.missing > 0,
         byId: indexOf(views),
         ...decorate(views),
         canvasTracks: canvasTracks(page.events),

@@ -50,9 +50,16 @@ export function emptyProjection(): InboxProjection {
   return { nextStep: [], nextTurn: [] };
 }
 
+/** 一条 splice 的折叠结果：取消要放回的内容 + 删除范围超出投影的条数。 */
+export interface InboxFold {
+  restores: QueueRestore[];
+  /** >0 表示投影里还没有这几条（要往前翻页再折）。 */
+  missing: number;
+}
+
 /** 应用一条 splice；取消（outcome=canceled）时返回被删用户消息的放回内容。 */
-export function applyInboxEvent(projection: InboxProjection, event: ServiceEvent): QueueRestore[] {
-  if (event.type !== 'agent/inbox/spliced') return [];
+export function applyInboxEvent(projection: InboxProjection, event: ServiceEvent): InboxFold {
+  if (event.type !== 'agent/inbox/spliced') return { restores: [], missing: 0 };
   const data = event.data as {
     target?: unknown;
     start?: unknown;
@@ -66,26 +73,72 @@ export function applyInboxEvent(projection: InboxProjection, event: ServiceEvent
       : data.target === 'next-turn'
         ? projection.nextTurn
         : null;
-  if (!queue) return [];
-  const start = Math.max(0, Math.min(Number(data.start ?? 0), queue.length));
-  const removedCount = Math.max(0, Math.min(Number(data.removedCount ?? 0), queue.length - start));
-  const removed = queue.splice(start, removedCount);
+  if (!queue) return { restores: [], missing: 0 };
+  const requestedStart = Math.max(0, Number(data.start ?? 0));
+  const removedCount = Math.max(0, Number(data.removedCount ?? 0));
+  // 删除范围超出投影里已有的消息：说明被删的那几条插在更早的日志页，先记缺多少，
+  // 由调用方往前翻页重折（DSH 的 splice 坐标在写日志时都是合法范围）。
+  const missing = Math.max(0, requestedStart + removedCount - queue.length);
+  const start = Math.min(requestedStart, queue.length);
+  const count = Math.min(removedCount, queue.length - start);
+  const removed = queue.splice(start, count);
   const inserted = Array.isArray(data.inserted) ? (data.inserted as InboxMessage[]) : [];
   if (inserted.length > 0) queue.splice(start, 0, ...inserted);
-  if (data.outcome !== 'canceled') return [];
+  if (data.outcome !== 'canceled' || missing > 0) return { restores: [], missing };
   const restore = restoreOf(removed, event.seq);
-  return restore ? [restore] : [];
+  return { restores: restore ? [restore] : [], missing: 0 };
 }
 
-/** 把一页日志折叠成投影，并收集打开页面前就已经发生的取消（打开时补放回）。 */
-export function seedProjection(events: ServiceEvent[]): {
-  projection: InboxProjection;
-  restores: QueueRestore[];
-} {
+/** 一页日志（首屏或往前翻的一页）。 */
+export interface ProjectionPage {
+  events: ServiceEvent[];
+  hasMore: boolean;
+}
+
+/**
+ * 把若干页日志按「旧页在前」折叠成投影，并收集 requireFromSeq 之后的取消。
+ * requireFromSeq 之前的页只用来补队列状态，不产生放回、也不算缺（更早的取消不重放）。
+ */
+export function foldProjectionPages(
+  pages: ServiceEvent[][],
+  requireFromSeq: number,
+): { projection: InboxProjection; restores: QueueRestore[]; missing: number } {
   const projection = emptyProjection();
   const restores: QueueRestore[] = [];
-  for (const event of events) restores.push(...applyInboxEvent(projection, event));
-  return { projection, restores };
+  let missing = 0;
+  for (const events of pages) {
+    for (const event of events) {
+      const folded = applyInboxEvent(projection, event);
+      if (event.seq < requireFromSeq) continue;
+      missing += folded.missing;
+      restores.push(...folded.restores);
+    }
+  }
+  return { projection, restores, missing };
+}
+
+/**
+ * 首屏页 + 按需往前翻：canceled splice 的删除范围超出投影时，用同一个 beforeSeq 读口
+ * 往前读一页、折进投影再对；对上或读到日志开头才停。往前读的页只折投影，不进对话列表。
+ */
+export async function loadProjection(
+  first: ProjectionPage,
+  fetchOlder: (beforeSeq: number) => Promise<ProjectionPage>,
+): Promise<{ projection: InboxProjection; restores: QueueRestore[]; missing: number }> {
+  const requireFromSeq = first.events[0]?.seq ?? 0;
+  const pages: ServiceEvent[][] = [first.events];
+  let oldest = first.events[0]?.seq ?? null;
+  let hasMore = first.hasMore;
+  let folded = foldProjectionPages(pages, requireFromSeq);
+  while (folded.missing > 0 && hasMore && oldest !== null) {
+    const older = await fetchOlder(oldest);
+    if (older.events.length === 0) break;
+    pages.unshift(older.events);
+    oldest = older.events[0]?.seq ?? oldest;
+    hasMore = older.hasMore;
+    folded = foldProjectionPages(pages, requireFromSeq);
+  }
+  return folded;
 }
 
 /**
