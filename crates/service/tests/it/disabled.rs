@@ -96,6 +96,7 @@ fn keyring_factory(data_dir: &Path, identity: &Path) -> service::ModelFactory {
                 context_window: DEFAULT_CONTEXT_WINDOW,
                 effort: Effort::new(effort),
                 tool_update: None,
+                supports_images: false,
             },
             Some(std::sync::Arc::new(ConnectionCredential {
                 data_dir: data.clone(),

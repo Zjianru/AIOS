@@ -1512,8 +1512,15 @@ pub struct AttachmentGetRequest {
 pub struct AttachmentGetResponse {
     pub name: String,
     pub bytes: u64,
+    /// T093：附件原类型（按扩展名兜底；旧数据没有）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime: Option<String>,
+    /// 文字文件附全文；非文字为 None（旧数据兼容口径）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    /// T093：二进制 base64（图片预览/发送用；文字文件不回，避免重复）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
 }
 
 /// @ 文件候选（query 是 @ 后面那段；空就是列前面的）。
@@ -1897,7 +1904,7 @@ pub struct ActionActResponse {
 ///
 /// 连接上的旧价格乘数后来整条删掉，不升版本：两个请求里的这个字段本来就可省略，旧页再发
 /// 由 serde 当未知字段忽略；响应里少了它，旧页读到 undefined 也不会拿去定价。
-pub const PROTOCOL_VERSION: u64 = 33;
+pub const PROTOCOL_VERSION: u64 = 34;
 
 /// 日历读取：不带 appointmentId 读全部；带 week 时额外给那周的计划点。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]

@@ -339,6 +339,7 @@ async fn 获取可用模型合并目录与厂商列表且用户字段不动() {
                     price_output: None,
                     price_cache_read: None,
                     price_cache_write: None,
+                    input: None,
                 },
                 credentials::ModelRow {
                     id: "my-only-model".to_owned(),
@@ -349,6 +350,7 @@ async fn 获取可用模型合并目录与厂商列表且用户字段不动() {
                     price_output: None,
                     price_cache_read: None,
                     price_cache_write: None,
+                    input: None,
                 },
             ]),
             ..Default::default()
@@ -1894,6 +1896,7 @@ fn model_row(id: &str, context_window: u64) -> credentials::ModelRow {
         price_output: None,
         price_cache_read: None,
         price_cache_write: None,
+        input: None,
     }
 }
 
@@ -2426,6 +2429,7 @@ async fn assistant_message_provider(connection_id: &str, preset: &str, model_id:
                     context_window: 111_000,
                     effort: Effort::new(effort),
                     tool_update: None,
+                    supports_images: false,
                 },
                 Some(crate::common::test_credential(&data)),
             ))
@@ -2988,6 +2992,7 @@ async fn 显式模型行里的下线模型不过滤() {
             price_output: None,
             price_cache_read: None,
             price_cache_write: None,
+            input: None,
         }]),
         ..Default::default()
     }))

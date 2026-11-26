@@ -59,17 +59,27 @@ async fn attachment_put_returns_id_and_bytes() {
 }
 
 #[tokio::test]
-async fn attachment_put_rejects_binary_with_not_text_code() {
+async fn attachment_put_accepts_binary_and_get_returns_data() {
     let dir = tempdir().unwrap();
     let host = host(dir.path()).await;
-    let error = host
+    let bytes = b"\x89PNG\r\n\x1a\n\0\0\0".as_slice();
+    let put = host
         .dispatch(Call::AttachmentPut(AttachmentPutRequest {
-            name: "bin.dat".to_owned(),
-            data: base64(b"abc\0def"),
+            name: "pic.png".to_owned(),
+            data: base64(bytes),
         }))
         .await
-        .expect_err("二进制要拒收");
-    assert_eq!(error.code().as_str(), "attachment/not-text");
+        .expect("图片/二进制也要收下");
+    let put_json = serde_json::to_value(&put).unwrap();
+    let id = put_json["id"].as_str().unwrap().to_owned();
+    let got = host
+        .dispatch(Call::AttachmentGet(AttachmentGetRequest { id }))
+        .await
+        .expect("get");
+    let json = serde_json::to_value(&got).unwrap();
+    assert_eq!(json["mime"], "image/png");
+    assert_eq!(json["data"], base64(bytes), "非文字回二进制 base64");
+    assert!(json.get("text").is_none(), "非文字不给全文：{json}");
 }
 
 #[tokio::test]
@@ -120,6 +130,7 @@ async fn attachment_get_gives_text_none_for_non_utf8_text_files() {
     let json = serde_json::to_value(&got).unwrap();
     assert_eq!(json["bytes"], 1);
     assert!(json.get("text").is_none(), "非 UTF-8 → text=None：{json}");
+    assert_eq!(json["data"], "/w==", "非文字回二进制 base64");
 }
 
 #[tokio::test]

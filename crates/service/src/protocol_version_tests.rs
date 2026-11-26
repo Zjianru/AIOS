@@ -1,11 +1,8 @@
 use super::*;
 
 #[test]
-fn protocol_version_is_33() {
-    assert_eq!(
-        PROTOCOL_VERSION, 33,
-        "监控排行行加 isKind（区分 Kind 对话），只增字段，升到 33"
-    );
+fn protocol_version_is_34() {
+    assert_eq!(PROTOCOL_VERSION, 34, "输入多模态/附件只增字段，升到 34");
 }
 
 #[test]

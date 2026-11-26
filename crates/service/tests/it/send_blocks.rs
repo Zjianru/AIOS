@@ -14,6 +14,32 @@ async fn host(dir: &Path, cwd: &Path) -> RootHost {
     crate::common::open(options).await
 }
 
+fn base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        out.push(TABLE[(n >> 18) as usize & 63] as char);
+        out.push(TABLE[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 {
+            TABLE[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
 fn request(content: &str) -> SendRequest {
     SendRequest {
         request_id: "req-t013-4".to_owned(),
@@ -359,14 +385,57 @@ async fn send_appends_multi_markers_in_order_and_keeps_attachment_mime() {
     }
     assert_eq!(blocks[4].as_text(), Some("带标记"));
     match &blocks[5] {
-        model::ContentBlock::File { mime, name, .. } => {
+        model::ContentBlock::Image {
+            mime, name, path, ..
+        } => {
             assert_eq!(name, "pic.png");
-            assert_eq!(
-                mime.as_deref(),
-                Some("image/png"),
-                "附件原 MIME 要写进文件块"
+            assert_eq!(mime.as_deref(), Some("image/png"), "图片 MIME 要写进图片块");
+            assert!(
+                path.as_deref()
+                    .is_some_and(|path| path.contains("attachments/v1/files")),
+                "图片块带只读副本路径：{path:?}"
             );
         }
-        other => panic!("最后一块应是文件：{other:?}"),
+        other => panic!("最后一块应是图片：{other:?}"),
+    }
+}
+#[tokio::test]
+async fn send_image_attachment_becomes_an_image_block_in_the_log() {
+    let data = tempdir().unwrap();
+    let cwd = tempdir().unwrap();
+    let host = host(data.path(), cwd.path()).await;
+    let bytes = b"\x89PNG\r\n\x1a\n";
+    let put = host
+        .dispatch(Call::AttachmentPut(AttachmentPutRequest {
+            name: "shot.png".to_owned(),
+            data: base64(bytes),
+        }))
+        .await
+        .expect("put");
+    let id = serde_json::to_value(&put).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut send = request("看图");
+    send.attachments = vec![SendAttachment {
+        id: id.clone(),
+        name: "shot.png".to_owned(),
+        bytes: bytes.len() as u64,
+        mime: None,
+    }];
+    host.dispatch(Call::Send(send)).await.expect("send");
+    let blocks = wait_user_blocks(&host, data.path()).await;
+    match &blocks[1] {
+        model::ContentBlock::Image {
+            attachment_id,
+            mime,
+            bytes,
+            ..
+        } => {
+            assert_eq!(attachment_id, &id);
+            assert_eq!(mime.as_deref(), Some("image/png"), "按扩展名兜底 mime");
+            assert_eq!(*bytes, 8);
+        }
+        other => panic!("图片附件要写成 Image 块：{other:?}"),
     }
 }

@@ -91,6 +91,7 @@ async fn resume(server: &MockServer, data_dir: &std::path::Path, id: &SessionId)
             context_window: model::DEFAULT_CONTEXT_WINDOW,
             effort: Effort::new("high"),
             tool_update: None,
+            supports_images: false,
         },
         crate::common::test_credential(data_dir),
     )
@@ -127,6 +128,7 @@ async fn setup(server: &MockServer) -> (Agent, tempfile::TempDir, SessionId) {
             context_window: model::DEFAULT_CONTEXT_WINDOW,
             effort: Effort::new("high"),
             tool_update: None,
+            supports_images: false,
         },
         crate::common::test_credential(data_dir.path()),
     )

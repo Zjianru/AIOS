@@ -671,6 +671,7 @@ pub fn model_config(base_url: &str) -> model::DeepSeekConfig {
         // T046：测试辅助默认模拟生产 DeepSeek 路由（声明 addition-only）；要测「未声明路由」的
         // 全量固定语义时，用 model_config 再显式把 tool_update 设成 None。
         tool_update: Some(model::ToolUpdate::AdditionOnly),
+        supports_images: false,
     }
 }
 
@@ -735,6 +736,7 @@ pub async fn setup_agent_with_model(
             context_window: 1_000_000,
             effort,
             tool_update: None,
+            supports_images: false,
         },
         test_credential(),
     )

@@ -25,6 +25,33 @@ pub(crate) fn attachment_error(error: tools::attachments::AttachmentError) -> Se
 ///
 /// 只收规范形式：长度是 4 的倍数、`=` 只允许在末尾（最多两个）、`=` 后不能有数据、
 /// 尾部填充位的低位必须为 0（`AA==` 收，`AB==` 拒）。
+/// 规范 base64 编码（不引新依赖；给图片二进制用）。
+fn encode_base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        out.push(TABLE[(n >> 18) as usize & 63] as char);
+        out.push(TABLE[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 {
+            TABLE[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
 fn decode_base64(input: &str) -> Option<Vec<u8>> {
     let bytes = input.as_bytes();
     if !bytes.len().is_multiple_of(4) {
@@ -124,13 +151,28 @@ impl RootHost {
             let stored = tools::attachments::read(&self.options.data_dir, &attachment.id)
                 .map_err(attachment_error)?;
             // 名字/字节数用请求里的值：同内容不同名时，卡片上要显示用户拖进来的那个名字。
-            blocks.push(model::ContentBlock::File {
-                attachment_id: attachment.id.clone(),
-                name: attachment.name.clone(),
-                bytes: attachment.bytes,
-                path: Some(stored.path.to_string_lossy().into_owned()),
-                mime: attachment.mime.clone(),
-            });
+            let mime = attachment.mime.clone().or_else(|| stored.mime.clone());
+            let path = Some(stored.path.to_string_lossy().into_owned());
+            if mime
+                .as_deref()
+                .is_some_and(|value| value.starts_with("image/"))
+            {
+                blocks.push(model::ContentBlock::Image {
+                    attachment_id: attachment.id.clone(),
+                    name: attachment.name.clone(),
+                    bytes: attachment.bytes,
+                    mime,
+                    path,
+                });
+            } else {
+                blocks.push(model::ContentBlock::File {
+                    attachment_id: attachment.id.clone(),
+                    name: attachment.name.clone(),
+                    bytes: attachment.bytes,
+                    path,
+                    mime,
+                });
+            }
         }
         if blocks.is_empty() {
             return Err(ServiceError::MessageEmpty);
@@ -199,7 +241,7 @@ impl RootHost {
         })
     }
 
-    /// 按 id 读回附件（卡片「点开看全文」）。
+    /// 按 id 读回附件（卡片「点开看全文」/图片预览）。
     pub(crate) async fn attachment_get(
         &self,
         request: AttachmentGetRequest,
@@ -208,12 +250,20 @@ impl RootHost {
             .map_err(attachment_error)?;
         let bytes = std::fs::read(&stored.path)
             .map_err(|error| ServiceError::AttachmentInvalid(format!("附件读不回来：{error}")))?;
-        // 仓库按 git 的「无 NUL 即文字」收；不是合法 UTF-8 时给 text=None（旧数据兼容口径）。
-        let text = String::from_utf8(bytes).ok();
+        let mime = stored.mime.clone();
+        // 文字文件给全文；非文字给二进制 base64（图片预览/发送用），不给全文。
+        let text = String::from_utf8(bytes.clone()).ok();
+        let data = if text.is_none() {
+            Some(encode_base64(&bytes))
+        } else {
+            None
+        };
         Ok(AttachmentGetResponse {
             name: stored.name,
             bytes: stored.bytes as u64,
+            mime,
             text,
+            data,
         })
     }
 }

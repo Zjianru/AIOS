@@ -186,6 +186,19 @@ pub enum ContentBlock {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         canvas: Option<CanvasSource>,
     },
+    /// T093：用户消息里的图片块（附件仓库里的原图；投给模型时按当前模型输入模态转 image 或占位行）。
+    Image {
+        #[serde(rename = "attachmentId")]
+        attachment_id: String,
+        name: String,
+        bytes: u64,
+        /// 原类型（旧日志没有；按扩展名兜底）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mime: Option<String>,
+        /// 只读副本的绝对路径（序列化图片请求时读它拿原始字节）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+    },
     /// T013.4：用户消息里的一个文件块（投给模型时换成 fileHandleText）。
     File {
         #[serde(rename = "attachmentId")]
@@ -274,6 +287,7 @@ impl ContentBlock {
             Self::Reasoning { .. }
             | Self::ToolCall { .. }
             | Self::File { .. }
+            | Self::Image { .. }
             | Self::ResultCard { .. } => None,
         }
     }
@@ -289,6 +303,7 @@ impl ContentBlock {
             Self::Text { .. }
             | Self::Reasoning { .. }
             | Self::File { .. }
+            | Self::Image { .. }
             | Self::ResultCard { .. } => None,
         }
     }

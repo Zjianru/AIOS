@@ -2,7 +2,7 @@
 //!
 //! 照 DSH `fs/tool-fs/src/file-store.ts` + `admission.ts`：
 //! - `<数据目录>/attachments/v1/` 下按 sha256 存一份内容（file-objects/<前2>/<sha>），再按文件名给只读副本（files/<前2>/<sha>/<name>）；
-//! - 文字判断照 git：前 8000 字节里有 NUL 就不是文字，拒收（错误码 not-text）；
+//! - 任何字节都收：图片/PDF/压缩包等存只读副本（内容相同只存一份）；文字判断只留给 read 工具。
 //! - 不设大小/个数上限，不做清理（日志里还引用着）。
 
 use std::fs;
@@ -33,12 +33,14 @@ pub struct StoredAttachment {
     pub bytes: usize,
     /// 只读副本的绝对路径（模型层投递 fileHandleText 用）。
     pub path: PathBuf,
+    /// 按文件名猜的 MIME（图片预览/消息卡用；猜不到 None）。
+    pub mime: Option<String>,
 }
 
 /// 附件仓库的错误。
 #[derive(Debug)]
 pub enum AttachmentError {
-    /// 前 8000 字节里出现 NUL：不是文字文件。
+    /// 保留旧错误码（仓库不再返回；旧调用方按码兼容）。
     NotText,
     /// 文件名不合法（空、含路径分隔符、. / ..、超长）。
     BadName(String),
@@ -66,7 +68,7 @@ impl From<std::io::Error> for AttachmentError {
     }
 }
 
-/// 前 8000 字节里有没有 NUL（照 git：有就不是文字）。
+/// 前 8000 字节里有没有 NUL（照 git：有就不是文字；只用于 read 工具判断，不再拒收附件）。
 pub fn is_text(data: &[u8]) -> bool {
     let probe = &data[..data.len().min(TEXT_PROBE_BYTES)];
     !probe.contains(&0)
@@ -107,6 +109,27 @@ fn write_read_only(path: &Path, data: &[u8]) -> Result<(), AttachmentError> {
     Ok(())
 }
 
+/// 按文件名猜一个常见 MIME（图片预览/消息卡用；猜不到返回 None，页面照实写未知）。
+pub fn mime_for_name(name: &str) -> Option<String> {
+    let ext = name.rsplit('.').next()?.to_ascii_lowercase();
+    let mime = match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "pdf" => "application/pdf",
+        "zip" => "application/zip",
+        "gz" | "tgz" => "application/gzip",
+        "txt" => "text/plain",
+        "md" => "text/markdown",
+        "json" => "application/json",
+        "csv" => "text/csv",
+        _ => return None,
+    };
+    Some(mime.to_owned())
+}
+
 /// 存一份附件：内容按 sha256 存一份，再给只读命名副本。返回 id/name/bytes/路径。
 pub fn store(
     data_dir: &Path,
@@ -114,9 +137,6 @@ pub fn store(
     data: &[u8],
 ) -> Result<StoredAttachment, AttachmentError> {
     validate_name(name)?;
-    if !is_text(data) {
-        return Err(AttachmentError::NotText);
-    }
     let hex = sha256_hex(data);
     let root = root(data_dir);
     let object = root.join("file-objects").join(&hex[..2]).join(&hex);
@@ -136,6 +156,7 @@ pub fn store(
         id: format!("sha256:{hex}"),
         name: name.to_owned(),
         bytes: data.len(),
+        mime: mime_for_name(name),
         path: alias,
     })
 }
@@ -170,10 +191,12 @@ pub fn read(data_dir: &Path, id: &str) -> Result<StoredAttachment, AttachmentErr
         path = entry.path();
     }
     let bytes = fs::metadata(&object)?.len() as usize;
+    let mime = mime_for_name(&name);
     Ok(StoredAttachment {
         id: id.to_owned(),
         name,
         bytes,
         path,
+        mime,
     })
 }

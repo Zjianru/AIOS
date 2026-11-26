@@ -41,6 +41,7 @@ impl Keyring {
                 price_output: None,
                 price_cache_read: None,
                 price_cache_write: None,
+                input: None,
             }]
         });
         let model = models

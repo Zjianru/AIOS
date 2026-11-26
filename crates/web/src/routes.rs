@@ -611,6 +611,7 @@ mod attachment_http_tests {
                 context_window: DEFAULT_CONTEXT_WINDOW,
                 effort: Effort::new("high"),
                 tool_update: None,
+                supports_images: false,
             },
             config: AgentConfig::default(),
             credentials: Some(std::sync::Arc::new(TestCredential)),
@@ -929,6 +930,7 @@ mod ops_endpoint_tests {
             context_window: model::DEFAULT_CONTEXT_WINDOW,
             effort: model::Effort::new("high"),
             tool_update: None,
+            supports_images: false,
         }
     }
 
@@ -1247,6 +1249,7 @@ mod local_file_tests {
             context_window: model::DEFAULT_CONTEXT_WINDOW,
             effort: model::Effort::new("high"),
             tool_update: None,
+            supports_images: false,
         }
     }
 

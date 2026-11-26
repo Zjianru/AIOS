@@ -1289,5 +1289,5 @@ fn conversation_rewound_roundtrips_and_is_the_only_range_source() {
     let wire = serde_json::to_value(rewound).unwrap();
     assert_eq!(wire["type"], "conversation/rewound");
     assert_eq!(wire["surfaceOp"]["op"], "replace");
-    assert_eq!(crate::FORMAT_VERSION, 20);
+    assert_eq!(crate::FORMAT_VERSION, 21);
 }

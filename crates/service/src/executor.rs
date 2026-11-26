@@ -4710,6 +4710,7 @@ mod trigger_tool_tests {
                 context_window: DEFAULT_CONTEXT_WINDOW,
                 effort: Effort::new("high"),
                 tool_update: None,
+                supports_images: false,
             },
             config: agent::AgentConfig::default(),
             credentials: None,
