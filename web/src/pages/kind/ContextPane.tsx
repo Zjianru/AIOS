@@ -9,18 +9,15 @@
 import { useState } from 'react';
 import { ChevronRight } from 'lucide-react';
 import { useKindStore } from './kindStore';
+import { contextMeter } from '@/lib/context-meter';
 import { cn } from '@/lib/utils';
 
 const BLOCKS = ['基本设定', '能力说明', '角色', '记忆', '资料', '你发的批注', '对话历史', '工具结果'];
 
-function formatTokens(tokens: number): string {
-  if (tokens >= 1000) return (tokens / 1000).toFixed(1) + 'k';
-  return String(tokens);
-}
-
 export function ContextPane() {
-  const usage = useKindStore((state) => state.usage);
-  const window = useKindStore((state) => state.contextWindow);
+  const contextUsed = useKindStore((state) => state.contextUsed);
+  const contextWindow = useKindStore((state) => state.contextWindow);
+  const meter = contextMeter(contextUsed, contextWindow);
   const [open, setOpen] = useState<Set<string>>(new Set());
 
   const toggle = (name: string) => {
@@ -32,19 +29,17 @@ export function ContextPane() {
     });
   };
 
-  const used = window > 0 ? Math.round((usage / 100) * window) : 0;
-
   return (
     <section className="flex min-h-0 flex-1 flex-col overflow-hidden" data-block="carrying">
       <header className="shrink-0 px-4 pt-3">
         <div className="flex items-baseline gap-2">
           <h3 className="text-3 font-medium text-ink">Kind 现在带着</h3>
           <span className="ml-auto border-b border-dashed border-ink-3/40 text-2 text-ink-2 brand-type">
-            {window > 0 ? formatTokens(used) + ' / ' + formatTokens(window) : '—'}
+            {meter.reading}
           </span>
         </div>
         <div className="mt-2 h-2 overflow-hidden rounded-badge bg-line/60">
-          <span className="block h-full bg-run transition-[width]" style={{ width: Math.max(1, usage) + '%' }} />
+          <span className="block h-full bg-run transition-[width]" style={{ width: meter.barPercent + '%' }} />
         </div>
         <p className="mt-1 text-1 text-ink-3">总长是服务商报的实际占用（used / window）。</p>
       </header>

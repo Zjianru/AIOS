@@ -20,6 +20,10 @@ test('T098.2 Kind 右栏：聚焦三组 + Kind 现在带着 + 页面标签「现
     for (const group of ['等你', '出了问题', '在跑']) {
       await expect(rail.locator('[data-focus-group="' + group + '"]')).toBeVisible();
     }
+    // 空库：三组各自的空文案（首屏没任务时也照实写）。
+    await expect(rail.locator('[data-focus-group="等你"]')).toContainText('没有要你的事。');
+    await expect(rail.locator('[data-focus-group="出了问题"]')).toContainText('没有出问题。');
+    await expect(rail.locator('[data-focus-group="在跑"]')).toContainText('没有在跑。');
 
     // 下：Kind 现在带着，块名照原型，8 块都写「还没有分块估算」
     await expect(rail.getByText('Kind 现在带着', { exact: true })).toBeVisible();
