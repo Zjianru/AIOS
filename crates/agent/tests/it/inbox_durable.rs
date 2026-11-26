@@ -588,7 +588,6 @@ async fn duplicate_message_id_in_corrupt_inbox_is_reported_on_resume() {
 async fn cancel_clears_next_turn_input_durably() {
     use std::time::Duration;
     use tokio::time::{Instant, timeout_at};
-    use wiremock::ResponseTemplate;
 
     let server = MockServer::start().await;
     // 第一轮扣在模型请求上，给「运行中再排一条」留出确定窗口。
