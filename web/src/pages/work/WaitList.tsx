@@ -9,6 +9,7 @@ import { useKindStore, waitForKindChange, waitForKindLoad } from '@/pages/kind/k
 import { openAppointment } from '@/pages/calendar/CalendarPane';
 import { cn } from '@/lib/utils';
 import { WAIT_ACTION, WAIT_LABEL, stageLabel, waitGroups } from './workModel';
+import { plainText } from '@/lib/plain';
 import { useWorkStore } from './workStore';
 
 async function revealKindTurn(turn: number): Promise<boolean> {
@@ -130,24 +131,26 @@ export function WaitRow({ item, className }: { item: WaitItem; className?: strin
         {item.title}
       </div>
       <div className="mt-0.5 line-clamp-2 text-1 leading-4 text-ink-2" data-kind="wait-body">
-        {item.body}
+        {plainText(item.body)}
       </div>
       {item.also?.length ? (
         <div className="mt-0.5 text-1 text-ink-3" data-kind="wait-also">
           还有：{item.also.map((kind) => WAIT_LABEL[kind] ?? kind).join('、')}
         </div>
       ) : null}
-      <div className="mt-1 flex items-center gap-2">
-        <span className="text-1 text-ink-3" data-kind="wait-need">
+      {item.need ? (
+        <div className="mt-0.5 truncate text-1 text-ink-3" data-kind="wait-need">
           {item.need}
-        </span>
+        </div>
+      ) : null}
+      <div className="mt-1 flex flex-wrap items-center justify-end gap-2">
         {pick ? (
           <button
             type="button"
             data-action="wait-accept"
             disabled={accepting}
             onClick={() => void acceptOne(pick)}
-            className="ml-auto rounded-btn bg-ink px-2 py-0.5 text-1 text-content transition-opacity hover:opacity-90 disabled:opacity-50"
+            className="shrink-0 whitespace-nowrap rounded-btn bg-ink px-2 py-0.5 text-1 text-content transition-opacity hover:opacity-90 disabled:opacity-50"
             style={{ color: 'var(--content)' }}
           >
             接受
@@ -158,10 +161,7 @@ export function WaitRow({ item, className }: { item: WaitItem; className?: strin
             type="button"
             data-action="wait-open"
             onClick={() => void openWaitItem(item, { acceptToTaskchat: true })}
-            className={cn(
-              'flex items-center gap-0.5 rounded-btn px-1.5 py-0.5 text-1 text-ink-3 transition-colors hover:bg-hover hover:text-ink-2',
-              pick ? '' : 'ml-auto',
-            )}
+            className="flex shrink-0 items-center gap-0.5 whitespace-nowrap rounded-btn px-1.5 py-0.5 text-1 text-ink-3 transition-colors hover:bg-hover hover:text-ink-2"
           >
             {action} <span aria-hidden="true">›</span>
           </button>

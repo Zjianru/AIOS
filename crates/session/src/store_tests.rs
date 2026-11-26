@@ -559,7 +559,7 @@ fn hook_panic_signal() {
     );
 }
 
-/// 本票 F2：last_todos 不算恢复区间里的 todo/write，区间外的照旧算。
+///  F2：last_todos 不算恢复区间里的 todo/write，区间外的照旧算。
 #[test]
 fn last_todos_skip_todos_inside_rewound_ranges() {
     let (data_dir, _cwd, mut store) = create_store();
@@ -636,7 +636,7 @@ fn last_todos_skip_todos_inside_rewound_ranges() {
     );
 }
 
-/// 本票 F2：画布当前版按恢复区间重算（区间里的版本不算）。
+///  F2：画布当前版按恢复区间重算（区间里的版本不算）。
 #[test]
 fn canvases_skip_versions_inside_rewound_ranges() {
     let (data_dir, _cwd, mut store) = create_store();

@@ -112,13 +112,23 @@ test('T059 F2：上游结果默认折叠且限高，展开后卡内滚动，不�
   }
 });
 
-test('T059 F3：侧栏现在/Kind/工作/记忆四项，工作和现在可进入', async ({ page }) => {
+test('T059 F3：侧栏顺序 现在/Kind/工作/记忆/监控（项目组在工作后），工作和现在可进入', async ({ page }) => {
   test.setTimeout(120_000);
   const fixture = await startKernelFixture({});
   try {
     await page.goto(urlOf(fixture));
     const nav = page.locator('[data-kind="sidebar-content"] button');
+    // 3 个主项 + 项目组的新建（+） + 记忆 + 监控；空库时没有项目行。
     await expect(nav).toHaveCount(6);
+    const items = page.locator('[data-kind="sidebar-content"] button[data-nav]');
+    await expect(items).toHaveCount(5);
+    expect(await items.evaluateAll((els) => els.map((el) => el.getAttribute('data-nav')))).toEqual([
+      'now',
+      'kind',
+      'work',
+      'memory',
+      'monitor',
+    ]);
     await expect(nav.filter({ hasText: '现在' })).toHaveCount(1);
     await expect(nav.filter({ hasText: 'Kind' })).toHaveCount(1);
     await expect(nav.filter({ hasText: '工作' })).toHaveCount(1);
@@ -226,6 +236,9 @@ test('T059 F5：Kind 长流式追加中滚轮上推不被拉回；点回到底�
   const fixture = await startKernelFixture({ t059LongStream: true });
   try {
     await page.goto(urlOf(fixture));
+    // T098.2：Kind 恢复两栏（对话 | 右栏）；窄视口下 dockview 把右栏折成页签，先切回「对话」再验滚动。
+    const conversationTab = page.getByRole('tab', { name: '对话' });
+    if ((await conversationTab.count()) > 0) await conversationTab.first().click();
     await sendKind(page, '你现在都能做什么卡片');
     // 流式还在跑、内容已超过视口：等 stop 按钮和足够长的流式文字。
     await expect(page.locator('[data-kind="stop"]')).toBeVisible({ timeout: 30_000 });
@@ -248,7 +261,12 @@ test('T059 F5：Kind 长流式追加中滚轮上推不被拉回；点回到底�
     const box = await scroller.boundingBox();
     expect(box).not.toBeNull();
     await page.mouse.move((box?.x ?? 0) + (box?.width ?? 0) / 2, (box?.y ?? 0) + (box?.height ?? 0) / 2);
-    await page.mouse.wheel(0, -720);
+    // 首帧流式重绘偶尔会吃掉一次滚轮事件；最多补发两次，仍只验证「上推不被拉回」。
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await page.mouse.wheel(0, -720);
+      await page.waitForTimeout(120);
+      if ((await scroller.evaluate((element) => element.scrollTop)) < before - 300) break;
+    }
     await expect
       .poll(async () => scroller.evaluate((element) => element.scrollTop), { timeout: 10_000 })
       .toBeLessThan(before - 300);

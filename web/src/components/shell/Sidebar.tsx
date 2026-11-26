@@ -4,7 +4,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import { Activity, Brain, Clock3, FolderKanban, Moon, Plus, Settings, Sparkles, Sun } from 'lucide-react';
+import { Activity, Bookmark, Clock3, FolderKanban, Moon, Plus, Settings, Sparkles, Sun } from 'lucide-react';
 import {
   Sidebar as ShadcnSidebar,
   SidebarContent,
@@ -40,10 +40,16 @@ const MAIN_NAV: NavItem[] = [
   { id: 'now', label: '现在', route: 'now', icon: Clock3 },
   { id: 'kind', label: 'Kind', route: 'kind', icon: Sparkles },
   { id: 'work', label: '工作', route: 'work', icon: FolderKanban },
-  { id: 'memory', label: '记忆', route: 'memory', icon: Brain },
-  { id: 'monitor', label: '监控', route: 'monitor', icon: Activity },
-  { id: 'settings', label: '设置', route: 'settings:model', icon: Settings },
 ];
+
+/** 工作下面、项目之后（原型顺序；团队/能力/资料未接内核，D46 不显示）。 */
+const OTHER_NAV: NavItem[] = [
+  { id: 'memory', label: '记忆', route: 'memory', icon: Bookmark },
+  { id: 'monitor', label: '监控', route: 'monitor', icon: Activity },
+];
+
+/** 底部固定：外观在上、设置在下（原型）。 */
+const SETTINGS_ITEM: NavItem = { id: 'settings', label: '设置', route: 'settings:model', icon: Settings };
 
 function TrafficLights() {
   return (
@@ -62,6 +68,7 @@ function Item({ item, active }: { item: NavItem; active: boolean }) {
       <SidebarMenuButton
         isActive={active}
         tooltip={item.label}
+        data-nav={item.id}
         onClick={() => go(item.route)}
         className={cn(
           'h-8 gap-2.5 rounded-btn px-2 text-3 text-ink-2 transition-colors',
@@ -88,9 +95,6 @@ function SidebarInner({ route }: { route: ParsedRoute }) {
   const toggleTheme = useAppStore((s) => s.toggleTheme);
   const projects = useProjectStore((state) => state.projects);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
-  // T059 F3：现在 / Kind / 工作都有入口；设置仍在左下角。
-  const mainNav = MAIN_NAV.filter((item) => item.id !== 'settings');
-  const settingsItem = MAIN_NAV.find((item) => item.id === 'settings')!;
 
   useEffect(() => mountProjectLive(), []);
 
@@ -107,7 +111,7 @@ function SidebarInner({ route }: { route: ParsedRoute }) {
       <SidebarContent className="gap-0 px-2" data-kind="sidebar-content">
         <SidebarGroup className="py-1">
           <SidebarMenu>
-            {mainNav.map((item) => (
+            {MAIN_NAV.map((item) => (
               <Item key={item.id} item={item} active={active === item.id} />
             ))}
           </SidebarMenu>
@@ -161,11 +165,18 @@ function SidebarInner({ route }: { route: ParsedRoute }) {
             ) : null}
           </SidebarMenu>
         </SidebarGroup>
+
+        <SidebarGroup className="py-1">
+          <SidebarMenu>
+            {OTHER_NAV.map((item) => (
+              <Item key={item.id} item={item} active={active === item.id} />
+            ))}
+          </SidebarMenu>
+        </SidebarGroup>
       </SidebarContent>
 
       <SidebarFooter className="gap-0.5 px-2 pb-3" data-kind="sidebar-footer">
         <SidebarMenu>
-          <Item item={settingsItem} active={active === 'settings'} />
           <SidebarMenuItem>
             <SidebarMenuButton
               tooltip={theme === 'dark' ? '换浅色（外观）' : '换深色（外观）'}
@@ -176,6 +187,7 @@ function SidebarInner({ route }: { route: ParsedRoute }) {
               <span className="truncate group-data-[collapsible=icon]:hidden">外观</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
+          <Item item={SETTINGS_ITEM} active={active === 'settings'} />
         </SidebarMenu>
       </SidebarFooter>
       <SidebarRail />

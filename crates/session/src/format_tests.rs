@@ -1254,7 +1254,7 @@ fn tool_call_stream_records_match_dsh() {
     ));
 }
 
-/// 本票：conversation/rewound 事件 + 外壳 replace 区间可写可读；rewound_ranges 只取它。
+/// conversation/rewound 事件 + 外壳 replace 区间可写可读；rewound_ranges 只取它。
 #[test]
 fn conversation_rewound_roundtrips_and_is_the_only_range_source() {
     let dir = tempfile::tempdir().unwrap();

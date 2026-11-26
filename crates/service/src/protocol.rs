@@ -44,7 +44,7 @@ pub enum Call {
     Answer(AnswerRequest),
     DismissQuestions(DismissQuestionsRequest),
     Compact(CompactRequest),
-    /// 本票：恢复/总结（list + 三个 apply 动作）。
+    /// 恢复/总结（list + 三个 apply 动作）。
     Rewind(RewindRequest),
     Status(StatusRequest),
     Follow(FollowRequest),
@@ -247,10 +247,10 @@ pub struct SendRequest {
         skip_serializing_if = "Option::is_none"
     )]
     pub result_card: Option<SendResultCard>,
-    /// 本票（N2）：一次放回多条结果卡时按顺序排列（旧字段 resultCard 保留兼容）。
+    /// （N2）：一次放回多条结果卡时按顺序排列（旧字段 resultCard 保留兼容）。
     #[serde(default, rename = "resultCards", skip_serializing_if = "Vec::is_empty")]
     pub result_cards: Vec<SendResultCard>,
-    /// 本票（N2）：一次放回多个画布标记时按顺序排列（旧字段 canvas 保留兼容）。
+    /// （N2）：一次放回多个画布标记时按顺序排列（旧字段 canvas 保留兼容）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub canvases: Vec<SendCanvas>,
 }
@@ -271,7 +271,7 @@ pub struct SendAttachment {
     pub id: String,
     pub name: String,
     pub bytes: u64,
-    /// 本票：附件原类型（旧页面/旧日志没有；按扩展名兜底）。
+    /// 附件原类型（旧页面/旧日志没有；按扩展名兜底）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mime: Option<String>,
 }
@@ -362,7 +362,7 @@ pub struct CompactResponse {
     pub compacted: Option<CompactCounts>,
 }
 
-/// 本票：恢复/总结的四个动作（list 只读，其余三个写日志）。
+/// 恢复/总结的四个动作（list 只读，其余三个写日志）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "kebab-case")]
 pub enum RewindAction {
@@ -372,7 +372,7 @@ pub enum RewindAction {
     SummarizeUpTo,
 }
 
-/// 本票：恢复/总结请求；fromSeq 是选中的那条用户消息的 seq。
+/// 恢复/总结请求；fromSeq 是选中的那条用户消息的 seq。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct RewindRequest {
     pub action: RewindAction,

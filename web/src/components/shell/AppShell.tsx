@@ -40,13 +40,9 @@ export function AppShell() {
   );
   const scene = sceneOf(route);
   const def = sceneDef(scene);
-  // 只显示接上内核的部分（D46）：Kind 只有对话一栏；接不上内核时也只留一栏放说明。
-  const soloKind = scene === 'kind';
-  const panes = useMemo(
-    () => (soloKind ? def.panes.filter((pane) => pane.id === 'conversation') : def.panes),
-    [soloKind, def],
-  );
-  const dockKey = soloKind ? scene + ':solo' : scene;
+  // Kind 恢复两栏（对话 | 右栏），右栏 = 聚焦 + Kind 现在带着。
+  const panes = def.panes;
+  const dockKey = scene;
   const theme = useAppStore((s) => s.theme);
   const reducedPref = useAppStore((s) => s.reducedMotion);
   const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed);

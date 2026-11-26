@@ -4,7 +4,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronRight, Pencil } from 'lucide-react';
+import { Activity, Bookmark, ChevronRight, FolderOpen, Pencil, Sparkles } from 'lucide-react';
 import { useRouteStore } from '@/app/routeStore';
 import { go } from '@/app/navigate';
 import type { TaskFact } from '@/data/generated/TaskFact';
@@ -43,6 +43,7 @@ function EditLine({
   onChange,
   onCommit,
   onCancel,
+  bare,
 }: {
   label: string;
   value: string;
@@ -54,12 +55,13 @@ function EditLine({
   onChange: (value: string) => void;
   onCommit: () => void;
   onCancel: () => void;
+  bare?: boolean;
 }) {
   const cancelRef = useRef(false);
   const active = editing === field;
   return (
-    <div className="group/line flex min-h-7 items-baseline gap-2" data-kind={'project-' + field}>
-      <span className="w-12 shrink-0 text-1 text-ink-3">{label}</span>
+    <div className={bare ? 'group/line flex min-w-0 items-baseline gap-1.5' : 'group/line flex min-h-7 items-baseline gap-2'} data-kind={'project-' + field}>
+      {bare ? null : <span className="w-12 shrink-0 text-1 text-ink-3">{label}</span>}
       {active ? (
         <input
           autoFocus
@@ -159,7 +161,7 @@ function ProjectPage() {
   const [draft, setDraft] = useState('');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [memoryCount, setMemoryCount] = useState<number | null>(null);
+  const [memoryCount, setMemoryCount] = useState<{ mine: number; kinds: number } | null>(null);
 
   useEffect(() => {
     if (projects === null) void refreshProjects();
@@ -171,9 +173,9 @@ function ProjectPage() {
     void memoryRead({ scope: 'project:' + projectId })
       .then((memory) => {
         if (!alive) return;
-        setMemoryCount(
-          memory.aboutYou.length + memory.entries.length + memory.notes.length,
-        );
+        const mine = memory.aboutYou.length + memory.entries.filter((item) => item.binding === 'binding').length;
+        const kinds = memory.entries.filter((item) => item.binding !== 'binding').length + memory.notes.length;
+        setMemoryCount({ mine, kinds });
       })
       .catch(() => {
         if (alive) setMemoryCount(null);
@@ -250,19 +252,22 @@ function ProjectPage() {
   };
 
   const allTasks = groups.wait.length + groups.doing.length + groups.queue.length + doneAll;
+  // ProjectView.createdAt 是毫秒（service projects.rs now_ms），不是秒。
+  const created = new Date(project.createdAt);
 
   return (
     <div className="h-full overflow-y-auto" data-page="project" data-project-id={project.id}>
       <div className="mx-auto w-full max-w-[860px] px-6 py-5">
-        <div className="flex items-start gap-3">
+        <div className="flex items-center gap-2">
           <span
-            className="grid size-7 shrink-0 place-items-center rounded-btn text-2 font-semibold text-white"
+            className="grid size-[18px] shrink-0 place-items-center rounded-badge text-[10px] font-semibold text-white"
             style={{ backgroundColor: projectColor(projectIndex) }}
           >
             {projectCode(project.name)}
           </span>
-          <div className="min-w-0 flex-1">
+          <h1 className="min-w-0 flex-1 text-5 font-semibold leading-7 text-ink">
             <EditLine
+              bare
               label="名字"
               value={project.name}
               field="name"
@@ -274,72 +279,117 @@ function ProjectPage() {
               onCommit={() => void saveEdit()}
               onCancel={() => setEditing(null)}
             />
-            <EditLine
-              label="目标"
-              value={project.goal}
-              field="goal"
-              editing={editing}
-              draft={draft}
-              placeholder="这个项目要变成什么"
-              onStart={() => startEdit('goal')}
-              onChange={setDraft}
-              onCommit={() => void saveEdit()}
-              onCancel={() => setEditing(null)}
-            />
-            <EditLine
-              label="默认目录"
-              value={displayPath(project.dir ?? '')}
-              field="dir"
-              editing={editing}
-              draft={draft}
-              placeholder="还没有默认目录"
-              onStart={() => startEdit('dir')}
-              onChange={setDraft}
-              onCommit={() => void saveEdit()}
-              onCancel={() => setEditing(null)}
-            />
-          </div>
-          <span className="shrink-0 pt-0.5 text-1 text-ink-3">{saving ? '保存中…' : ''}</span>
+          </h1>
+          <button
+            type="button"
+            data-kind="project-kind-say"
+            onClick={() => go('kind')}
+            className="flex h-7 shrink-0 items-center gap-1 rounded-btn bg-ink px-2.5 text-2 text-content transition-opacity hover:opacity-90"
+            title="项目的事在 Kind 里说；Kind 派任务时归到这个项目"
+          >
+            <Sparkles className="size-3.5" />
+            跟 Kind 说
+          </button>
         </div>
+
+        <div className="mt-1.5 text-3 leading-6 text-ink-2">
+          <EditLine
+            bare
+            label="目标"
+            value={project.goal}
+            field="goal"
+            editing={editing}
+            draft={draft}
+            placeholder="还没写目标"
+            onStart={() => startEdit('goal')}
+            onChange={setDraft}
+            onCommit={() => void saveEdit()}
+            onCancel={() => setEditing(null)}
+          />
+        </div>
+
+        <dl className="mt-3 grid grid-cols-[auto_1fr] items-baseline gap-x-3 gap-y-1.5 text-2">
+          <dt className="text-1 text-ink-3">默认目录</dt>
+          <dd className="min-w-0">
+            <span className="flex min-w-0 items-baseline gap-1.5">
+              <FolderOpen className="size-3 shrink-0 translate-y-[1px] text-ink-3" />
+              <EditLine
+                bare
+                label="默认目录"
+                value={displayPath(project.dir ?? '')}
+                field="dir"
+                editing={editing}
+                draft={draft}
+                placeholder="不设"
+                onStart={() => startEdit('dir')}
+                onChange={setDraft}
+                onCommit={() => void saveEdit()}
+                onCancel={() => setEditing(null)}
+              />
+            </span>
+            <span className="mt-0.5 block text-1 text-ink-3" data-kind="project-dir-note">
+              派任务时预填成任务的目录。不占这个文件夹，也不限定任务能写哪里。
+            </span>
+          </dd>
+          <dt className="text-1 text-ink-3">建于</dt>
+          <dd className="text-1 text-ink-3" data-kind="project-created-at">
+            {created.getMonth() + 1} 月 {created.getDate()} 日
+          </dd>
+        </dl>
         {saveError ? (
           <p data-kind="project-save-error" className="mt-2 text-1 text-fail">
             {saveError}
           </p>
         ) : null}
 
-        <div className="mt-4 flex flex-wrap gap-1.5" data-kind="project-links">
+        <div className="mt-3 flex flex-wrap items-center gap-1" data-kind="project-links">
           <button
             type="button"
-            data-kind="project-work-link"
-            onClick={() => go('work?p=' + encodeURIComponent(project.id))}
-            className="rounded-full border border-line px-2.5 py-1 text-1 text-ink-2 transition-colors hover:bg-hover"
+            data-kind="project-memory-link"
+            onClick={() => go('memory?scope=project:' + encodeURIComponent(project.id))}
+            className="flex items-center gap-1.5 rounded-btn px-1 py-0.5 text-1 text-ink-3 transition-colors hover:bg-hover hover:text-ink-2"
           >
-            在工作页看这个项目
+            <Bookmark className="size-3" />
+            <span>
+              {memoryCount != null
+                ? '项目记忆 · 你定的 ' + String(memoryCount.mine) + ' 条 · Kind 记的 ' + String(memoryCount.kinds) + ' 条'
+                : '项目记忆 · 还没有'}
+            </span>
+            {memoryCount != null ? (
+              <span
+                data-kind="project-memory-count"
+                className="hidden"
+                data-project-memory-mine={memoryCount.mine}
+                data-project-memory-kinds={memoryCount.kinds}
+              />
+            ) : null}
+            <ChevronRight className="size-3" />
           </button>
           <button
             type="button"
             data-kind="project-monitor-link"
             onClick={() => go('monitor?p=' + encodeURIComponent(project.id))}
-            className="rounded-full border border-line px-2.5 py-1 text-1 text-ink-2 transition-colors hover:bg-hover"
+            className="flex items-center gap-1.5 rounded-btn px-1 py-0.5 text-1 text-ink-3 transition-colors hover:bg-hover hover:text-ink-2"
           >
-            监控
-          </button>
-          <button
-            type="button"
-            data-kind="project-memory-link"
-            onClick={() => go('memory?scope=project:' + encodeURIComponent(project.id))}
-            className="rounded-full border border-line px-2.5 py-1 text-1 text-ink-2 transition-colors hover:bg-hover"
-          >
-            记忆
-            {memoryCount != null ? (
-              <span data-kind="project-memory-count" className="ml-1 text-ink-3">
-                项目记忆 {memoryCount} 条
-              </span>
-            ) : null}
+            <Activity className="size-3" />
+            监控 · 这个项目的花费和在跑的
+            <ChevronRight className="size-3" />
           </button>
         </div>
 
-        <div className="mt-7 space-y-5">
+        <div className="mt-6">
+          <div className="flex items-baseline gap-2">
+            <h2 className="text-3 font-medium text-ink">任务</h2>
+            <button
+              type="button"
+              data-kind="project-work-link"
+              onClick={() => go('work?p=' + encodeURIComponent(project.id))}
+              className="ml-auto text-1 text-ink-3 transition-colors hover:text-ink-2"
+            >
+              在工作页看这个项目
+            </button>
+          </div>
+          <div className="mt-2 space-y-5">
           {work === null ? (
             <p className="text-2 text-ink-3">{workError ?? '正在取任务…'}</p>
           ) : allTasks === 0 ? (
@@ -369,6 +419,7 @@ function ProjectPage() {
               ) : null}
             </>
           )}
+          </div>
         </div>
       </div>
     </div>

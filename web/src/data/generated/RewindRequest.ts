@@ -2,6 +2,6 @@
 import type { RewindAction } from "./RewindAction";
 
 /**
- * 本票：恢复/总结请求；fromSeq 是选中的那条用户消息的 seq。
+ * 恢复/总结请求；fromSeq 是选中的那条用户消息的 seq。
  */
 export type RewindRequest = { action: RewindAction, fromSeq?: number | null, };

@@ -300,7 +300,7 @@ impl ServiceHost {
         })
     }
 
-    /// 本票：恢复/总结（list 只读；apply 三个动作写日志并返回区间）。
+    /// 恢复/总结（list 只读；apply 三个动作写日志并返回区间）。
     pub async fn rewind(&self, request: RewindRequest) -> Result<RewindResponse, ServiceError> {
         if request.action == RewindAction::List {
             return Ok(RewindResponse {

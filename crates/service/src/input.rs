@@ -98,7 +98,7 @@ impl RootHost {
                 canvas.title.clone(),
             )));
         }
-        // 本票（N2）：一次放回多条结果卡/画布标记，按页面上的顺序追加（旧单字段保留兼容）。
+        // （N2）：一次放回多条结果卡/画布标记，按页面上的顺序追加（旧单字段保留兼容）。
         for card in &request.result_cards {
             blocks.push(model::ContentBlock::from_result_card(
                 card.task_id.clone(),

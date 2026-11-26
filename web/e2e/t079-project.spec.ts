@@ -150,13 +150,13 @@ test('项目：侧栏新建、项目页逐项改、工作页 ?p=、监控 ?p= �
 
     // 工作页按项目筛；个人筛看不到它。
     await page.goto(urlOf(fixture, '#work?p=' + encodeURIComponent(projectId)));
-    await expect(page.locator('[data-kind="work-project-filter"]')).toContainText('清河县农技站');
+    await expect(page.locator('[data-kind="work-project-filter-select"]')).toContainText('清河县农技站');
     const visibleTask = page
       .locator('[data-kind="work-card"], [data-kind="board-wait-item"]')
       .filter({ hasText: '判重改成按' });
     await expect(visibleTask).toHaveCount(1, { timeout: 20_000 });
     await page.goto(urlOf(fixture, '#work?p=personal'));
-    await expect(page.locator('[data-kind="work-project-filter"]')).toContainText('个人');
+    await expect(page.locator('[data-kind="work-project-filter-select"]')).toContainText('个人');
     await expect(
       page.locator('[data-kind="work-card"], [data-kind="board-wait-item"]').filter({ hasText: '判重改成按' }),
     ).toHaveCount(0);
@@ -307,7 +307,7 @@ test('项目页：四组、完成只列5和「还有N件」链工作页、空项
     await expect(page.locator('[data-kind="project-task-group"][data-group="done"] [data-kind="project-task"]')).toHaveCount(5);
     await expect(page.locator('[data-kind="project-done-more"]')).toContainText('还有 1 件');
     await page.locator('[data-kind="project-done-more"]').click();
-    await expect(page.locator('[data-kind="work-project-filter"]')).toContainText('四组项目');
+    await expect(page.locator('[data-kind="work-project-filter-select"]')).toContainText('四组项目');
 
     // 空项目态：再建一个，不派任务。
     await page.locator('[data-kind="new-project"]').click();

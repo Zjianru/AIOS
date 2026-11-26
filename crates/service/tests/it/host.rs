@@ -487,7 +487,7 @@ async fn typing_while_a_question_waits_answers_the_batch_and_continues_the_turn(
     assert_eq!(
         direct_meta,
         Some(serde_json::json!({ "ask_direct_reply": true })),
-        "tool/result.meta 原样落盘（本票/N3）"
+        "tool/result.meta 原样落盘（N3）"
     );
     let cancelled = store
         .events()

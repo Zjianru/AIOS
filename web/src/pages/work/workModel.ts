@@ -76,7 +76,8 @@ export function filterWorkForProject(
   const visibleIds = new Set(visibleTasks.map((task) => task.id));
   return {
     tasks: visibleTasks,
-    wait: wait.filter((item) => (item.taskId ? visibleIds.has(item.taskId) : false)),
+    // 没绑任务（或绑了还没拿到 taskId）的等你项算个人：全部/个人下显示，选具体项目才藏。
+    wait: wait.filter((item) => (item.taskId ? visibleIds.has(item.taskId) : wanted === null)),
   };
 }
 

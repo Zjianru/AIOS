@@ -190,22 +190,32 @@ function BoardPane() {
     <div className="flex h-full min-h-0 flex-col bg-content" data-scene-page="work">
       <header className="flex h-11 shrink-0 items-center gap-1.5 border-b border-line px-3 text-3">
         <span className="text-ink">工作</span>
-        {projectFilter ? (
-          <span
-            data-kind="work-project-filter"
-            className="flex items-center gap-1 rounded-full border border-line bg-hover px-2 py-0.5 text-1 text-ink-2"
-          >
-            {projectLabel}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
             <button
               type="button"
-              title="清除项目筛选"
-              onClick={() => go('work')}
-              className="text-ink-3 hover:text-ink-2"
+              data-kind="work-project-filter-select"
+              className="flex items-center gap-1 rounded-btn border border-line bg-raised px-2 py-0.5 text-1 text-ink-2 transition-colors hover:bg-hover"
             >
-              ×
+              {projectFilter ? projectLabel : '全部'}
+              <ChevronDown className="size-3" />
             </button>
-          </span>
-        ) : null}
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-48">
+            <DropdownMenuRadioGroup
+              value={projectFilter ?? 'all'}
+              onValueChange={(value) => go(value === 'all' ? 'work' : 'work?p=' + encodeURIComponent(value))}
+            >
+              <DropdownMenuRadioItem value="all">全部</DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value="personal">个人（不归项目）</DropdownMenuRadioItem>
+              {(projects ?? []).map((project) => (
+                <DropdownMenuRadioItem key={project.id} value={project.id}>
+                  {project.name}
+                </DropdownMenuRadioItem>
+              ))}
+            </DropdownMenuRadioGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
         <span className="ml-auto" />
         <div className="flex items-center rounded-btn border border-line p-[2px]">
           {(['board', 'graph', 'cal'] as const).map((key) => (
@@ -239,6 +249,7 @@ function BoardPane() {
       ) : view === 'graph' ? (
         <GraphPane selected={selectedTask} onSelect={setSelectedTask} onClose={() => setSelectedTask(null)} />
       ) : (
+        <div className="flex min-h-0 flex-1 flex-col">
         <div className="grid min-h-0 flex-1 grid-cols-4 gap-2.5 overflow-hidden p-3" data-kind="work-board">
           {groups.map((group) => (
             <section
@@ -304,6 +315,7 @@ function BoardPane() {
             </section>
           ))}
         </div>
+        </div>
       )}
 
       <StartThingDialog open={startOpen} onOpenChange={setStartOpen} />
@@ -331,6 +343,12 @@ function WaitingPane() {
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
         {!work ? <div className="text-2 text-ink-3">正在取…</div> : <WaitList items={filtered.wait} />}
       </div>
+      <footer
+        data-kind="waiting-footer"
+        className="shrink-0 border-t border-line px-4 py-2 text-1 leading-4 text-ink-3"
+      >
+        和「现在」的「等你决定」是同一份。看过、打开不算处理；判定、确认、接续在 Kind 对话的卡上做。
+      </footer>
     </div>
   );
 }

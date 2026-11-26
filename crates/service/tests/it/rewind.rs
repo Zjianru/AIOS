@@ -1,4 +1,4 @@
-//! 本票：恢复/总结的服务面（list/apply、区间、过滤与拒绝原因）。
+//! 恢复/总结的服务面（list/apply、区间、过滤与拒绝原因）。
 
 use std::time::Duration;
 

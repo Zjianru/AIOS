@@ -195,7 +195,7 @@ pub enum ContentBlock {
         /// 只读副本的绝对路径（服务发消息时解析；模型适配层用它拼 fileHandleText）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         path: Option<String>,
-        /// 本票：原类型（旧日志没有；页面按扩展名兜底）。
+        /// 原类型（旧日志没有；页面按扩展名兜底）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mime: Option<String>,
     },

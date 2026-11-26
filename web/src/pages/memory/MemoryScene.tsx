@@ -7,7 +7,7 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { Bookmark, Brain, RotateCcw, Search, Trash2 } from 'lucide-react';
+import { Bookmark, ChevronRight, RotateCcw, Search, Trash2 } from 'lucide-react';
 import type {
   MemoryDreamRunView,
   MemoryHitView,
@@ -18,8 +18,17 @@ import { memoryRead } from '@/data/service';
 import type { MemoryActionKind } from '@/data/service';
 import { go } from '@/app/navigate';
 import { useRouteStore } from '@/app/routeStore';
-import { useProjectName } from '@/pages/project/projectStore';
+import { useProjectName, useProjectStore } from '@/pages/project/projectStore';
+
+const SECTIONS = [
+  { id: 'about', label: '关于你' },
+  { id: 'entries', label: '记忆条目' },
+  { id: 'diary', label: 'Kind 的日记' },
+  { id: 'dream', label: '做梦' },
+  { id: 'quarantine', label: '隔离区' },
+] as const;
 import { mountMemoryLive, useMemoryState } from './memoryStore';
+import { setPendingDraft } from '@/lib/pendingDraft';
 
 function clock(at: number | null | undefined): string {
   if (!at) return '未知';
@@ -53,44 +62,53 @@ function dayOf(at: number): string {
 }
 
 function Section({
+  id,
   title,
   hint,
+  actions,
   children,
 }: {
+  id: string;
   title: string;
   hint?: string;
+  actions?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
-    <section className="rounded-btn border border-line bg-content p-4">
+    <section id={'mem-' + id} data-memory-section={id} className="scroll-mt-16 rounded-btn border border-line bg-content p-4">
       <div className="mb-3 flex items-baseline gap-2">
         <h2 className="text-3 font-medium text-ink">{title}</h2>
         {hint ? <span className="text-2 text-ink-3">{hint}</span> : null}
+        {actions ? <span className="ml-auto">{actions}</span> : null}
       </div>
       {children}
     </section>
   );
 }
 
-const actionClass =
-  'shrink-0 text-2 text-ink-3 underline-offset-2 hover:text-ink hover:underline';
-const primaryActionClass =
-  'shrink-0 text-2 text-brand underline-offset-2 hover:underline';
+/** 原型按钮：普通是浅底悬停，主要动作是实心（不用蓝色链接字）。 */
+const btn = 'shrink-0 rounded-btn px-2 py-0.5 text-1 text-ink-2 transition-colors hover:bg-hover hover:text-ink';
+const btnSolid = 'shrink-0 rounded-btn bg-ink px-2.5 py-0.5 text-1 transition-opacity hover:opacity-90';
+const actionClass = btn;
+const primaryActionClass = btnSolid;
 
 function ItemRow({
   item,
+  collapsible = false,
   onEdit,
   onDelete,
   onPin,
   onRestore,
 }: {
   item: MemoryItemView;
+  collapsible?: boolean;
   onEdit?: () => void;
   onDelete?: () => void;
   onPin?: () => void;
   onRestore?: () => void;
 }) {
   const projectName = useProjectName(item.projectId);
+  const [open, setOpen] = useState(!collapsible);
   return (
     <div
       data-kind="memory-item"
@@ -106,6 +124,11 @@ function ItemRow({
     >
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
+          {collapsible ? (
+            <button type="button" data-kind="memory-expand" onClick={() => setOpen((value) => !value)} className="shrink-0 text-ink-3 hover:text-ink-2" aria-label="展开">
+              <ChevronRight className={'size-3.5 transition-transform' + (open ? ' rotate-90' : '')} />
+            </button>
+          ) : null}
           <span className="truncate text-3 text-ink">{item.title || '（无标题）'}</span>
           <span className="shrink-0 rounded-btn bg-hover px-1.5 text-2 text-ink-3">
             {item.scope === 'personal'
@@ -130,12 +153,14 @@ function ItemRow({
             </span>
           ) : null}
         </div>
-        <p className="mt-0.5 whitespace-pre-wrap text-2 leading-5 text-ink-2">
+        <p className={'mt-0.5 text-2 leading-5 text-ink-2 ' + (open ? 'whitespace-pre-wrap' : 'line-clamp-1')}>
           {item.body || item.summary || '（空）'}
         </p>
-        <p className="mt-1 text-1 text-ink-3">
-          来源 {item.sourceKind} · 第 {item.revision} 版 · {clock(item.updatedAt)}
-        </p>
+        {open ? (
+          <p className="mt-1 text-1 text-ink-3">
+            来源 {item.sourceKind} · 第 {item.revision} 版 · {clock(item.updatedAt)}
+          </p>
+        ) : null}
       </div>
       <div className="flex shrink-0 flex-col items-end gap-1">
         {onEdit ? (
@@ -144,12 +169,12 @@ function ItemRow({
           </button>
         ) : null}
         {onPin ? (
-          <button type="button" data-action="memory-pin" onClick={onPin} className={primaryActionClass}>
+          <button type="button" data-action="memory-pin" onClick={onPin} className={primaryActionClass} style={{ color: 'var(--content)' }}>
             定下来
           </button>
         ) : null}
         {onRestore ? (
-          <button type="button" data-action="memory-restore" onClick={onRestore} className={primaryActionClass}>
+          <button type="button" data-action="memory-restore" onClick={onRestore} className={primaryActionClass} style={{ color: 'var(--content)' }}>
             恢复
           </button>
         ) : null}
@@ -205,6 +230,7 @@ function Editor({
           data-action="memory-save"
           onClick={() => onSave({ title, summary, body })}
           className={primaryActionClass}
+          style={{ color: 'var(--content)' }}
         >
           保存（出新一版）
         </button>
@@ -391,312 +417,329 @@ export function MemoryScene() {
   };
 
   const notes = data?.notes ?? [];
-  const bindingEntries = useMemo(
-    () => (data?.entries ?? []).filter((item) => item.binding === 'binding'),
-    [data?.entries],
-  );
-  const fallibleEntries = useMemo(
-    () => (data?.entries ?? []).filter((item) => item.binding !== 'binding'),
-    [data?.entries],
-  );
   const runs = data?.dream.runs ?? [];
   // 用 run 行的 outcome 判「正在整理」：服务端检查标志会有一瞬为真，别让按钮闪没。
   const dreaming = runs[0]?.outcome === 'running';
 
-  return (
-    <div data-kind="memory-page" className="h-full overflow-y-auto p-4">
-      <div className="mx-auto flex max-w-3xl flex-col gap-4">
-        <header className="flex items-center gap-2">
-          <Brain className="size-5 text-brand" strokeWidth={1.7} />
-          <h1 className="text-4 font-medium text-ink">记忆</h1>
-          <span className="text-2 text-ink-3">关于你、Kind 的笔记和日记；都是你自己看得见的东西。</span>
-        </header>
+  const [scopeKey, setScopeKey] = useState<string>('personal');
+  const projects = useProjectStore((state) => state.projects);
+  const allEntries = useMemo(() => [...(data?.entries ?? []), ...notes], [data?.entries, notes]);
+  const scopes = useMemo(() => {
+    const countOf = (match: (entry: MemoryItemView) => boolean) => allEntries.filter(match).length;
+    return [
+      { group: '个人', items: [{ key: 'personal', label: '我', count: countOf((entry) => entry.scope === 'personal') }] },
+      {
+        group: '项目',
+        items: (projects ?? []).map((project) => ({
+          key: 'project:' + project.id,
+          label: project.name,
+          count: countOf((entry) => entry.scope === 'project' && entry.projectId === project.id),
+        })),
+      },
+      {
+        group: '角色',
+        items: countOf((entry) => entry.scope === 'role') > 0
+          ? [{ key: 'role', label: '角色（还没分到具体角色）', count: countOf((entry) => entry.scope === 'role') }]
+          : [],
+      },
+    ];
+  }, [allEntries, projects]);
+  const inScope = (entry: MemoryItemView): boolean =>
+    scopeKey === 'personal'
+      ? entry.scope === 'personal'
+      : scopeKey === 'role'
+        ? entry.scope === 'role'
+        : entry.scope === 'project' && entry.projectId === scopeKey.slice('project:'.length);
+  const scoped = allEntries.filter(inScope);
+  const mine = scoped.filter((entry) => entry.binding === 'binding');
+  const kinds = scoped.filter((entry) => entry.binding !== 'binding');
+  const jumpTo = (id: string) => {
+    document.getElementById('mem-' + id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
 
-        <Section title="搜" hint="记忆、日记、Kind 对话，带出处">
-          <form
-            className="flex items-center gap-2"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void load(query);
-            }}
-          >
-            <div className="flex min-w-0 flex-1 items-center gap-2 rounded-btn border border-line-2 bg-content px-2 py-1">
-              <Search className="size-3.5 text-ink-3" strokeWidth={1.8} />
-              <input
-                data-kind="memory-search-input"
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="搜记忆、日记、Kind 对话…"
-                className="min-w-0 flex-1 bg-transparent text-3 text-ink outline-none"
-              />
-            </div>
-            <button type="submit" data-action="memory-search" className={primaryActionClass}>
-              搜
-            </button>
-            {loading ? <span className="text-2 text-ink-3">读…</span> : null}
-          </form>
-          {error ? <p className="mt-2 text-2 text-fail">{error}</p> : null}
-          <div data-kind="memory-search-results" className="mt-2">
-            {(data?.search ?? []).map((hit, index) => (
+  return (
+    <div data-kind="memory-page" className="flex h-full min-h-0 flex-col">
+      <header data-kind="memory-header" className="shrink-0 border-b border-line bg-content px-4 py-2.5">
+        <div className="mx-auto max-w-3xl">
+          <div className="flex items-center gap-2">
+            <Bookmark className="size-4 shrink-0 text-brand" strokeWidth={1.8} />
+            <h1 data-kind="memory-title" className="shrink-0 text-3 font-medium text-ink">记忆</h1>
+            <form
+              className="flex min-w-[180px] flex-1 items-center gap-2"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void load(query);
+              }}
+            >
+              <div className="flex min-w-0 flex-1 items-center gap-2 rounded-btn border border-line-2 bg-pane px-2 py-1">
+                <Search className="size-3.5 shrink-0 text-ink-3" strokeWidth={1.8} />
+                <input
+                  data-kind="memory-search-input"
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder="搜记忆、日记、Kind 对话"
+                  className="min-w-0 flex-1 bg-transparent text-2 text-ink outline-none"
+                />
+              </div>
+              <button type="submit" data-action="memory-search" className={btn}>搜</button>
+            </form>
+          </div>
+          <nav data-kind="memory-sections" className="mt-2 flex items-center gap-0.5 overflow-x-auto">
+            {SECTIONS.map((section) => (
               <button
-                key={hit.kind + hit.id + String(index)}
+                key={section.id}
                 type="button"
-                data-kind="memory-hit"
-                data-hit-kind={hit.kind}
-                data-hit-id={hit.id}
-                data-hit-turn={hit.turn ?? ''}
-                onClick={() => openHit(hit)}
-                className="block w-full border-b border-line-2 py-2 text-left text-2 last:border-b-0 hover:bg-hover"
+                data-memory-tab={section.id}
+                onClick={() => jumpTo(section.id)}
+                className={btn}
               >
-                <div className="flex items-center gap-2 text-ink">
-                  <span className="shrink-0 text-ink-3">
-                    {hit.kind === 'memory' ? '记忆' : hit.kind === 'diary' ? '日记' : 'Kind 对话'}
-                  </span>
-                  <span className="min-w-0 truncate">{hit.title}</span>
-                  <span className="shrink-0 text-1 text-ink-3">
-                    {hit.kind === 'conversation'
-                      ? '出处 ' + (hit.conversationId ?? '') + ':' + String(hit.seq ?? '')
-                      : '出处 ' + hit.id}
-                  </span>
-                </div>
-                <p className="mt-0.5 line-clamp-2 text-ink-2">{hit.snippet}</p>
+                {section.label}
               </button>
             ))}
-            {query.trim() && (data?.search ?? []).length === 0 ? (
-              <p className="py-2 text-2 text-ink-3">没搜到。</p>
-            ) : null}
-          </div>
-        </Section>
+            <span className="flex-1" />
+            <button type="button" data-kind="memory-back-kind" onClick={() => go('kind')} className={btn}>
+              回 Kind 对话
+            </button>
+          </nav>
+        </div>
+      </header>
 
-        <Section title="关于你" hint="只有你和采纳能写；改出新一版">
-          <div data-kind="memory-about">
-            {(data?.aboutYou ?? []).map((item) => (
-              <div key={item.id}>
-                <ItemRow
-                  item={item}
-                  onEdit={item.invalidReason ? undefined : () => void startEdit(item)}
-                  onRestore={item.invalidReason ? () => act({ kind: 'restore', id: item.id }) : undefined}
-                  onDelete={() => act({ kind: 'delete', id: item.id })}
-                />
-                {editing?.item.id === item.id ? (
-                  <Editor
-                    item={editing.item}
-                    revisions={editing.revisions}
-                    onCancel={() => setEditing(null)}
-                    onSave={(next) => {
-                      act({
-                        kind: 'correct',
-                        id: item.id,
-                        title: next.title,
-                        summary: next.summary,
-                        body: next.body,
-                        reason: 'user',
-                      });
-                      setEditing(null);
-                    }}
-                  />
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+        <div className="mx-auto flex max-w-3xl flex-col gap-4">
+          {loading && !data ? <p className="text-2 text-ink-3">正在读记忆…</p> : null}
+          {error ? <p className="text-2 text-fail">{error}</p> : null}
+
+          {(data?.search ?? []).length > 0 || query.trim() ? (
+            <Section id="search" title="搜" hint="记忆、日记、Kind 对话，带出处">
+              <div data-kind="memory-search-results">
+                {(data?.search ?? []).map((hit, index) => (
+                  <button
+                    key={hit.kind + hit.id + String(index)}
+                    type="button"
+                    data-kind="memory-hit"
+                    data-hit-kind={hit.kind}
+                    data-hit-id={hit.id}
+                    data-hit-turn={hit.turn ?? ''}
+                    onClick={() => openHit(hit)}
+                    className="block w-full border-b border-line-2 py-2 text-left text-2 last:border-b-0 hover:bg-hover"
+                  >
+                    <div className="flex items-center gap-2 text-ink">
+                      <span className="shrink-0 text-ink-3">
+                        {hit.kind === 'memory' ? '记忆' : hit.kind === 'diary' ? '日记' : 'Kind 对话'}
+                      </span>
+                      <span className="min-w-0 truncate">{hit.title}</span>
+                      <span className="shrink-0 text-1 text-ink-3">
+                        {hit.kind === 'conversation'
+                          ? '出处 ' + (hit.conversationId ?? '') + ':' + String(hit.seq ?? '')
+                          : '出处 ' + hit.id}
+                      </span>
+                    </div>
+                    <p className="mt-0.5 line-clamp-2 text-ink-2">{hit.snippet}</p>
+                  </button>
+                ))}
+                {query.trim() && (data?.search ?? []).length === 0 ? (
+                  <p className="py-2 text-2 text-ink-3">没搜到。</p>
                 ) : null}
               </div>
-            ))}
-            {(data?.aboutYou ?? []).length === 0 ? (
-              <p className="text-2 text-ink-3">还没有。你对 Kind 说「记住……」就会有一条。</p>
-            ) : null}
-          </div>
-        </Section>
+            </Section>
+          ) : null}
 
-        <Section title="条目" hint="左边范围；右边分你定的和 Kind 记的">
-          <div data-kind="memory-entries" className="flex flex-col gap-4">
-            <div>
-              <p className="mb-1 text-2 text-ink-3">你定的</p>
-              <div data-kind="memory-group" data-group="binding">
-                {bindingEntries.map((item) => (
-                  <div key={item.id}>
+          <Section
+            id="about"
+            title="关于你"
+            hint="只有你能写 · 每次对话都带上"
+            actions={
+              <button
+                type="button"
+                data-kind="memory-add-about"
+                onClick={() => {
+                  setPendingDraft('记住：');
+                  go('kind');
+                }}
+                className={btn}
+              >
+                加一条
+              </button>
+            }
+          >
+            <div data-kind="memory-about">
+              {(data?.aboutYou ?? []).map((item) => (
+                <div key={item.id}>
+                  <ItemRow
+                    item={item}
+                    onEdit={item.invalidReason ? undefined : () => void startEdit(item)}
+                    onRestore={item.invalidReason ? () => act({ kind: 'restore', id: item.id }) : undefined}
+                    onDelete={() => act({ kind: 'delete', id: item.id })}
+                  />
+                  {editing?.item.id === item.id ? (
+                    <Editor
+                      item={editing.item}
+                      revisions={editing.revisions}
+                      onCancel={() => setEditing(null)}
+                      onSave={(next) => {
+                        act({ kind: 'correct', id: item.id, title: next.title, summary: next.summary, body: next.body, reason: 'user' });
+                        setEditing(null);
+                      }}
+                    />
+                  ) : null}
+                </div>
+              ))}
+              {(data?.aboutYou ?? []).length === 0 ? (
+                <p className="text-2 text-ink-3">还没有。你对 Kind 说「记住……」就会有一条。</p>
+              ) : null}
+            </div>
+          </Section>
+
+          <Section id="entries" title="记忆条目" hint="按范围分开存；Kind 只看得到当前范围里每条的一行">
+            <div className="flex gap-4" data-kind="memory-entries">
+              <nav data-kind="memory-scopes" className="w-[170px] shrink-0 space-y-2">
+                {scopes.map((group) => (
+                  <div key={group.group}>
+                    <p className="px-1.5 pb-0.5 text-1 text-ink-3">{group.group}</p>
+                    {group.items.map((item) => (
+                      <button
+                        key={item.key}
+                        type="button"
+                        data-scope={item.key}
+                        onClick={() => setScopeKey(item.key)}
+                        className={
+                          'flex w-full items-center gap-1.5 rounded-btn px-1.5 py-1 text-left text-2 transition-colors hover:bg-hover ' +
+                          (scopeKey === item.key ? 'bg-active text-ink' : 'text-ink-2')
+                        }
+                      >
+                        <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                        <span className="brand-type shrink-0 text-1 text-ink-3">{item.count}</span>
+                      </button>
+                    ))}
+                  </div>
+                ))}
+              </nav>
+              <div className="min-w-0 flex-1 space-y-3">
+                <div data-kind="memory-group" data-group="binding" className="rounded-card border border-line p-2">
+                  <p className="px-1 pb-1 text-1 text-ink-3">
+                    你定的 <span className="brand-type">{mine.length}</span>
+                    <span className="ml-2">有约束力，Kind 和这个范围里的任务都照做</span>
+                  </p>
+                  {mine.map((item) => (
                     <ItemRow
+                      key={item.id}
                       item={item}
+                      collapsible
                       onEdit={item.invalidReason ? undefined : () => void startEdit(item)}
                       onRestore={item.invalidReason ? () => act({ kind: 'restore', id: item.id }) : undefined}
                       onDelete={() => act({ kind: 'delete', id: item.id })}
                     />
-                    {editing?.item.id === item.id ? (
-                      <Editor
-                        item={editing.item}
-                        revisions={editing.revisions}
-                        onCancel={() => setEditing(null)}
-                        onSave={(next) => {
-                          act({
-                            kind: 'correct',
-                            id: item.id,
-                            title: next.title,
-                            summary: next.summary,
-                            body: next.body,
-                            reason: 'user',
-                          });
-                          setEditing(null);
-                        }}
-                      />
-                    ) : null}
-                  </div>
-                ))}
-                {bindingEntries.length === 0 ? (
-                  <p className="py-1 text-2 text-ink-3">还没有；在 Kind 记的笔记上点「定下来」。</p>
-                ) : null}
-              </div>
-            </div>
-            <div>
-              <p className="mb-1 text-2 text-ink-3">Kind 记的</p>
-              <div data-kind="memory-group" data-group="note">
-                {[...notes, ...fallibleEntries].map((item) => (
-                  <div key={item.id}>
+                  ))}
+                  {mine.length === 0 ? <p className="px-1 py-1 text-1 text-ink-3">还没有你定的。</p> : null}
+                </div>
+                <div data-kind="memory-group" data-group="note" className="rounded-card border border-dashed border-line-2 p-2">
+                  <p className="px-1 pb-1 text-1 text-ink-3">
+                    Kind 记的（可错） <span className="brand-type">{kinds.length}</span>
+                    <span className="ml-2">可错的参考，用之前核对原始记录；觉得该当真就点「定下来」</span>
+                  </p>
+                  {kinds.map((item) => (
                     <ItemRow
+                      key={item.id}
                       item={item}
+                      collapsible
                       onEdit={item.layer === 'note' ? undefined : () => void startEdit(item)}
                       onPin={item.layer === 'note' ? () => act({ kind: 'pin', id: item.id }) : undefined}
                       onRestore={item.invalidReason ? () => act({ kind: 'restore', id: item.id }) : undefined}
                       onDelete={() => act({ kind: 'delete', id: item.id })}
                     />
-                  </div>
-                ))}
-                {notes.length + fallibleEntries.length === 0 ? (
-                  <p className="py-1 text-2 text-ink-3">还没有；Kind 平时会自己记几笔。</p>
+                  ))}
+                  {kinds.length === 0 ? <p className="px-1 py-1 text-1 text-ink-3">还没有；Kind 平时会自己记几笔。</p> : null}
+                </div>
+              </div>
+            </div>
+          </Section>
+
+          <Section id="diary" title="Kind 的日记" hint="只读；压缩前会记一笔">
+            <div data-kind="memory-diary">
+              {(data?.diary ?? []).map((entry) => (
+                <div key={entry.id} data-kind="memory-diary-item" className="border-b border-line-2 py-2 text-2 last:border-b-0">
+                  <p className="text-1 text-ink-3">{entry.day || dayOf(entry.createdAt)} · {clock(entry.createdAt)}</p>
+                  <p className="whitespace-pre-wrap text-ink-2">{entry.text}</p>
+                </div>
+              ))}
+              {(data?.diary ?? []).length === 0 ? <p className="text-2 text-ink-3">还没有日记。</p> : null}
+            </div>
+          </Section>
+
+          <Section id="dream" title="做梦" hint="空闲时整理 Kind 自己的笔记；可关、可随时叫">
+            <div data-kind="memory-dream" className="flex flex-col gap-3">
+              <div className="flex flex-wrap items-center gap-3 text-2 text-ink-2">
+                <label className="flex items-center gap-1.5">
+                  <input
+                    type="checkbox"
+                    data-kind="dream-enabled"
+                    checked={data?.dream.enabled ?? false}
+                    onChange={(event) => act({ kind: 'set-dream-enabled', enabled: event.target.checked })}
+                  />
+                  开着
+                </label>
+                <label className="flex items-center gap-1.5">
+                  间隔
+                  <input
+                    type="number"
+                    min={1}
+                    data-kind="dream-interval"
+                    value={intervalHours}
+                    onChange={(event) => setIntervalHours(Number(event.target.value) || 1)}
+                    className="w-14 rounded-btn border border-line-2 bg-content px-1.5 py-0.5 text-2 text-ink"
+                  />
+                  小时
+                </label>
+                <button type="button" data-action="dream-interval-save" onClick={() => act({ kind: 'set-dream-interval', hours: intervalHours })} className={btn}>
+                  保存
+                </button>
+                {dreaming ? (
+                  <span className="text-ink-3" data-kind="dream-running">正在整理</span>
+                ) : (
+                  <button type="button" data-action="dream-now" onClick={() => act({ kind: 'dream-now' })} className={btnSolid} style={{ color: 'var(--content)' }}>
+                    马上整理一次
+                  </button>
+                )}
+                {data && !data.dream.permit ? (
+                  <button type="button" data-action="dream-permit" onClick={() => act({ kind: 'set-permit', allow: true })} className={btnSolid} style={{ color: 'var(--content)' }}>
+                    允许观察（读对话和任务报回）
+                  </button>
                 ) : null}
               </div>
-            </div>
-          </div>
-        </Section>
-
-        <Section title="Kind 的日记" hint="只读；压缩前会记一笔">
-          <div data-kind="memory-diary">
-            {(data?.diary ?? []).map((entry) => (
-              <div
-                key={entry.id}
-                data-kind="memory-diary-item"
-                className="border-b border-line-2 py-2 text-2 last:border-b-0"
-              >
-                <p className="text-1 text-ink-3">
-                  {entry.day || dayOf(entry.createdAt)} · {clock(entry.createdAt)}
-                </p>
-                <p className="whitespace-pre-wrap text-ink-2">{entry.text}</p>
+              <p className="text-2 text-ink-3">上次成功 {clock(data?.dream.lastSuccessAt)} · 下次 {clock(data?.dream.nextAt)}</p>
+              <div data-kind="dream-runs">
+                {runs.map((run) => (
+                  <DreamRun key={run.id} run={run} onUndoAll={() => act({ kind: 'undo-dream', runId: run.id })} onUndoOne={(memoryId) => act({ kind: 'undo-dream', runId: run.id, memoryId })} />
+                ))}
+                {runs.length === 0 ? <p className="text-2 text-ink-3">还没整理过。</p> : null}
               </div>
-            ))}
-            {(data?.diary ?? []).length === 0 ? (
-              <p className="text-2 text-ink-3">还没有日记。</p>
-            ) : null}
-          </div>
-        </Section>
-
-        <Section title="做梦" hint="空闲时整理 Kind 自己的笔记；可关、可随时叫">
-          <div data-kind="memory-dream" className="flex flex-col gap-3">
-            <div className="flex flex-wrap items-center gap-3 text-2 text-ink-2">
-              <label className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  data-kind="dream-enabled"
-                  checked={data?.dream.enabled ?? false}
-                  onChange={(event) =>
-                    act({ kind: 'set-dream-enabled', enabled: event.target.checked })
-                  }
-                />
-                开着
-              </label>
-              <label className="flex items-center gap-2">
-                间隔
-                <input
-                  type="number"
-                  min={1}
-                  data-kind="dream-interval"
-                  value={intervalHours}
-                  onChange={(event) => setIntervalHours(Number(event.target.value) || 1)}
-                  className="w-16 rounded-btn border border-line-2 bg-content px-2 py-0.5 text-2 text-ink"
-                />
-                小时
-              </label>
-              <button
-                type="button"
-                data-action="dream-interval-save"
-                onClick={() => act({ kind: 'set-dream-interval', hours: intervalHours })}
-                className={actionClass}
-              >
-                保存间隔
-              </button>
-              {dreaming ? (
-                <span className="text-ink-3" data-kind="dream-running">
-                  正在整理
-                </span>
-              ) : (
-                <button
-                  type="button"
-                  data-action="dream-now"
-                  onClick={() => act({ kind: 'dream-now' })}
-                  className={primaryActionClass}
-                >
-                  马上整理一次
-                </button>
-              )}
-              {data && !data.dream.permit ? (
-                <button
-                  type="button"
-                  data-action="dream-permit"
-                  onClick={() => act({ kind: 'set-permit', allow: true })}
-                  className={primaryActionClass}
-                >
-                  允许观察（读对话和任务报回）
-                </button>
-              ) : null}
             </div>
-            <p className="text-2 text-ink-3">
-              上次成功 {clock(data?.dream.lastSuccessAt)} · 下次 {clock(data?.dream.nextAt)}
-            </p>
-            <div data-kind="dream-runs">
-              {/* 历次明细：最近的在上，最多五条（服务端截断）。 */}
-              {runs.map((run) => (
-                <DreamRun
-                  key={run.id}
-                  run={run}
-                  onUndoAll={() => act({ kind: 'undo-dream', runId: run.id })}
-                  onUndoOne={(memoryId) => act({ kind: 'undo-dream', runId: run.id, memoryId })}
-                />
+          </Section>
+
+          <Section id="quarantine" title="隔离区" hint="删掉的 7 天内能恢复；彻底删就搜不到了">
+            <div data-kind="memory-quarantine">
+              {(data?.quarantine ?? []).map((item) => (
+                <div key={item.id} data-kind="memory-quarantine-item" data-id={item.id} className="flex items-center gap-2 border-b border-line-2 py-2 last:border-b-0">
+                  <Bookmark className="size-3 shrink-0 text-wait" strokeWidth={1.7} />
+                  <span className="min-w-0 flex-1 truncate text-2 text-ink">{item.title}</span>
+                  <button type="button" data-action="memory-restore" onClick={() => act({ kind: 'restore', id: item.id })} className={btn}>
+                    <RotateCcw className="mr-1 inline size-3" strokeWidth={1.8} />
+                    恢复
+                  </button>
+                  <button type="button" data-action="memory-forget" onClick={() => act({ kind: 'forget', id: item.id })} className={btn}>
+                    <Trash2 className="mr-1 inline size-3" strokeWidth={1.8} />
+                    马上彻底删
+                  </button>
+                </div>
               ))}
-              {runs.length === 0 ? <p className="text-2 text-ink-3">还没整理过。</p> : null}
+              {(data?.quarantine ?? []).length === 0 ? <p className="text-2 text-ink-3">空。</p> : null}
             </div>
-          </div>
-        </Section>
+          </Section>
 
-        <Section title="隔离区" hint="删掉的 7 天内能恢复；彻底删就搜不到了">
-          <div data-kind="memory-quarantine">
-            {(data?.quarantine ?? []).map((item) => (
-              <div
-                key={item.id}
-                data-kind="memory-quarantine-item"
-                data-id={item.id}
-                className="flex items-center gap-2 border-b border-line-2 py-2 last:border-b-0"
-              >
-                <Bookmark className="size-3 shrink-0 text-wait" strokeWidth={1.7} />
-                <span className="min-w-0 flex-1 truncate text-2 text-ink">{item.title}</span>
-                <button
-                  type="button"
-                  data-action="memory-restore"
-                  onClick={() => act({ kind: 'restore', id: item.id })}
-                  className={actionClass}
-                >
-                  <RotateCcw className="mr-1 inline size-3" strokeWidth={1.8} />
-                  恢复
-                </button>
-                <button
-                  type="button"
-                  data-action="memory-forget"
-                  onClick={() => act({ kind: 'forget', id: item.id })}
-                  className={actionClass}
-                >
-                  <Trash2 className="mr-1 inline size-3" strokeWidth={1.8} />
-                  彻底删除
-                </button>
-              </div>
-            ))}
-            {(data?.quarantine ?? []).length === 0 ? (
-              <p className="text-2 text-ink-3">空。</p>
-            ) : null}
-          </div>
-        </Section>
+          <p data-kind="memory-footer" className="py-2 text-center text-1 text-ink-3">
+            记忆都存在这台机器上。
+          </p>
+        </div>
       </div>
     </div>
   );

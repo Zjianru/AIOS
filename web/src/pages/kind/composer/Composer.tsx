@@ -13,13 +13,14 @@
 
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { FileText, Quote } from 'lucide-react';
+import { FileText, MapPin, Quote, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { useKindStore } from '../kindStore';
 import { fileMentions } from '../atGrammar';
 import type { QueueRestore } from '../inbox';
 import { mimeFromFileName } from '../fileMime.ts';
 import { canRecallCleared } from '../rewind.ts';
+import { takePendingDraft } from '@/lib/pendingDraft';
 import type { RewindSource } from '../rewind.ts';
 import { attachmentGet, attachmentPut, fileReferences } from '@/data/service';
 import type { FileReferenceEntry, SendAttachmentRef } from '@/data/service';
@@ -44,7 +45,7 @@ export interface ComposerSendOptions {
   canvas?: { id: string; title: string };
   /** T054.2：结果卡「要求修改」带进来的那张卡。 */
   resultCard?: { taskId: string; title: string; version: number };
-  /** 本票（N2）：一次放回多条时按顺序的列表（单个时仍给 canvas/resultCard 兼容）。 */
+  /** （N2）：一次放回多条时按顺序的列表（单个时仍给 canvas/resultCard 兼容）。 */
   canvases?: { id: string; title: string }[];
   resultCards?: { taskId: string; title: string; version: number }[];
 }
@@ -55,13 +56,13 @@ export interface ComposerHandle {
   focus: () => void;
   /** T015.4：画布里的按钮把一句话放进输入框（接在已经写的后面，不发送）。 */
   putFromCanvas: (text: string, canvas: { id: string; title: string }) => void;
-  /** 本票：输入框里有没有东西（两下 Esc 决定清空还是开菜单）。 */
+  /** 输入框里有没有东西（两下 Esc 决定清空还是开菜单）。 */
   hasDraftContent: () => boolean;
-  /** 本票：两下 Esc 清空：草稿压进 cleared，↑ 能取回。 */
+  /** 两下 Esc 清空：草稿压进 cleared，↑ 能取回。 */
   clearToHistory: () => void;
-  /** 本票：↑ 取回最近清掉的一条。 */
+  /** ↑ 取回最近清掉的一条。 */
   recallCleared: () => boolean;
-  /** 本票：恢复对话时把原文（字/粘贴/附件/结果卡/画布标记）放回输入框。 */
+  /** 恢复对话时把原文（字/粘贴/附件/结果卡/画布标记）放回输入框。 */
   putBack: (source: RewindSource) => void;
 }
 
@@ -92,6 +93,8 @@ interface ComposerProps {
   placeholder?: string;
   /** 从日志恢复的排队消息（被停止清掉的那些）；每条 seq 最多放回一次。 */
   queueRestores?: QueueRestore[];
+  /** 输入框里的页面位置标签（Kind 传「现在」；任务对话不传）。 */
+  pageTag?: string;
 }
 
 /** 本地记录文件的 MIME（发送时只带 id/name/bytes；预览用）。 */
@@ -145,7 +148,7 @@ function quotedLines(quote: string): string {
 }
 
 export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer(
-  { offline, onSend, onCanSendChange, children, draftKey, placeholder, queueRestores = [] },
+  { offline, onSend, onCanSendChange, children, draftKey, placeholder, queueRestores = [], pageTag },
   ref,
 ) {
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -156,12 +159,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   /** T015.4：这句话是画布放进来的（发出去时带标记，气泡上留着）。 */
   const [fromCanvas, setFromCanvas] = useState<{ id: string; title: string } | null>(null);
-  // 本票（N2）：一次放回多条画布标记/结果卡；第一条走上面的单值状态（兼容旧 UI），其余放这里。
+  // （N2）：一次放回多条画布标记/结果卡；第一条走上面的单值状态（兼容旧 UI），其余放这里。
   const [extraCanvases, setExtraCanvases] = useState<{ id: string; title: string }[]>([]);
   const [extraResultCards, setExtraResultCards] = useState<
     { taskId: string; title: string; version: number }[]
   >([]);
-  // 本票：两下 Esc 清掉的草稿，↑ 取最近一条；跟草稿一起存 localStorage。
+  // 两下 Esc 清掉的草稿，↑ 取最近一条；跟草稿一起存 localStorage。
   const [cleared, setCleared] = useState<ClearedDraft[]>([]);
   /** T054.2：结果卡「要求修改」放进输入框的那张卡（一次一张，再点别的卡就换掉）。 */
   const [resultCard, setResultCard] = useState<{
@@ -192,6 +195,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const restoredKeysRef = useRef<string[]>([]);
 
   const canSend = text.trim().length > 0 || quotes.length > 0 || pastes.length > 0 || attachments.length > 0;
+  const [pageTagDismissed, setPageTagDismissed] = useState(false);
 
   useEffect(() => {
     onCanSendChange(canSend);
@@ -297,6 +301,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     requestAnimationFrame(() => inputRef.current?.focus());
   }, [pageQuote]);
 
+  // 记忆页「加一条」没有页面直写协议，经这个键把一句草稿带进 Kind 输入框。
   // T013.8：会话 id 就绪后读一次草稿（读不出当空）。
   useEffect(() => {
     if (!draftScope || draftLoadedRef.current === draftScope) return;
@@ -317,7 +322,11 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     if (touchedRef.current) return; // ready 前已经输入：以用户输入为准，草稿不覆盖
     try {
       const raw = localStorage.getItem('aios.kind.draft.' + draftScope);
-      if (!raw) return;
+      const pendingText = takePendingDraft();
+      if (!raw) {
+        if (pendingText !== null) setText(pendingText);
+        return;
+      }
       const draft = JSON.parse(raw) as {
         text?: unknown;
         quotes?: unknown;
@@ -330,7 +339,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         restoredKeys?: unknown;
         cleared?: unknown;
       };
-      if (typeof draft.text === 'string') setText(draft.text);
+      if (typeof draft.text === 'string') setText(pendingText ?? draft.text);
       const fromCanvas = draft.canvas as { id?: unknown; title?: unknown } | null | undefined;
       if (fromCanvas && typeof fromCanvas.id === 'string' && typeof fromCanvas.title === 'string') {
         setFromCanvas({ id: fromCanvas.id, title: fromCanvas.title });
@@ -633,7 +642,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     [attachments.length, extraCanvases.length, extraResultCards.length, fromCanvas, pastes.length, quotes.length, resultCard, text],
   );
 
-  /** 本票：两下 Esc 清空输入框；清掉的东西压进 cleared，↑ 能取回。 */
+  /** 两下 Esc 清空输入框；清掉的东西压进 cleared，↑ 能取回。 */
   const clearToHistory = useCallback(() => {
     if (!hasDraftContent()) return;
     touchedRef.current = true;
@@ -662,7 +671,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     requestAnimationFrame(() => resize());
   }, [attachments, extraCanvases, extraResultCards, fromCanvas, hasDraftContent, pastes, quotes, resize, resultCard, text]);
 
-  /** 本票：输入框空着按 ↑，取回最近清掉的一条。 */
+  /** 输入框空着按 ↑，取回最近清掉的一条。 */
   const recallCleared = useCallback(() => {
     const recalled = cleared[cleared.length - 1];
     if (!recalled) return false;
@@ -687,7 +696,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     return true;
   }, [cleared, resize]);
 
-  /** 本票：恢复对话时把原文放回输入框（字接在已有字后面；附带的东西按顺序加在后面）。 */
+  /** 恢复对话时把原文放回输入框（字接在已有字后面；附带的东西按顺序加在后面）。 */
   const putBack = useCallback(
     (source: RewindSource) => {
       touchedRef.current = true;
@@ -1012,6 +1021,22 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             style={{ maxHeight: MAX_HEIGHT }}
             />
           </div>
+          {pageTag && !pageTagDismissed ? (
+            <div className="mt-1.5 flex items-center" data-kind="composer-page-tag">
+              <span className="inline-flex items-center gap-1 rounded-badge border border-line bg-pane px-1.5 py-0.5 text-1 text-ink-2">
+                <MapPin className="size-3 text-ink-3" />
+                {pageTag}
+                <button
+                  type="button"
+                  aria-label="去掉页面标签"
+                  onClick={() => setPageTagDismissed(true)}
+                  className="text-ink-3 transition-colors hover:text-ink"
+                >
+                  <X className="size-3" />
+                </button>
+              </span>
+            </div>
+          ) : null}
           {children}
         </div>
       </div>
