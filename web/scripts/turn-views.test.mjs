@@ -232,4 +232,50 @@ function toolResultEvent(callId, output) {
   assert.equal(views[0].answer.text, '我只写了一半');
 }
 
+// —— T095.3 F1：问题卡 replied 只从 tool/result.meta 派生，不看工具结果正文 ——
+{
+  seq = 0;
+  const arbitrary = '随便改过的工具结果文案（没有旧前缀）';
+  const views = deriveTurnViews([
+    event('turn/start', {}),
+    userEvent('问我一个问题'),
+    event('question/asked', {
+      call_id: 'call-ask',
+      question_id: 'q1',
+      question: '选一个？',
+      options: ['是'],
+      multi_select: false,
+    }),
+    event('question/cancelled', { call_id: 'call-ask', question_id: 'q1' }),
+    event('tool/result', {
+      message: { toolCallId: 'call-ask', content: [{ type: 'text', text: arbitrary }] },
+      meta: { ask_direct_reply: true },
+    }),
+    event('turn/end', { reason: { kind: 'completed' } }),
+  ]);
+  assert.equal(views[0].question.status, 'replied', 'meta=true 时正文任意改写也派生 replied');
+}
+
+{
+  seq = 0;
+  const oldPrefix = '用户没有选，直接说了：随便说一句';
+  const views = deriveTurnViews([
+    event('turn/start', {}),
+    userEvent('问我一个问题'),
+    event('question/asked', {
+      call_id: 'call-ask',
+      question_id: 'q1',
+      question: '选一个？',
+      options: ['是'],
+      multi_select: false,
+    }),
+    event('question/cancelled', { call_id: 'call-ask', question_id: 'q1' }),
+    event('tool/result', {
+      message: { toolCallId: 'call-ask', content: [{ type: 'text', text: oldPrefix }] },
+    }),
+    event('turn/end', { reason: { kind: 'completed' } }),
+  ]);
+  assert.notEqual(views[0].question.status, 'replied', '只有旧正文前缀、没有 meta → 不派生 replied');
+}
 console.log('turn-views.test.mjs: all assertions passed');
+
