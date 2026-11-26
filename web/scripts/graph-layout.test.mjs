@@ -107,4 +107,18 @@ function pathPoints(d) {
   for (const route of Object.values(layout.edges)) assert.match(route.d, /^M[\d.]+,[\d.]+/);
 }
 
+
+// 7) 重心排序：同一列两个节点，按上游重心排；一个节点有两个上游时取平均。
+{
+  const nodes = [node('p1', 0), node('c1', 1), node('p2', 0), node('c2', 1)];
+  const edges = [edge('p1', 'c1'), edge('p2', 'c1'), edge('p1', 'c2')];
+  const layout = layoutGraph(graph(nodes, edges));
+  assert.ok(layout.nodes.c2.y < layout.nodes.c1.y, 'c2 只连 p1（重心 0），应排在连 p1+p2（重心 0.5）的 c1 上面');
+  // 同列 x 对齐、两列竖直中心一致（重心排序后仍居中）。
+  assert.equal(layout.nodes.p1.x, layout.nodes.p2.x);
+  assert.equal(layout.nodes.c1.x, layout.nodes.c2.x);
+  const centre = (list) => (Math.min(...list.map((item) => item.y)) + Math.max(...list.map((item) => item.y + NODE_H))) / 2;
+  assert.ok(Math.abs(centre([layout.nodes.p1, layout.nodes.p2]) - centre([layout.nodes.c1, layout.nodes.c2])) < 0.001);
+}
+
 console.log('graph-layout ok');
