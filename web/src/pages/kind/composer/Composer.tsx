@@ -6,14 +6,14 @@
  *   长按 Enter（repeat）不连发；
  * - 自动变高，最高 240px，超过后内部滚动；
  * - 粘贴超过 1000 个字符折成卡片（不进 textarea），发送时作为 pastes 的一项；
- * - 拖文件/粘贴文件出附件卡片（只收文字文件，二进制提示）；
+ * - 拖文件/粘贴文件出附件卡片（T093：图片/文字/其他非文字文件都收，文件夹不收）；
  * - @ 菜单（打 @ 后按打的字列候选，选中插 @路径；带空格的路径加引号）；
  * - 选中文字浮出「引用」，点了变成输入框上方的引用卡；发送时才按行变成 > 行。
  */
 
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { FileText, MapPin, Quote, X } from 'lucide-react';
+import { FileText, MapPin, Paperclip, Quote, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { useKindStore } from '../kindStore';
 import { fileMentions } from '../atGrammar';
@@ -22,12 +22,13 @@ import { mimeFromFileName } from '../fileMime.ts';
 import { canRecallCleared } from '../rewind.ts';
 import { takePendingDraft } from '@/lib/pendingDraft';
 import type { RewindSource } from '../rewind.ts';
-import { attachmentGet, attachmentPut, fileReferences } from '@/data/service';
+import { attachmentGet, attachmentPut, fileReferences, peekAvailableModels } from '@/data/service';
 import type { FileReferenceEntry, SendAttachmentRef } from '@/data/service';
 import { cn } from '@/lib/utils';
 import {
   AttachmentPreview,
   FileCard,
+  ImageCard,
   FromCanvasChip,
   PasteCard,
   QuoteCard,
@@ -95,6 +96,8 @@ interface ComposerProps {
   queueRestores?: QueueRestore[];
   /** 输入框里的页面位置标签（Kind 传「现在」；任务对话不传）。 */
   pageTag?: string;
+  /** T093：当前模型能不能看图；看不了时图片卡照实写，仍允许发送。 */
+  imagesOk?: boolean;
 }
 
 /** 本地记录文件的 MIME（发送时只带 id/name/bytes；预览用）。 */
@@ -148,15 +151,30 @@ function quotedLines(quote: string): string {
 }
 
 export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer(
-  { offline, onSend, onCanSendChange, children, draftKey, placeholder, queueRestores = [], pageTag },
+  { offline, onSend, onCanSendChange, children, draftKey, placeholder, queueRestores = [], pageTag, imagesOk },
   ref,
 ) {
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const composingRef = useRef(false);
   const [text, setText] = useState('');
   const [quotes, setQuotes] = useState<string[]>([]);
   const [pastes, setPastes] = useState<string[]>([]);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
+  const kindModel = useKindStore((state) => state.model);
+  const [modelSeesImages, setModelSeesImages] = useState(true);
+  useEffect(() => {
+    let alive = true;
+    void peekAvailableModels(kindModel.connectionId)
+      .then((result) => {
+        const info = result.models.find((model) => model.id === kindModel.modelId);
+        if (alive) setModelSeesImages(Boolean(info?.input?.includes('image')));
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [kindModel.connectionId, kindModel.modelId]);
   /** T015.4：这句话是画布放进来的（发出去时带标记，气泡上留着）。 */
   const [fromCanvas, setFromCanvas] = useState<{ id: string; title: string } | null>(null);
   // （N2）：一次放回多条画布标记/结果卡；第一条走上面的单值状态（兼容旧 UI），其余放这里。
@@ -557,10 +575,15 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         const stored = await attachmentPut(file.name, data);
         setAttachments((previous) => [
           ...previous,
-          { id: stored.id, name: stored.name, bytes: stored.bytes, mime: file.type || 'text/plain' },
+          {
+            id: stored.id,
+            name: stored.name,
+            bytes: stored.bytes,
+            mime: file.type || mimeFromFileName(file.name) || 'application/octet-stream',
+          },
         ]);
       } catch {
-        toast('只能放文字文件', { description: file.name + ' 不是能读的文字文件' });
+        toast('附件没存上', { description: file.name + ' 没有被存进只读副本' });
       }
     }
     requestAnimationFrame(() => {
@@ -929,19 +952,29 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
                 onRemove={() => setPastes((previous) => previous.filter((_, item) => item !== index))}
               />
             ))}
-            {attachments.map((file) => (
-              <FileCard
-                key={file.id + '-' + file.name}
-                file={file}
-                mime={file.mime}
-                onOpen={() => {
-                  void attachmentGet(file.id)
-                    .then((result) => setFilePreview({ id: file.id, text: result.text ?? '（这个文件没有可显示的文字）' }))
-                    .catch(() => toast('读不回这个文件', { description: file.name }));
-                }}
-                onRemove={() => setAttachments((previous) => previous.filter((item) => item.id !== file.id))}
-              />
-            ))}
+            {attachments.map((file) =>
+              file.mime?.startsWith('image/') ? (
+                <ImageCard
+                  key={file.id + '-' + file.name}
+                  file={file}
+                  mime={file.mime}
+                  imagesOk={imagesOk ?? modelSeesImages}
+                  onRemove={() => setAttachments((previous) => previous.filter((item) => item.id !== file.id))}
+                />
+              ) : (
+                <FileCard
+                  key={file.id + '-' + file.name}
+                  file={file}
+                  mime={file.mime}
+                  onOpen={() => {
+                    void attachmentGet(file.id)
+                      .then((result) => setFilePreview({ id: file.id, text: result.text ?? '（这个文件没有可显示的文字）' }))
+                      .catch(() => toast('读不回这个文件', { description: file.name }));
+                  }}
+                  onRemove={() => setAttachments((previous) => previous.filter((item) => item.id !== file.id))}
+                />
+              ),
+            )}
           </div>
         ) : null}
         <div className="flex items-end gap-2">
@@ -1037,6 +1070,28 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               </span>
             </div>
           ) : null}
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            hidden
+            data-kind="composer-file-input"
+            onChange={(event) => {
+              const files = Array.from(event.target.files ?? []);
+              if (files.length > 0) void intakeFiles(files);
+              event.target.value = '';
+            }}
+          />
+          <button
+            type="button"
+            data-kind="composer-attach"
+            aria-label="添加图片或文件"
+            title="添加图片或其他文件（也能粘贴/拖进来）"
+            onClick={() => fileInputRef.current?.click()}
+            className="grid size-7 shrink-0 place-items-center rounded-btn text-ink-3 hover:bg-hover hover:text-ink"
+          >
+            <Paperclip className="size-3.5" />
+          </button>
           {children}
         </div>
       </div>

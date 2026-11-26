@@ -70,6 +70,8 @@ export interface TurnUserView {
   pastes: string[];
  /** file 块（服务发消息时写下的 id/名字/大小）。 */
   files: SendAttachmentRef[];
+  /** T093：图片块（attachmentId/name/bytes；预览按 id 读）。 */
+  images: SendAttachmentRef[];
  /** ：这句话是画布里的按钮放进来的（日志块上的 canvas：id + 标题）；没有就是自己写的。 */
   canvas: { id: string; title: string } | null;
  /** ：这句话带着一张结果卡（「要求修改」放进输入框的卡）。 */

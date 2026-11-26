@@ -5,7 +5,9 @@
  * 删除按钮只有输入框要（气泡上的卡是发出去的消息，不能删）。
  */
 
+import { useEffect, useState } from 'react';
 import { AppWindow, FileText, Quote, X } from 'lucide-react';
+import { attachmentGet } from '@/data/service';
 import type { SendAttachmentRef } from '@/data/service';
 import { cn } from '@/lib/utils';
 
@@ -15,6 +17,9 @@ export function typeLabel(mime: string): string {
   if (mime === 'application/json') return 'JSON';
   if (mime === 'text/markdown') return 'Markdown';
   if (mime === 'text/csv') return 'CSV';
+  if (mime === 'application/pdf') return 'PDF';
+  if (mime === 'application/zip') return '压缩包';
+  if (mime === 'application/octet-stream') return '文件';
   if (mime.startsWith('text/')) return mime.slice(5) || '文字';
   return mime || '文字';
 }
@@ -147,9 +152,10 @@ interface FileCardProps {
 
 export function FileCard({ file, mime, onOpen, onRemove }: FileCardProps) {
   const type = fileTypeLabel(file.name, mime);
+  const text = !mime || mime.startsWith('text/') || ['application/json', 'application/xml'].includes(mime);
   return (
     <span
-      data-kind="file-card"
+      data-kind={text ? 'file-card' : 'attachment-binary'}
       className="flex shrink-0 items-center gap-1 rounded-btn border border-line-2 bg-pane px-2 py-1 text-2 text-ink-2"
     >
       <FileText className="size-3" />
@@ -283,5 +289,61 @@ export function AttachmentPreview({ kind, title, text, onClose, className }: Pre
       </div>
       <pre className="whitespace-pre-wrap break-words font-mono text-2 leading-5 text-ink-2">{text}</pre>
     </div>
+  );
+}
+
+/** T093：图片卡（缩略图 + 名字 + 大小）；当前模型看不了图时照实写。 */
+export function ImageCard({
+  file,
+  mime,
+  imagesOk = true,
+  onRemove,
+}: {
+  file: SendAttachmentRef;
+  mime?: string;
+  imagesOk?: boolean;
+  onRemove?: () => void;
+}) {
+  const [src, setSrc] = useState<string | null>(null);
+  useEffect(() => {
+    if (mime && !mime.startsWith('image/')) return;
+    let alive = true;
+    void attachmentGet(file.id)
+      .then((result) => {
+        if (!alive) return;
+        if (result.mime && result.data) {
+          setSrc('data:' + result.mime + ';base64,' + result.data);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [file.id, mime]);
+  return (
+    <span
+      data-kind="attachment-image"
+      className="flex max-w-[260px] shrink-0 items-center gap-1.5 rounded-btn border border-line-2 bg-pane px-1.5 py-1 text-2 text-ink-2"
+    >
+      {src ? (
+        <img src={src} alt={file.name} className="size-9 shrink-0 rounded-[4px] object-cover" />
+      ) : (
+        <span className="grid size-9 shrink-0 place-items-center rounded-[4px] bg-active text-1 text-ink-3">图</span>
+      )}
+      <span className="flex min-w-0 flex-col leading-4">
+        <span className="max-w-[150px] truncate text-ink">{file.name}</span>
+        <span className="shrink-0 text-ink-3">{sizeLabel(file.bytes)}</span>
+        {!imagesOk ? (
+          <span data-kind="attachment-image-blind" className="text-1 text-wait">
+            这个模型看不了图
+          </span>
+        ) : null}
+      </span>
+      {onRemove ? (
+        <button type="button" aria-label="移除图片" onClick={onRemove} className="text-ink-3 hover:text-ink">
+          <X className="size-3" />
+        </button>
+      ) : null}
+    </span>
   );
 }

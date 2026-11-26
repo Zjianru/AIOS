@@ -375,6 +375,7 @@ export function deriveTurnViews(
     const text: string[] = [];
     const pastes: string[] = [];
     const files: SendAttachmentRef[] = [];
+    const images: SendAttachmentRef[] = [];
     let canvas: { id: string; title: string } | null = null;
     let resultCard: { taskId: string; title: string; version: number } | null = null;
     for (const block of content) {
@@ -417,6 +418,14 @@ export function deriveTurnViews(
         else text.push(value);
         continue;
       }
+      if (typed.type === 'image' && typeof typed.attachmentId === 'string') {
+        images.push({
+          id: typed.attachmentId,
+          name: typeof typed.name === 'string' ? typed.name : '',
+          bytes: typeof typed.bytes === 'number' ? typed.bytes : 0,
+        });
+        continue;
+      }
       if (typed.type === 'file' && typeof typed.attachmentId === 'string') {
         files.push({
           id: typed.attachmentId,
@@ -426,8 +435,8 @@ export function deriveTurnViews(
       }
     }
     const body = text.join('');
-    if (!body && pastes.length === 0 && files.length === 0 && !canvas && !resultCard) return null;
-    return { text: body, elements: [], pastes, files, canvas, resultCard, rpcId };
+    if (!body && pastes.length === 0 && files.length === 0 && images.length === 0 && !canvas && !resultCard) return null;
+    return { text: body, elements: [], pastes, files, images, canvas, resultCard, rpcId };
   };
 
   const textOfToolResult = (message: unknown): string => {

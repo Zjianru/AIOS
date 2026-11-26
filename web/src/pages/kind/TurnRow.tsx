@@ -27,6 +27,7 @@ import { WakeStrip, parseWake } from './WakeStrip';
 import {
   AttachmentPreview,
   FileCard,
+  ImageCard,
   FromCanvasChip,
   PasteCard,
   ResultCardChip,
@@ -73,6 +74,9 @@ export function UserCards({ user }: { user: TurnUserView }) {
           paste={paste}
           onOpen={() => setOpenPaste(openPaste === index ? null : index)}
         />
+      ))}
+      {user.images.map((file) => (
+        <ImageCard key={'image-' + file.id + '-' + file.name} file={file} />
       ))}
       {user.files.map((file) => (
         <FileCard

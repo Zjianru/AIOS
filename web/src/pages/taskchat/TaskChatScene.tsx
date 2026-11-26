@@ -866,6 +866,7 @@ export function TaskChatScene() {
               elements: [],
               pastes: item.pastes,
               files: item.attachments,
+              images: [],
               canvas: null,
               resultCard: null,
               rpcId: null,
