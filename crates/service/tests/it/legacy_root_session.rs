@@ -135,7 +135,7 @@ async fn old_root_session_with_repo_cwd_upgrades_to_neutral_prompt() {
     assert!(!system(&bodies[0].body).contains("Your working directory is"));
 }
 
-/// T085 补测：旧根会话日志头 cwd 是仓库；用另一个 options.cwd 重开后，工具上下文 cwd
+/// 旧根会话日志头 cwd 是仓库；用另一个 options.cwd 重开后，工具上下文 cwd
 /// 必须是这次启动的 options.cwd，不是日志头里的旧仓库。
 ///
 /// Kind 没有 bash（KIND_TOOLS 23 项不含 bash；见 root.rs 的 KIND_TOOLS），所以不用

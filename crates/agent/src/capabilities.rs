@@ -335,7 +335,7 @@ pub(crate) trait Capability: Send + Sync {
         Vec::new()
     }
     fn cancel_questions(&self) {}
-    /// T090.2：问题卡等待时用户直接发送 = 回答整批；返回是否确有等待中的批。
+    /// 问题卡等待时用户直接发送 = 回答整批；返回是否确有等待中的批。
     fn reply_questions_with_text(&self, _text: String) -> bool {
         false
     }

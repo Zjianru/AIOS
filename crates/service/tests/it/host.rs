@@ -388,7 +388,7 @@ async fn dismiss_pending_questions_returns_ask_aborted_and_turn_continues() {
     );
 }
 
-/// T090.2：问题卡等回答时用户直接发送一句话 = 回答整批：不进 inbox、没有 user/message，
+/// 问题卡等回答时用户直接发送一句话 = 回答整批：不进 inbox、没有 user/message，
 /// 工具结果写「用户没有选，直接说了：…」，同一轮继续、本轮 completed。
 #[tokio::test]
 async fn typing_while_a_question_waits_answers_the_batch_and_continues_the_turn() {
@@ -453,7 +453,7 @@ async fn typing_while_a_question_waits_answers_the_batch_and_continues_the_turn(
     assert_eq!(quiet.pending_questions, 0, "回答后没有待答问题");
 }
 
-/// T090.2 验收第 4 条：带粘贴/附件的发送也当回答——工具结果写 Kind 平时看到的那条消息：
+/// 带粘贴/附件的发送也当回答——工具结果写 Kind 平时看到的那条消息：
 /// 每段粘贴原文、附件名字/字节数/只读副本路径、结果卡一行；不进 inbox、不产生 user/message，
 /// 同一轮继续、completed。
 #[tokio::test]
@@ -474,12 +474,12 @@ async fn typing_with_pastes_and_attachments_while_a_question_waits_answers_with_
         ContentBlock::paste("粘贴第一段"),
         ContentBlock::paste("粘贴第二段"),
         ContentBlock::File {
-            attachment_id: "att-t090-1".to_owned(),
+            attachment_id: "att-legacy-1".to_owned(),
             name: "排队附件.txt".to_owned(),
             bytes: 42,
-            path: Some("/tmp/t090/attachments/att-t090-1.txt".to_owned()),
+            path: Some("/tmp/legacy/attachments/att-legacy-1.txt".to_owned()),
         },
-        ContentBlock::from_result_card("task-t090", "结果卡标题", 2),
+        ContentBlock::from_result_card("task-legacy", "结果卡标题", 2),
     ]);
     let typed = service
         .send_message("req-attach-reply", message, DeliveryMode::FollowUp)
@@ -499,8 +499,8 @@ async fn typing_with_pastes_and_attachments_while_a_question_waits_answers_with_
         "我直接说一句",
         "粘贴第一段",
         "粘贴第二段",
-        "附件：排队附件.txt（42 字节，位置 /tmp/t090/attachments/att-t090-1.txt）",
-        "结果卡：结果卡标题（任务 task-t090，第 2 版）",
+        "附件：排队附件.txt（42 字节，位置 /tmp/legacy/attachments/att-legacy-1.txt）",
+        "结果卡：结果卡标题（任务 task-legacy，第 2 版）",
     ] {
         assert!(second.contains(expected), "工具结果缺「{expected}」：{second}");
     }

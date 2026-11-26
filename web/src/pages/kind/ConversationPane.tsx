@@ -293,7 +293,7 @@ export function ConversationPane() {
 
   // T013.7：发送走 Composer（Enter/Cmd+Enter/按钮都到 submit）；pastes/attachments 跟着发。
   const handleSend = useCallback(() => {
-    // 断线时交给 Composer.submit 提示并保留草稿（T090.1），这里不静默 return。
+    // 断线时交给 Composer.submit 提示并保留草稿，这里不静默 return。
     if (useKindStore.getState().streamingTurnId) {
       toast('Kind 还在做上一轮', { description: '等它做完，或者先停下（Esc）' });
       return;

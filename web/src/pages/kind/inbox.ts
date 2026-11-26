@@ -1,4 +1,4 @@
-// T090.1：输入队列投影。
+// 输入队列投影。
 //
 // 停止时内核照 DSH clear 清掉两侧待领队列；删除落日志的 splice 只带
 // target/start/removedCount/outcome，不带被删消息的 id 和正文。页面用日志里已有的

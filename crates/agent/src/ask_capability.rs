@@ -37,7 +37,7 @@ struct LiveQuestion {
     questions: Vec<Question>,
     answers: BTreeMap<String, AnswerItem>,
     cancelled: BTreeSet<String>,
-    /// T090.2：用户不选选项、直接发送的原文（整批按 dismissed 收尾，工具结果带这句话）。
+    /// 用户不选选项、直接发送的原文（整批按 dismissed 收尾，工具结果带这句话）。
     direct: Option<String>,
     /// 整批 settle（全部答完或撤销）时唤醒 hook；只发一次。
     deliver: Option<tokio::sync::oneshot::Sender<()>>,
@@ -84,7 +84,7 @@ struct SettledLive {
     answers: Vec<(String, AnswerItem)>,
     /// 被撤销的问题 id（按问题顺序）。
     cancelled: Vec<String>,
-    /// T090.2：直接发送的原文；Some 时工具结果写「用户没有选，直接说了：<原话>」。
+    /// 直接发送的原文；Some 时工具结果写「用户没有选，直接说了：<原话>」。
     direct: Option<String>,
 }
 
@@ -287,7 +287,7 @@ impl AskState {
         })
     }
 
-    /// T090.2：用户不等选项、直接发送一句话回答整批。未答的问题记撤销（dismissed），
+    /// 用户不等选项、直接发送一句话回答整批。未答的问题记撤销（dismissed），
     /// 已答的保留；钩子把「用户没有选，直接说了：<原话>」作为工具结果，本轮继续。
     fn reply_direct(&self, text: String) -> bool {
         let mut live = self.live.lock().expect("agent 问题锁被毒化");
@@ -789,7 +789,7 @@ impl Capability for AskCapability {
                     return Ok(HookOutcome::AbortStep);
                 }
                 if let Some(direct) = &settled.direct {
-                    // T090.2：问题卡等回答时用户直接发送（文字/粘贴/附件）= 回答这张卡；
+                    // 问题卡等回答时用户直接发送（文字/粘贴/附件）= 回答这张卡；
                     // 工具结果带回原文，Kind 在同一轮里接着做（不是 ASK_ABORTED 错误）。
                     overrides.push((
                         index,

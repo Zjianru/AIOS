@@ -716,7 +716,7 @@ impl Inner {
 
     /// 取消：照 DSH clear 清空两侧还没领的队列（先 next-step、再 next-turn），
     /// 删除都落日志（removedCount + outcome=canceled）。页面读这条 splice 把被清的
-    /// 字放回输入框（T090.1）；「保留 next-turn」是 T087 84eae47 的临时语义，已撤回。
+    /// 字放回输入框；「保留 next-turn」的临时语义已撤回。
     pub(crate) async fn cancel(&self) -> Result<(), AgentError> {
         {
             let _gate = self.inbox_mutations.lock().await;
@@ -865,7 +865,7 @@ impl Inner {
         self.capabilities.pending_questions()
     }
 
-    /// T090.2：问题卡等待时用户直接发送 = 回答整批；返回是否确有等待中的批。
+    /// 问题卡等待时用户直接发送 = 回答整批；返回是否确有等待中的批。
     pub(crate) fn reply_questions_direct(&self, text: String) -> bool {
         self.capabilities.reply_questions_direct(text)
     }

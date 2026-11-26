@@ -65,7 +65,7 @@ interface ComposerProps {
   draftKey?: string;
   /** T028.5：占位文字（任务对话在跑/没在跑时不同）。 */
   placeholder?: string;
-  /** T090.1：从日志恢复的排队消息（被停止清掉的那些）；每条 seq 最多放回一次。 */
+  /** 从日志恢复的排队消息（被停止清掉的那些）；每条 seq 最多放回一次。 */
   queueRestores?: QueueRestore[];
 }
 
@@ -155,7 +155,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const draftLoadedRef = useRef<string | null>(null);
   const touchedRef = useRef(false);
   const changedDuringSendRef = useRef(false);
-  /** T090.1：已经放回过的 canceled splice seq；跟草稿一起存，刷新不再重复放回。 */
+  /** 已经放回过的 canceled splice seq；跟草稿一起存，刷新不再重复放回。 */
   const restoredSplicesRef = useRef<number[]>([]);
 
   const canSend = text.trim().length > 0 || quotes.length > 0 || pastes.length > 0 || attachments.length > 0;
@@ -359,7 +359,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     }
   }, [attachments, draftScope, fromCanvas, pastes, quotes, resultCard, text]);
 
-  // T090.1：停止时内核照 DSH clear 清掉排队消息；把 canceled splice 里被删的、
+  // 停止时内核照 DSH clear 清掉排队消息；把 canceled splice 里被删的、
   // 页面从日志折叠回来的用户消息放回输入框。每条 seq 最多放回一次：放回过的 seq 跟草稿
   // 一起存，刷新不会把用户删掉的字又塞回来；打开页面时只补还没放回过的（页面没开着时按的停止）。
   useEffect(() => {
@@ -482,7 +482,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   const submit = useCallback(async () => {
     if (offline) {
-      // T090.1：断线时不静默丢字——草稿留在输入框，连上后再发。
+      // 断线时不静默丢字——草稿留在输入框，连上后再发。
       toast('没连上内核，字还在，连上后再发');
       return;
     }

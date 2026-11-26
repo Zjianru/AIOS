@@ -49,7 +49,7 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let recheckTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectAttempt = 0;
 let lastSeq = 0;
-/** T090.1：页面从日志折叠出的 inbox 投影；停止清队列时从这里找回被清的消息。 */
+/** 页面从日志折叠出的 inbox 投影；停止清队列时从这里找回被清的消息。 */
 let inboxProjection = emptyProjection();
 /** 按已处理到的 lastSeq 重连；失败后指数退避，横幅显示第几次。 */
 function openSocket(): void {
@@ -242,7 +242,7 @@ function applyLiveEvent(event: ServiceEvent): void {
   lastSeq = event.seq;
   rememberCardSignals([event]);
   liveEvents.push(event);
-  // T090.1：停止清队列的 splice 只带坐标和数量，投影折叠后把被清的消息交给输入框恢复。
+  // 停止清队列的 splice 只带坐标和数量，投影折叠后把被清的消息交给输入框恢复。
   const folded = applyInboxEvent(inboxProjection, event);
   if (folded.restores.length > 0) {
     useKindStore.setState((current) => ({
@@ -624,8 +624,8 @@ export const useKindStore = create<KindState>()((set, get) => ({
     try {
       const page = await fetchEventsPage({ maxMessages: 100, minMessages: 10, minTurns: 5 });
       rememberCardSignals(page.events);
-      // T090.1：重建 inbox 投影；页面没开着时发生的取消，打开后从这里补放回。
-      // T090.2-B3：canceled splice 要删的消息插在更早页时，用同一个 beforeSeq 读口往前翻，
+      // 重建 inbox 投影；页面没开着时发生的取消，打开后从这里补放回。
+      // canceled splice 要删的消息插在更早页时，用同一个 beforeSeq 读口往前翻，
       // 只折投影（不进对话列表、不改滚动位置），直到对上或读到日志开头。
       const folded = await loadProjection(page, async (beforeSeq) => {
         const older = await fetchEventsPage({

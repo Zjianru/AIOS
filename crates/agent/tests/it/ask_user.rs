@@ -402,7 +402,7 @@ async fn two_questions_answered_as_dsh_batch_option_and_custom() {
     );
 }
 
-/// T090.2：问题卡在等时用户直接发送一句话 = 回答整批：未答问题写 question/cancelled、
+/// 问题卡在等时用户直接发送一句话 = 回答整批：未答问题写 question/cancelled、
 /// 不写 question/answered，工具结果「用户没有选，直接说了：…」，同一轮继续、completed。
 #[tokio::test]
 async fn typing_while_waiting_answers_the_batch_and_continues() {

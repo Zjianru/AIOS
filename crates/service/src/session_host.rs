@@ -212,7 +212,7 @@ impl ServiceHost {
         message: UserMessage,
         delivery: DeliveryMode,
     ) -> Result<SendResponse, ServiceError> {
-        // T090.2：问题卡等回答时，任何一次会唤醒的发送都当回答这张卡：不进 inbox、
+        // 问题卡等回答时，任何一次会唤醒的发送都当回答这张卡：不进 inbox、
         // 不产生 user/message，工具结果带回原文/粘贴原文/附件位置和大小，本轮继续。
         let wakes = !matches!(delivery, DeliveryMode::Inject);
         let delivery: agent::Delivery = delivery.into();
@@ -354,7 +354,7 @@ impl ServiceHost {
     }
 }
 
-/// T090.2：把用户这条消息换成 Kind 平时看到的样子（原话、粘贴原文、附件位置和大小），
+/// 把用户这条消息换成 Kind 平时看到的样子（原话、粘贴原文、附件位置和大小），
 /// 放进工具结果「用户没有选，直接说了：<…>」。
 fn question_reply_text(message: &Message) -> String {
     let mut parts = Vec::new();

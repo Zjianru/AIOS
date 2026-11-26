@@ -140,9 +140,9 @@ export interface KindState {
     conclusion: 'pass' | 'needs_fix',
     note?: string,
   ) => Promise<void>;
-  /** T090.1：页面从日志折叠出的、被停止清掉的排队消息（Composer 按 seq 最多放回一次）。 */
+  /** 页面从日志折叠出的、被停止清掉的排队消息（Composer 按 seq 最多放回一次）。 */
   queueRestores: QueueRestore[];
-  /** T090.2-B3：往前翻到日志开头还有被清消息对不上（输入框上方提示，不静默）。 */
+  /** 往前翻到日志开头还有被清消息对不上（输入框上方提示，不静默）。 */
   restoreMissing: boolean;
  /** ：点「要求修改」把结果卡放进 Kind 输入框（Composer 消费后清）。 */
   pendingResultCard: { taskId: string; title: string; version: number } | null;
