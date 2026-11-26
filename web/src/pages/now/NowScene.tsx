@@ -88,10 +88,14 @@ interface AdvancingCard {
   taskId: string;
   chain: { id: string; title: string; state: string; running: boolean }[];
   stuck: string;
+  /** 监控快照里这个任务有没有事实行；没有就照实写「没采到」，不 reduce 出 0。 */
+  hasData: boolean;
   model: string | null;
-  usedMs: number;
-  tokens: number;
+  usedMs: number | null;
+  tokens: number | null;
   cost: number | null;
+  /** 有事实行但没价格（unpriced）→ 显示「没价格」。 */
+  unpriced: boolean;
 }
 
 function buildAdvancing(
@@ -109,21 +113,25 @@ function buildAdvancing(
   }
   const facts = (ids: string[]) => {
     const rows = ids.map((id) => monitor[id]).filter((row): row is MonitorTaskSummary => Boolean(row));
-    const tokens = rows.reduce((sum, row) => sum + row.inputTokens + row.outputTokens, 0);
+    const hasData = rows.length > 0;
     const prices = rows.map((row) => row.costUsd).filter((value): value is number => value != null);
     const started = rows.map((row) => row.startedAt).filter((value): value is number => value != null);
     const ended = rows.map((row) => row.endedAt).filter((value): value is number => value != null);
     const running = rows.some((row) => row.running);
-    const usedMs =
-      running && started.length > 0
+    // 没有事实行就不给 0：token/已用/花费写「没采到」；有行但没价格写「没价格」。
+    const usedMs = !hasData
+      ? null
+      : running && started.length > 0
         ? now - Math.min(...started)
         : started.length > 0 && ended.length > 0
           ? Math.max(...ended) - Math.min(...started)
-          : 0;
+          : null;
     return {
+      hasData,
       model: rows.find((row) => row.model)?.model ?? null,
-      tokens,
-      cost: rows.length > 0 && prices.length === 0 ? null : prices.reduce((sum, value) => sum + value, 0),
+      tokens: hasData ? rows.reduce((sum, row) => sum + row.inputTokens + row.outputTokens, 0) : null,
+      cost: hasData && prices.length > 0 ? prices.reduce((sum, value) => sum + value, 0) : null,
+      unpriced: hasData && prices.length === 0,
       usedMs,
     };
   };
@@ -219,15 +227,15 @@ function AdvancingRow({ card }: { card: AdvancingCard }) {
         卡在：{card.stuck}
       </p>
       <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-1 text-ink-3" data-kind="now-advancing-meta">
-        <span>{card.model ?? '模型未知'}</span>
+        <span>{card.model ?? (card.hasData ? '模型未知' : '没采到')}</span>
         <span>·</span>
-        <span>已用 {fmtDur(card.usedMs)}</span>
+        <span>已用 {card.usedMs != null && card.usedMs > 0 ? fmtDur(card.usedMs) : '没采到'}</span>
         <span>·</span>
         <span>还需 —</span>
         <span>·</span>
-        <span>{fmtTokens(card.tokens)} token</span>
+        <span>{card.tokens != null ? fmtTokens(card.tokens) + ' token' : 'token 没采到'}</span>
         <span>·</span>
-        <span>{fmtCost(card.cost)}</span>
+        <span>{card.cost != null ? fmtCost(card.cost) : card.unpriced ? '没价格' : '花费没采到'}</span>
         <button
           type="button"
           data-kind="now-advancing-open"

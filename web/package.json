@@ -21,6 +21,7 @@
     "test:task-cards": "node scripts/task-cards.test.mjs",
     "test:usage-wait": "node --experimental-strip-types scripts/usage-wait.test.mjs",
     "test:context-meter": "node --experimental-strip-types scripts/context-meter.test.mjs",
+    "test:plain-text": "node --experimental-strip-types scripts/plain-text.test.mjs",
     "test:inbox-pages": "node --experimental-strip-types scripts/inbox-pages.test.mjs",
     "test:turn-views": "node --experimental-strip-types scripts/turn-views.test.mjs",
     "test:rewind": "node --experimental-strip-types scripts/rewind.test.mjs",

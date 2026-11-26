@@ -1,7 +1,7 @@
 /** 把 Markdown 摘要显示成纯文字（H1–H6、粗斜体、行内代码、代码围栏、列表标记、引用、链接）。 */
 export function plainText(markdown: string): string {
   return markdown
-    .replace(/\u0060\u0060\u0060[\s\S]*?\u0060\u0060\u0060/g, ' ')
+    .replace(/\u0060\u0060\u0060[^\n]*\n([\s\S]*?)\u0060\u0060\u0060/g, ' $1 ')
     .replace(/\u0060([^\u0060]+)\u0060/g, '$1')
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
     .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
