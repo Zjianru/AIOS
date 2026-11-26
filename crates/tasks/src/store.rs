@@ -791,17 +791,37 @@ impl Store {
         if gate.is_program_gate() {
             return Err(TaskError::ProgramGateCannotBeJudgedByUser);
         }
-        if let Some(existing) = gate.verdict_for_gate_report(gate_report).cloned() {
+        // 任务包错误（Package）不是 ThinAgent 交出的候选；它不能把上一份 ready 报告顶掉、
+        // 让用户刚点下的判定卡过期。用户判的是最近一份非 Package 的门报告；旧卡若钉的是
+        // 这份 Package 错误，按最近一份真实候选记录执行。
+        let requested_report = gate
+            .reports
+            .iter()
+            .find(|report| &report.id == gate_report)
+            .cloned()
+            .ok_or(TaskError::GateReportChanged)?;
+        let latest_gate_report = gate
+            .reports
+            .iter()
+            .rev()
+            .find(|report| report.origin != ReportOrigin::Package)
+            .cloned()
+            .ok_or(TaskError::GateReportChanged)?;
+        let effective_report = if requested_report.origin == ReportOrigin::Package {
+            latest_gate_report.id.clone()
+        } else {
+            gate_report.clone()
+        };
+        if effective_report != latest_gate_report.id {
+            return Err(TaskError::GateReportChanged);
+        }
+        if let Some(existing) = gate.verdict_for_gate_report(&effective_report).cloned() {
             transaction.commit()?;
             return Ok(GateJudgeOutcome {
                 verdict: existing,
                 duplicate: true,
                 released: Vec::new(),
             });
-        }
-        let latest_gate_report = gate.latest_report().ok_or(TaskError::GateReportChanged)?;
-        if &latest_gate_report.id != gate_report {
-            return Err(TaskError::GateReportChanged);
         }
         let need = gate.needs.first().ok_or(TaskError::GateReportChanged)?;
         let guarded_id = need.from.clone();
@@ -810,14 +830,21 @@ impl Store {
             .latest_report()
             .filter(|report| report.state == ReportState::Ready)
             .ok_or(TaskError::GateReportChanged)?;
+        // 用这份报告所属的 Attempt，而不是 latest（后面可能是没打开的 package 失败 Attempt）。
         let attempt = gate
-            .latest_attempt()
+            .runs
+            .iter()
+            .flat_map(|run| &run.attempts)
+            .find(|attempt| attempt.id == latest_gate_report.attempt_id)
             .cloned()
             .ok_or(TaskError::GateReportChanged)?;
+        // 重启恢复的 Attempt 可能没复制 handoffs；门开始时记录在 needs 里的 upstream
+        // handoff 是同一个候选，不能因此让用户已有的判定卡失效。
         let candidate_handoff = attempt
             .handoffs
             .first()
             .cloned()
+            .or_else(|| need.handoff.clone())
             .ok_or(TaskError::GateReportChanged)?;
         if candidate_handoff.report_id != candidate_report.id {
             return Err(TaskError::GateReportChanged);
@@ -825,7 +852,7 @@ impl Store {
         // 用户原话原样存；空白当没有。
         let note = note.filter(|note| !note.trim().is_empty());
         let verdict = GateVerdict {
-            gate_report: gate_report.clone(),
+            gate_report: effective_report,
             candidate: GateCandidate {
                 report_id: candidate_handoff.report_id.clone(),
                 requirement_version: candidate_handoff.requirement_version,

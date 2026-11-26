@@ -288,9 +288,13 @@ impl RootHost {
             return Ok(CardActResponse { decision: None });
         };
         if let Some(decision) = decision_of(&events, &proposal.call_id) {
-            return Ok(CardActResponse {
-                decision: Some(decision),
-            });
+            // 失败不是终态：动作可能只是因为当时的数据变了而失败；用户再点一次这张卡，
+            // 让动作按当前事实重新核对一次，不能永久锁死在一张旧卡上。
+            if decision.phase != session::CardDecisionPhase::Failed {
+                return Ok(CardActResponse {
+                    decision: Some(decision),
+                });
+            }
         }
         if is_replaced(&events, &proposal.call_id) {
             return Ok(CardActResponse { decision: None });
