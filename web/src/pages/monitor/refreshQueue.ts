@@ -1,4 +1,4 @@
-/** T091.1：同一任务的连续 TaskEvent 合并成一次刷新（首帧后 delay 兑现，后帧只更新 attempt）。 */
+/** 同一任务的连续 TaskEvent 合并成一次刷新（首帧后 delay 兑现，后帧只更新 attempt）。 */
 export interface RefreshQueue {
   push: (taskId: string, attemptId: number) => void;
   clear: () => void;

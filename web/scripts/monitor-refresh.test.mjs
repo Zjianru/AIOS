@@ -1,4 +1,4 @@
-// T091.1：TaskEvent 合并刷新队列（同任务多帧只跑一次，后帧更新 attempt；不同任务各一次）。
+// TaskEvent 合并刷新队列（同任务多帧只跑一次，后帧更新 attempt；不同任务各一次）。
 import assert from 'node:assert/strict';
 import { createRefreshQueue } from '../src/pages/monitor/refreshQueue.ts';
 
