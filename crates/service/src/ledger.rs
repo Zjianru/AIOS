@@ -53,6 +53,19 @@ pub(crate) struct LedgerView {
     pub history: Vec<LedgerHistoryNote>,
 }
 
+/// 账本里的「进展」只给下一轮一个可读摘要，不把整份报告塞进任务包。
+/// 报告全文在任务页/task_status；这里超长必须截断，否则一份正常长报告会被 6000 字上限误判成「任务太大」。
+const PROGRESS_SUMMARY_LIMIT: usize = 1200;
+
+fn truncate_chars(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_owned();
+    }
+    let mut truncated: String = text.chars().take(max).collect();
+    truncated.push_str("…（报告过长，全文看任务页）");
+    truncated
+}
+
 impl LedgerView {
     pub fn is_empty(&self) -> bool {
         self.constraints.is_empty()
@@ -82,7 +95,7 @@ impl LedgerView {
             lines.push(format!(
                 "进展：{} · {}",
                 report_state_word(progress.state),
-                progress.summary
+                truncate_chars(&progress.summary, PROGRESS_SUMMARY_LIMIT)
             ));
             if let Some(question) = &progress.question {
                 lines.push(format!("待答：{question}"));
@@ -457,6 +470,36 @@ mod ledger_tests {
         assert!(!text.contains("历史"));
         assert!(view.history.is_empty());
         let _ = VersionSource::UserAgreed;
+    }
+
+    #[test]
+    fn long_report_summary_is_truncated_before_the_package_cap() {
+        let (_directory, store) = open();
+        let task = store
+            .create_task_with_constraints(draft("长报告"), TaskPolicy::default(), vec![], T0)
+            .unwrap();
+        let attempt = store.begin_attempt(&task.id, T0 + 1).unwrap();
+        store
+            .record_report(
+                &task.id,
+                attempt,
+                NewReport {
+                    state: ReportState::Ready,
+                    origin: ReportOrigin::Agent,
+                    summary: "字".repeat(7000),
+                    question: None,
+                },
+                T0 + 2,
+            )
+            .unwrap();
+        let task = store.task(&task.id).unwrap().expect("任务还在");
+        let text = ledger_for(&store, &task).unwrap().section();
+        assert!(
+            text.chars().count() < 6000,
+            "长报告不应撑爆任务包账本：{} 字",
+            text.chars().count()
+        );
+        assert!(text.contains("报告过长，全文看任务页"), "{text}");
     }
 
     #[test]
