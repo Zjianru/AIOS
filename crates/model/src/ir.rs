@@ -186,7 +186,7 @@ pub enum ContentBlock {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         canvas: Option<CanvasSource>,
     },
-    /// T093：用户消息里的图片块（附件仓库里的原图；投给模型时按当前模型输入模态转 image 或占位行）。
+    /// 用户消息里的图片块（附件仓库里的原图；投给模型时按当前模型输入模态转 image 或占位行）。
     Image {
         #[serde(rename = "attachmentId")]
         attachment_id: String,

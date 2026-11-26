@@ -117,7 +117,7 @@ enum WireBlock {
     /// 历史里的一次工具加载：把带 `defer_loading` 的声明激活（DSH 的 tool_addition 块）。
     #[serde(rename = "tool_addition")]
     ToolAddition { tool: WireToolReference },
-    /// T093: user image (base64); omitted when the model cannot see images.
+    /// user image (base64); omitted when the model cannot see images.
     #[serde(rename = "image")]
     Image { source: WireImageSource },
 }
@@ -1293,7 +1293,7 @@ mod image_block_serialize_tests {
 
     #[test]
     fn image_capable_model_sends_base64_image() {
-        let path = std::env::temp_dir().join("aios-t093-image.png");
+        let path = std::env::temp_dir().join("aios-image.png");
         std::fs::write(&path, [0x89, b'P', b'N', b'G']).unwrap();
         let value = body(&config(true), vec![image(path.to_str().unwrap())]);
         let content = &value["messages"][0]["content"];
@@ -1306,7 +1306,7 @@ mod image_block_serialize_tests {
 
     #[test]
     fn image_blind_model_gets_one_placeholder_for_consecutive_images() {
-        let path = std::env::temp_dir().join("aios-t093-image-blind.png");
+        let path = std::env::temp_dir().join("aios-image-blind.png");
         std::fs::write(&path, [0x89, b'P', b'N', b'G']).unwrap();
         let value = body(
             &config(false),

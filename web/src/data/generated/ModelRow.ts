@@ -13,6 +13,6 @@ export type ModelRow = { id: string, name?: string | null, contextWindow?: numbe
  */
 priceInput?: number | null, priceOutput?: number | null, priceCacheRead?: number | null, priceCacheWrite?: number | null,
 /**
- * T093: user input modalities override (None = follow catalog; Some(vec) = override).
+ * user input modalities override (None = follow catalog; Some(vec) = override).
  */
 input?: Array<string> | null, };

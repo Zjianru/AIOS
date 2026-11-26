@@ -5,7 +5,7 @@
  */
 export type AttachmentGetResponse = { name: string, bytes: number,
 /**
- * T093：附件原类型（按扩展名兜底；旧数据没有）。
+ * 附件原类型（按扩展名兜底；旧数据没有）。
  */
 mime?: string | null,
 /**
@@ -13,6 +13,6 @@ mime?: string | null,
  */
 text: string | null,
 /**
- * T093：二进制 base64（图片预览/发送用；文字文件不回，避免重复）。
+ * 二进制 base64（图片预览/发送用；文字文件不回，避免重复）。
  */
 data?: string | null, };

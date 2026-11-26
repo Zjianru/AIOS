@@ -102,7 +102,7 @@ fn merge_live_drops_catalog_deprecated_and_keeps_unknown_ids() {
     assert_eq!(future.price_input, None, "目录没有的模型没有标价");
 }
 
-/// T093：目录快照保留 models.dev 的输入模态；MiniMax-M3.1-Flash 声明能看图。
+/// 目录快照保留 models.dev 的输入模态；MiniMax-M3.1-Flash 声明能看图。
 #[test]
 fn snapshot_keeps_models_dev_input_modalities() {
     let snapshot = deserialize_snapshot(snapshot_json());

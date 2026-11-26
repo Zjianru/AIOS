@@ -251,8 +251,12 @@ impl RootHost {
         let bytes = std::fs::read(&stored.path)
             .map_err(|error| ServiceError::AttachmentInvalid(format!("附件读不回来：{error}")))?;
         let mime = stored.mime.clone();
-        // 文字文件给全文；非文字给二进制 base64（图片预览/发送用），不给全文。
-        let text = String::from_utf8(bytes.clone()).ok();
+        // 文字文件给全文；非文字（含 NUL 的合法 UTF-8 二进制）只给二进制 base64。
+        let text = if tools::attachments::is_text(&bytes) {
+            String::from_utf8(bytes.clone()).ok()
+        } else {
+            None
+        };
         let data = if text.is_none() {
             Some(encode_base64(&bytes))
         } else {

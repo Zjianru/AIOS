@@ -714,7 +714,7 @@ async function readReady(page: Page): Promise<Record<string, unknown>> {
   );
 }
 
-/** 验收：ready 帧协议版本 34（T093 输入多模态/附件只增字段），旧的 root/context 字段照旧。 */
+/** 验收：ready 帧协议版本 34（输入多模态/附件只增字段），旧的 root/context 字段照旧。 */
 test('ready 帧：协议版本 34，旧的 root/context 字段不变', async ({ page }) => {
   const fixture = await startKernelFixture({ canvas: 'interactive' });
   try {

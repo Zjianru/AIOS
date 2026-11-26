@@ -20,6 +20,6 @@ priceCacheRead?: number | null, priceCacheWrite?: number | null, thinks: boolean
  */
 toolUpdate?: ToolUpdate | null,
 /**
- * T093: input modalities (models.dev modalities.input; empty = not declared).
+ * input modalities (models.dev modalities.input; empty = not declared).
  */
 input?: Array<string>, };

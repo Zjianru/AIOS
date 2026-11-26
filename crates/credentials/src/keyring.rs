@@ -113,7 +113,7 @@ pub struct ModelRow {
     pub price_cache_read: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub price_cache_write: Option<f64>,
-    /// T093: user input modalities override (None = follow catalog; Some(vec) = override).
+    /// user input modalities override (None = follow catalog; Some(vec) = override).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input: Option<Vec<String>>,
 }

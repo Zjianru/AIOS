@@ -1512,13 +1512,13 @@ pub struct AttachmentGetRequest {
 pub struct AttachmentGetResponse {
     pub name: String,
     pub bytes: u64,
-    /// T093：附件原类型（按扩展名兜底；旧数据没有）。
+    /// 附件原类型（按扩展名兜底；旧数据没有）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mime: Option<String>,
     /// 文字文件附全文；非文字为 None（旧数据兼容口径）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
-    /// T093：二进制 base64（图片预览/发送用；文字文件不回，避免重复）。
+    /// 二进制 base64（图片预览/发送用；文字文件不回，避免重复）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<String>,
 }

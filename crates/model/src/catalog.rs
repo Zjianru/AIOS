@@ -65,7 +65,7 @@ pub struct CatalogModel {
     /// models.dev 的 status；`deprecated` 表示厂商不再通过公开 API 提供这个模型。
     #[serde(default)]
     pub status: Option<String>,
-    /// models.dev 的 modalities（T093：保留输入模态）。
+    /// models.dev 的 modalities（保留输入模态）。
     #[serde(default)]
     pub modalities: Modalities,
 }
@@ -217,7 +217,7 @@ pub struct ModelInfo {
         skip_serializing_if = "Option::is_none"
     )]
     pub tool_update: Option<ToolUpdate>,
-    /// T093: input modalities (models.dev modalities.input; empty = not declared).
+    /// input modalities (models.dev modalities.input; empty = not declared).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub input: Vec<String>,
 }
