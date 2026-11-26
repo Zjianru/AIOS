@@ -112,13 +112,23 @@ test('T059 F2：上游结果默认折叠且限高，展开后卡内滚动，不�
   }
 });
 
-test('T059 F3：侧栏现在/Kind/工作/记忆四项，工作和现在可进入', async ({ page }) => {
+test('T059 F3：侧栏顺序 现在/Kind/工作/记忆/监控（项目组在工作后），工作和现在可进入', async ({ page }) => {
   test.setTimeout(120_000);
   const fixture = await startKernelFixture({});
   try {
     await page.goto(urlOf(fixture));
     const nav = page.locator('[data-kind="sidebar-content"] button');
+    // 3 个主项 + 项目组的新建（+） + 记忆 + 监控；空库时没有项目行。
     await expect(nav).toHaveCount(6);
+    const items = page.locator('[data-kind="sidebar-content"] button[data-nav]');
+    await expect(items).toHaveCount(5);
+    expect(await items.evaluateAll((els) => els.map((el) => el.getAttribute('data-nav')))).toEqual([
+      'now',
+      'kind',
+      'work',
+      'memory',
+      'monitor',
+    ]);
     await expect(nav.filter({ hasText: '现在' })).toHaveCount(1);
     await expect(nav.filter({ hasText: 'Kind' })).toHaveCount(1);
     await expect(nav.filter({ hasText: '工作' })).toHaveCount(1);

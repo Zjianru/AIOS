@@ -68,6 +68,7 @@ function Item({ item, active }: { item: NavItem; active: boolean }) {
       <SidebarMenuButton
         isActive={active}
         tooltip={item.label}
+        data-nav={item.id}
         onClick={() => go(item.route)}
         className={cn(
           'h-8 gap-2.5 rounded-btn px-2 text-3 text-ink-2 transition-colors',
