@@ -323,7 +323,11 @@ async fn send_appends_multi_markers_in_order_and_keeps_attachment_mime() {
     }];
     host.dispatch(Call::Send(send)).await.expect("send");
     let blocks = wait_user_blocks(&host, data.path()).await;
-    assert_eq!(blocks.len(), 6, "两张卡 + 两个画布 + 正文 + 文件：{blocks:?}");
+    assert_eq!(
+        blocks.len(),
+        6,
+        "两张卡 + 两个画布 + 正文 + 文件：{blocks:?}"
+    );
     match (&blocks[0], &blocks[1]) {
         (
             model::ContentBlock::ResultCard { task_id, .. },
@@ -337,11 +341,19 @@ async fn send_appends_multi_markers_in_order_and_keeps_attachment_mime() {
     }
     match (&blocks[2], &blocks[3]) {
         (
-            model::ContentBlock::Text { canvas: Some(left), .. },
-            model::ContentBlock::Text { canvas: Some(right), .. },
+            model::ContentBlock::Text {
+                canvas: Some(left), ..
+            },
+            model::ContentBlock::Text {
+                canvas: Some(right),
+                ..
+            },
         ) => {
             assert_eq!((left.id.as_str(), left.title.as_str()), ("cv-a", "画布甲"));
-            assert_eq!((right.id.as_str(), right.title.as_str()), ("cv-b", "画布乙"));
+            assert_eq!(
+                (right.id.as_str(), right.title.as_str()),
+                ("cv-b", "画布乙")
+            );
         }
         other => panic!("第三、四块应是画布标记：{other:?}"),
     }
@@ -349,7 +361,11 @@ async fn send_appends_multi_markers_in_order_and_keeps_attachment_mime() {
     match &blocks[5] {
         model::ContentBlock::File { mime, name, .. } => {
             assert_eq!(name, "pic.png");
-            assert_eq!(mime.as_deref(), Some("image/png"), "附件原 MIME 要写进文件块");
+            assert_eq!(
+                mime.as_deref(),
+                Some("image/png"),
+                "附件原 MIME 要写进文件块"
+            );
         }
         other => panic!("最后一块应是文件：{other:?}"),
     }
