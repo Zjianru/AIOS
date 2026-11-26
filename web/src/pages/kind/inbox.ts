@@ -20,7 +20,7 @@ interface InboxBlock {
   type?: string;
   text?: string;
   paste?: boolean;
-  canvas?: unknown;
+  canvas?: { id?: unknown; title?: unknown };
   attachmentId?: string;
   name?: string;
   bytes?: number;
@@ -36,6 +36,8 @@ export interface QueueRestore {
   pastes: string[];
   attachments: { id: string; name: string; bytes: number }[];
   resultCard?: { taskId: string; title: string; version: number };
+  /** 画布按钮放进来的那一句带画布身份；放回时恢复「来自画布」标记，不把自动文字再拼一遍。 */
+  canvas?: { id: string; title: string };
 }
 
 /** 两个待领队列的投影（只留折叠需要的消息字段）。 */
@@ -100,17 +102,31 @@ function isTypedByUser(message: InboxMessage): boolean {
   );
 }
 
-/** 被删消息 → 放回输入框的内容；没有可放回的东西时返回 null。 */
+/**
+ * 被删消息 → 放回输入框的内容；没有可放回的东西时返回 null。
+ *
+ * 只还原用户发送时能拼出的块：text（含 paste）、file、result-card、带 canvas 的 text。
+ * 其余类型（reasoning/tool-call 等）不会出现在用户收件箱里；真遇到就忽略，不猜、不丢正文。
+ */
 function restoreOf(removed: InboxMessage[], seq: number): QueueRestore | null {
   const text: string[] = [];
   const pastes: string[] = [];
   const attachments: QueueRestore['attachments'] = [];
   let resultCard: QueueRestore['resultCard'];
+  let canvas: QueueRestore['canvas'];
   for (const message of removed) {
     if (!isTypedByUser(message)) continue;
     for (const block of message.content ?? []) {
       if (block.type === 'text' && typeof block.text === 'string') {
-        if (block.paste) pastes.push(block.text);
+        // 画布块：正文是发送时自动拼的「（来自画布「标题」）」；放回时恢复标记（Composer 只留一个），
+        // 不把它当普通文字再拼一遍。
+        if (
+          block.canvas &&
+          typeof block.canvas.id === 'string' &&
+          typeof block.canvas.title === 'string'
+        ) {
+          canvas = { id: block.canvas.id, title: block.canvas.title };
+        } else if (block.paste) pastes.push(block.text);
         else text.push(block.text);
       } else if (
         block.type === 'file' &&
@@ -129,12 +145,21 @@ function restoreOf(removed: InboxMessage[], seq: number): QueueRestore | null {
       }
     }
   }
-  if (text.length === 0 && pastes.length === 0 && attachments.length === 0 && !resultCard) return null;
+  if (
+    text.length === 0 &&
+    pastes.length === 0 &&
+    attachments.length === 0 &&
+    !resultCard &&
+    !canvas
+  ) {
+    return null;
+  }
   return {
     seq,
     text: text.join(String.fromCharCode(10)),
     pastes,
     attachments,
     ...(resultCard ? { resultCard } : {}),
+    ...(canvas ? { canvas } : {}),
   };
 }

@@ -381,6 +381,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       (found, restore) => restore.resultCard ?? found,
       undefined,
     );
+    const canvas = pending.reduce<QueueRestore['canvas']>(
+      (found, restore) => restore.canvas ?? found,
+      undefined,
+    );
     touchedRef.current = true;
     changedDuringSendRef.current = true;
     if (restoredText) {
@@ -397,6 +401,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       );
     }
     if (card) setResultCard(card);
+    if (canvas) setFromCanvas(canvas);
     requestAnimationFrame(() => {
       resize();
       inputRef.current?.focus();

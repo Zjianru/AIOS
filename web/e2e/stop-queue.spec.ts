@@ -148,6 +148,24 @@ test('停止：粘贴和附件放回成卡', async ({ page, request }) => {
   await expect(page.getByText('排队附件.txt')).toBeVisible();
 });
 
+test('停止：画布块放回输入框，显示「来自画布」标记', async ({ page, request }) => {
+  await sendSlowTurn(page);
+  const response = await apiPost(request, fixture, {
+    method: 'send',
+    requestId: 't090-canvas-' + String(Date.now()) + '-' + String(Math.random()).slice(2),
+    content: '画布那句',
+    delivery: 'follow-up',
+    canvas: { id: 'cv-t090', title: '测试画布' },
+  });
+  expect(response.ok()).toBeTruthy();
+  await waitQueued(request, '测试画布');
+  await stopTurn(page);
+
+  await expect(page.locator('[data-kind="from-canvas"]')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('[data-kind="from-canvas"]')).toContainText('测试画布');
+  await expect(input(page)).toHaveValue('画布那句', { timeout: 15_000 });
+});
+
 test('停止：页面关着时取消，重开页面把字补回输入框', async ({ page, request }) => {
   await sendSlowTurn(page);
   await queueMessage(page, '页面关着时排的');
