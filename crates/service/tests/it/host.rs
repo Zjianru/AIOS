@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use agent::{Agent, AgentConfig};
-use model::{DeepSeek, DeepSeekConfig, Effort};
+use model::{ContentBlock, DeepSeek, DeepSeekConfig, Effort, UserMessage};
 use serde_json::json;
 use service::{
     AnswerRequest, CancelRequest, CompactRequest, DeliveryMode, DismissQuestionsRequest,
@@ -386,6 +386,161 @@ async fn dismiss_pending_questions_returns_ask_aborted_and_turn_continues() {
         matches!(&late, Err(service::ServiceError::AnswerRejected(id)) if id == "q1"),
         "撤销后答案路径不串：服务回答要被拒：{late:?}"
     );
+}
+
+/// 问题卡等回答时用户直接发送一句话 = 回答整批：不进 inbox、没有 user/message，
+/// 工具结果写「用户没有选，直接说了：…」，同一轮继续、本轮 completed。
+#[tokio::test]
+async fn typing_while_a_question_waits_answers_the_batch_and_continues_the_turn() {
+    let server = MockServer::start().await;
+    mount(&server, vec![sse(ASK_TWO_SSE), sse(FINAL_TEXT_SSE)], 2).await;
+    let (agent, data_dir, id) = setup(&server).await;
+    let service = ServiceHost::new(agent.clone());
+    let mut events = service.subscribe_events();
+    let started = service
+        .send(send_request("req-typed", "要问两个问题"))
+        .await;
+    assert!(started.is_ok(), "send 应成功：{started:?}");
+    wait_for(&mut events, "question/asked", 2).await;
+
+    let typed = service
+        .send(send_request("req-typed-reply", "我直接说一句"))
+        .await;
+    assert!(typed.is_ok(), "直接回复应受理：{typed:?}");
+    assert!(typed.unwrap().accepted);
+    agent.idle().await;
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2, "直接回复后同一轮继续发第二次请求");
+    let second = String::from_utf8(requests[1].body.clone()).unwrap();
+    assert!(
+        second.contains("用户没有选，直接说了：我直接说一句"),
+        "工具结果带用户原话：{second}"
+    );
+    assert!(
+        !second.contains("ask_user_question was aborted"),
+        "不是 ASK_ABORTED 错误：{second}"
+    );
+
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
+    let cancelled = store
+        .events()
+        .iter()
+        .filter(|event| matches!(event.kind, session::EventKind::QuestionCancelled { .. }))
+        .count();
+    assert_eq!(cancelled, 2, "两个问题各写 question/cancelled");
+    assert!(
+        !store
+            .events()
+            .iter()
+            .any(|event| matches!(event.kind, session::EventKind::QuestionAnswered { .. })),
+        "直接回复不写 question/answered"
+    );
+    assert!(
+        !store.events().iter().any(|event| matches!(
+            &event.kind,
+            session::EventKind::UserMessage { message, .. }
+                if message.content.iter().any(|block| block.as_text() == Some("我直接说一句"))
+        )),
+        "直接回复不进 user/message"
+    );
+    assert_eq!(
+        turn_ends(data_dir.path(), &id),
+        vec![session::TurnEndReason::Completed],
+        "本轮 completed、不是 aborted"
+    );
+    let quiet = service.status(StatusRequest {}).await.unwrap();
+    assert_eq!(quiet.pending_questions, 0, "回答后没有待答问题");
+}
+
+/// 带粘贴/附件的发送也当回答——工具结果写 Kind 平时看到的那条消息：
+/// 每段粘贴原文、附件名字/字节数/只读副本路径、结果卡一行；不进 inbox、不产生 user/message，
+/// 同一轮继续、completed。
+#[tokio::test]
+async fn typing_with_pastes_and_attachments_while_a_question_waits_answers_with_the_message() {
+    let server = MockServer::start().await;
+    mount(&server, vec![sse(ASK_TWO_SSE), sse(FINAL_TEXT_SSE)], 2).await;
+    let (agent, data_dir, id) = setup(&server).await;
+    let service = ServiceHost::new(agent.clone());
+    let mut events = service.subscribe_events();
+    let started = service
+        .send(send_request("req-attach", "要问两个问题"))
+        .await;
+    assert!(started.is_ok(), "send 应成功：{started:?}");
+    wait_for(&mut events, "question/asked", 2).await;
+
+    let message = UserMessage::new(vec![
+        ContentBlock::text("我直接说一句"),
+        ContentBlock::paste("粘贴第一段"),
+        ContentBlock::paste("粘贴第二段"),
+        ContentBlock::File {
+            attachment_id: "att-legacy-1".to_owned(),
+            name: "排队附件.txt".to_owned(),
+            bytes: 42,
+            path: Some("/tmp/legacy/attachments/att-legacy-1.txt".to_owned()),
+        },
+        ContentBlock::from_result_card("task-legacy", "结果卡标题", 2),
+    ]);
+    let typed = service
+        .send_message("req-attach-reply", message, DeliveryMode::FollowUp)
+        .await;
+    assert!(typed.is_ok(), "带粘贴/附件的直接回复应受理：{typed:?}");
+    assert!(typed.unwrap().accepted);
+    agent.idle().await;
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2, "直接回复后同一轮继续发第二次请求");
+    let second = String::from_utf8(requests[1].body.clone()).unwrap();
+    assert!(
+        second.contains("用户没有选，直接说了："),
+        "工具结果开头是直接回复文案：{second}"
+    );
+    for expected in [
+        "我直接说一句",
+        "粘贴第一段",
+        "粘贴第二段",
+        "附件：排队附件.txt（42 字节，位置 /tmp/legacy/attachments/att-legacy-1.txt）",
+        "结果卡：结果卡标题（任务 task-legacy，第 2 版）",
+    ] {
+        assert!(second.contains(expected), "工具结果缺「{expected}」：{second}");
+    }
+    assert!(
+        !second.contains("ask_user_question was aborted"),
+        "不是 ASK_ABORTED 错误：{second}"
+    );
+
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
+    // 不进 user/message。
+    assert!(
+        !store.events().iter().any(|event| matches!(
+            &event.kind,
+            session::EventKind::UserMessage { message, .. }
+                if message.content.iter().any(|block| matches!(
+                    block.as_text(),
+                    Some("我直接说一句") | Some("粘贴第一段")
+                ))
+        )),
+        "直接回复不进 user/message"
+    );
+    // 不进 inbox：没有任何 spliced 把这条塞进队列。
+    assert!(
+        !store.events().iter().any(|event| matches!(
+            &event.kind,
+            session::EventKind::InboxSpliced { inserted, .. }
+                if inserted.iter().any(|message| message
+                    .content
+                    .iter()
+                    .any(|block| block.as_text() == Some("粘贴第一段")))
+        )),
+        "直接回复不进 inbox"
+    );
+    assert_eq!(
+        turn_ends(data_dir.path(), &id),
+        vec![session::TurnEndReason::Completed],
+        "本轮 completed、不是 aborted"
+    );
+    let quiet = service.status(StatusRequest {}).await.unwrap();
+    assert_eq!(quiet.pending_questions, 0, "回答后没有待答问题");
 }
 
 /// 没有待答问题时关掉不答：方法成功、dismissed=false（可辨结果，不报错）。

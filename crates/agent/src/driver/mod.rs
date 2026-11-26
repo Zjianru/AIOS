@@ -714,13 +714,15 @@ impl Inner {
         Ok(claimed)
     }
 
-    /// 取消：清掉这一轮还没领的 next-step，但保留 next-turn 的用户消息。
-    /// 用户已经手打并进队列的字不能因为停止/关服务被吞；next-turn 会留在日志里，
-    /// 重启后由 claim_pending 接着处理。
+    /// 取消：照 DSH clear 清空两侧还没领的队列（先 next-step、再 next-turn），
+    /// 删除都落日志（removedCount + outcome=canceled）。页面读这条 splice 把被清的
+    /// 字放回输入框；「保留 next-turn」的临时语义已撤回。
     pub(crate) async fn cancel(&self) -> Result<(), AgentError> {
         {
             let _gate = self.inbox_mutations.lock().await;
             self.inbox_splice(InboxTarget::NextStep, 0, i64::MAX, Vec::new(), true)
+                .await?;
+            self.inbox_splice(InboxTarget::NextTurn, 0, i64::MAX, Vec::new(), true)
                 .await?;
         }
         self.cancel_with(AbortCause::User);
@@ -861,6 +863,11 @@ impl Inner {
     /// 当前待答问题（含重启恢复）。
     pub(crate) fn pending_questions(&self) -> Vec<crate::Question> {
         self.capabilities.pending_questions()
+    }
+
+    /// 问题卡等待时用户直接发送 = 回答整批；返回是否确有等待中的批。
+    pub(crate) fn reply_questions_direct(&self, text: String) -> bool {
+        self.capabilities.reply_questions_direct(text)
     }
 
     /// jobs_capability 安装结算回调用（任务注册表在 tools 层）。

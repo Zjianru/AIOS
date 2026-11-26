@@ -4,6 +4,7 @@ import type { AskAnswer, Frame } from '@/data/service';
 import type { GateDetail, GateState } from './KernelGate';
 import type { CanvasTrack, TurnViewData } from './turnViews';
 import type { TaskReadHeader } from '@/data/generated/TaskReadHeader';
+import type { QueueRestore } from './inbox';
 
 /** agent 帧是 Frame 的一个分支（线上帧类型由 Rust 生成）。 */
 export type AgentFrame = Extract<Frame, { type: 'agent' }>;
@@ -139,6 +140,10 @@ export interface KindState {
     conclusion: 'pass' | 'needs_fix',
     note?: string,
   ) => Promise<void>;
+  /** 页面从日志折叠出的、被停止清掉的排队消息（Composer 按 seq 最多放回一次）。 */
+  queueRestores: QueueRestore[];
+  /** 往前翻到日志开头还有被清消息对不上（输入框上方提示，不静默）。 */
+  restoreMissing: boolean;
  /** ：点「要求修改」把结果卡放进 Kind 输入框（Composer 消费后清）。 */
   pendingResultCard: { taskId: string; title: string; version: number } | null;
   modifyTaskResult: (card: { taskId: string; title: string; version: number }) => void;

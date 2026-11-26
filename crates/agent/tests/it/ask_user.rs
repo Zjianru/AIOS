@@ -402,6 +402,76 @@ async fn two_questions_answered_as_dsh_batch_option_and_custom() {
     );
 }
 
+/// 问题卡在等时用户直接发送一句话 = 回答整批：未答问题写 question/cancelled、
+/// 不写 question/answered，工具结果「用户没有选，直接说了：…」，同一轮继续、completed。
+#[tokio::test]
+async fn typing_while_waiting_answers_the_batch_and_continues() {
+    let server = MockServer::start().await;
+    mount(
+        &server,
+        vec![ask_call_multi(&["q1", "q2"]), FINAL_TEXT_SSE.to_owned()],
+    )
+    .await;
+    let (agent, data_dir, id) = setup(&server).await;
+    let mut events = agent.subscribe();
+    agent
+        .send(UserMessage::text("go"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    let AgentEvent::QuestionAsked { .. } = next_question(&mut events).await else {
+        unreachable!()
+    };
+    assert!(
+        agent.reply_questions_with_text("我直接说一句".to_owned()),
+        "有等待中的批时要收下直接回复"
+    );
+    wait_idle(&agent, 20).await;
+
+    let bodies = bodies(&server).await;
+    assert_eq!(bodies.len(), 2, "直接回复后同一轮继续");
+    let second = bodies[1].clone();
+    assert!(
+        second.contains("用户没有选，直接说了：我直接说一句"),
+        "工具结果带用户原话：{second}"
+    );
+    assert!(
+        !second.contains("ask_user_question was aborted"),
+        "不是 ASK_ABORTED 错误：{second}"
+    );
+
+    let events = logged_events(data_dir.path(), &id);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event.kind, session::EventKind::QuestionCancelled { .. }))
+            .count(),
+        2,
+        "两个问题各写 question/cancelled"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event.kind, session::EventKind::QuestionAnswered { .. })),
+        "直接回复不写 question/answered"
+    );
+    assert!(
+        !events.iter().any(|event| matches!(
+            &event.kind,
+            session::EventKind::UserMessage { message, .. }
+                if message.content.iter().any(|block| block.as_text() == Some("我直接说一句"))
+        )),
+        "直接回复不进 user/message"
+    );
+    let ended = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            session::EventKind::TurnEnd { reason, .. } => Some(reason.clone()),
+            _ => None,
+        })
+        .expect("应有 turn/end");
+    assert_eq!(ended, session::TurnEndReason::Completed, "本轮 completed");
+}
+
 #[tokio::test]
 async fn dismiss_question_returns_ask_aborted_and_turn_continues() {
     let server = MockServer::start().await;

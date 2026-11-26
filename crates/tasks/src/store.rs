@@ -791,9 +791,9 @@ impl Store {
         if gate.is_program_gate() {
             return Err(TaskError::ProgramGateCannotBeJudgedByUser);
         }
-        // 任务包错误（Package）不是 ThinAgent 交出的候选；它不能把上一份 ready 报告顶掉、
-        // 让用户刚点下的判定卡过期。用户判的是最近一份非 Package 的门报告；旧卡若钉的是
-        // 这份 Package 错误，按最近一份真实候选记录执行。
+        // 任务包错误（Package）不是 ThinAgent 交出的候选：找「最近一份报告」时要跳过它，
+        // 但卡钉的必须是最近一份真实（非 Package）门报告。钉 Package 报告就回「已经变了」、
+        // 不记判定——不能悄悄换成别的报告再记（D118：卡上是哪一版，判的就是哪一版）。
         let requested_report = gate
             .reports
             .iter()
@@ -807,15 +807,12 @@ impl Store {
             .find(|report| report.origin != ReportOrigin::Package)
             .cloned()
             .ok_or(TaskError::GateReportChanged)?;
-        let effective_report = if requested_report.origin == ReportOrigin::Package {
-            latest_gate_report.id.clone()
-        } else {
-            gate_report.clone()
-        };
-        if effective_report != latest_gate_report.id {
+        if requested_report.origin == ReportOrigin::Package
+            || gate_report != &latest_gate_report.id
+        {
             return Err(TaskError::GateReportChanged);
         }
-        if let Some(existing) = gate.verdict_for_gate_report(&effective_report).cloned() {
+        if let Some(existing) = gate.verdict_for_gate_report(gate_report).cloned() {
             transaction.commit()?;
             return Ok(GateJudgeOutcome {
                 verdict: existing,
@@ -852,7 +849,7 @@ impl Store {
         // 用户原话原样存；空白当没有。
         let note = note.filter(|note| !note.trim().is_empty());
         let verdict = GateVerdict {
-            gate_report: effective_report,
+            gate_report: gate_report.clone(),
             candidate: GateCandidate {
                 report_id: candidate_handoff.report_id.clone(),
                 requirement_version: candidate_handoff.requirement_version,

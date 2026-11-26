@@ -37,6 +37,8 @@ export type QuestionView =
   | { status: 'pending'; batchId: string; questions: AskQuestion[] }
   | { status: 'answered'; batchId: string; questions: AskQuestion[]; answers: AskAnswer[] }
   | { status: 'dismissed'; batchId: string; questions: AskQuestion[] }
+  /** 问题卡等回答时用户直接发送，卡收成「你直接回复了」。 */
+  | { status: 'replied'; batchId: string; questions: AskQuestion[] }
   | { status: 'void'; batchId: string; questions: AskQuestion[] };
 
 

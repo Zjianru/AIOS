@@ -17,6 +17,7 @@ import { FileText, Quote } from 'lucide-react';
 import { toast } from 'sonner';
 import { useKindStore } from '../kindStore';
 import { fileMentions } from '../atGrammar';
+import type { QueueRestore } from '../inbox';
 import { attachmentGet, attachmentPut, fileReferences } from '@/data/service';
 import type { FileReferenceEntry, SendAttachmentRef } from '@/data/service';
 import { cn } from '@/lib/utils';
@@ -64,6 +65,8 @@ interface ComposerProps {
   draftKey?: string;
   /** T028.5：占位文字（任务对话在跑/没在跑时不同）。 */
   placeholder?: string;
+  /** 从日志恢复的排队消息（被停止清掉的那些）；每条 seq 最多放回一次。 */
+  queueRestores?: QueueRestore[];
 }
 
 /** 本地记录文件的 MIME（发送时只带 id/name/bytes；预览用）。 */
@@ -117,7 +120,7 @@ function quotedLines(quote: string): string {
 }
 
 export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer(
-  { offline, onSend, onCanSendChange, children, draftKey, placeholder },
+  { offline, onSend, onCanSendChange, children, draftKey, placeholder, queueRestores = [] },
   ref,
 ) {
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -152,6 +155,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const draftLoadedRef = useRef<string | null>(null);
   const touchedRef = useRef(false);
   const changedDuringSendRef = useRef(false);
+  /** 已经放回过的 canceled splice seq；跟草稿一起存，刷新不再重复放回。 */
+  const restoredSplicesRef = useRef<number[]>([]);
 
   const canSend = text.trim().length > 0 || quotes.length > 0 || pastes.length > 0 || attachments.length > 0;
 
@@ -287,6 +292,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         attachments?: unknown;
         canvas?: unknown;
         resultCard?: unknown;
+        restoredSplices?: unknown;
       };
       if (typeof draft.text === 'string') setText(draft.text);
       const fromCanvas = draft.canvas as { id?: unknown; title?: unknown } | null | undefined;
@@ -324,6 +330,11 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           .map((item) => ({ ...item, mime: item.mime ?? 'text/plain' }));
         setAttachments(files);
       }
+      if (Array.isArray(draft.restoredSplices)) {
+        restoredSplicesRef.current = draft.restoredSplices.filter(
+          (item): item is number => typeof item === 'number',
+        );
+      }
     } catch {
       // 读不出或格式不对：当空草稿，不打扰用户。
     }
@@ -339,6 +350,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       attachments: attachments.map(({ id, name, bytes, mime }) => ({ id, name, bytes, mime })),
       canvas: fromCanvas,
       resultCard,
+      restoredSplices: restoredSplicesRef.current,
     };
     try {
       localStorage.setItem('aios.kind.draft.' + draftScope, JSON.stringify(draft));
@@ -346,6 +358,55 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       // 存不下（隐私模式）就算了。
     }
   }, [attachments, draftScope, fromCanvas, pastes, quotes, resultCard, text]);
+
+  // 停止时内核照 DSH clear 清掉排队消息；把 canceled splice 里被删的、
+  // 页面从日志折叠回来的用户消息放回输入框。每条 seq 最多放回一次：放回过的 seq 跟草稿
+  // 一起存，刷新不会把用户删掉的字又塞回来；打开页面时只补还没放回过的（页面没开着时按的停止）。
+  useEffect(() => {
+    if (!draftScope || draftLoadedRef.current !== draftScope) return;
+    const pending = queueRestores
+      .filter((restore) => !restoredSplicesRef.current.includes(restore.seq))
+      .sort((left, right) => left.seq - right.seq);
+    if (pending.length === 0) return;
+    restoredSplicesRef.current = restoredSplicesRef.current.concat(
+      pending.map((restore) => restore.seq),
+    );
+    const restoredText = pending
+      .map((restore) => restore.text)
+      .filter((item) => item.length > 0)
+      .join(String.fromCharCode(10));
+    const pastes = pending.flatMap((restore) => restore.pastes);
+    const attachments = pending.flatMap((restore) => restore.attachments);
+    const card = pending.reduce<QueueRestore['resultCard']>(
+      (found, restore) => restore.resultCard ?? found,
+      undefined,
+    );
+    const canvas = pending.reduce<QueueRestore['canvas']>(
+      (found, restore) => restore.canvas ?? found,
+      undefined,
+    );
+    touchedRef.current = true;
+    changedDuringSendRef.current = true;
+    if (restoredText) {
+      setText((previous) =>
+        previous.trim()
+          ? previous.replace(/\s+$/, '') + String.fromCharCode(10) + restoredText
+          : restoredText,
+      );
+    }
+    if (pastes.length > 0) setPastes((previous) => previous.concat(pastes));
+    if (attachments.length > 0) {
+      setAttachments((previous) =>
+        previous.concat(attachments.map((item) => ({ ...item, mime: 'text/plain' }))),
+      );
+    }
+    if (card) setResultCard(card);
+    if (canvas) setFromCanvas(canvas);
+    requestAnimationFrame(() => {
+      resize();
+      inputRef.current?.focus();
+    });
+  }, [draftScope, queueRestores, resize]);
 
   const pruneAtMenu = useCallback((value: string, caret: number) => {
     const before = value.slice(0, caret);
@@ -420,7 +481,11 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   }, []);
 
   const submit = useCallback(async () => {
-    if (offline) return;
+    if (offline) {
+      // 断线时不静默丢字——草稿留在输入框，连上后再发。
+      toast('没连上内核，字还在，连上后再发');
+      return;
+    }
     // G3：引用卡在发送时才按行变成 `> `，排在打的字前面（气泡里画成引用块）。
     const quoted = quotes.map(quotedLines).join(String.fromCharCode(10) + String.fromCharCode(10));
     const value = [quoted, text.trim()]
