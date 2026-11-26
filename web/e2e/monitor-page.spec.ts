@@ -410,94 +410,71 @@ test('监控照原型：五卡、项目标签、日柱叠色、两环、排行�
   test.setTimeout(180_000);
   const fixture = await startKernelFixture({});
   try {
-    const created = await apiPost(request, fixture, {
-      method: 'project_create',
-      name: '项目甲',
-      goal: '看监控',
-    });
-    const body = (await created.json()) as { project: { id: string } };
-    const projectId = body.project.id;
+    const createdA = await apiPost(request, fixture, { method: 'project_create', name: '项目甲', goal: '看监控' });
+    const projectA = ((await createdA.json()) as { project: { id: string } }).project.id;
+    const createdB = await apiPost(request, fixture, { method: 'project_create', name: '项目乙', goal: '看监控' });
+    const projectB = ((await createdB.json()) as { project: { id: string } }).project.id;
     const now = Date.now();
+    const dayOf = (offset: number) => new Date(Date.now() - offset * 86_400_000).toLocaleDateString('sv-SE');
+    const today = dayOf(0);
     const task = {
-      taskId: 'task-1',
-      title: '任务一',
-      state: 'running',
-      model: 'deepseek-flash',
-      projectId,
-      attemptId: 1,
-      running: true,
-      startedAt: now - 60_000,
-      requests: 2,
-      inputTokens: 1_000,
-      outputTokens: 100,
-      costUsd: 1.5,
-      unpriced: false,
-      toolCalls: 1,
-      contextUsed: 1_000,
-      contextWindow: 100_000,
+      taskId: 'task-1', title: '任务一', state: 'running', model: 'deepseek-flash', projectId: projectA,
+      attemptId: 1, running: true, startedAt: now - 60_000, requests: 2, inputTokens: 1_000, outputTokens: 100,
+      costUsd: 1.5, unpriced: false, toolCalls: 1, contextUsed: 1_000, contextWindow: 100_000,
     };
+    const day = (offset: number, groups: unknown[]) => ({
+      day: dayOf(offset), costUsd: 2, unpriced: 0, inputTokens: 1_000, outputTokens: 100,
+      requests: 2, toolCalls: 1, commandCalls: 1, groups,
+    });
     const snapshot = {
-      range: 'today',
-      timezone: 'UTC',
-      generatedAt: now,
+      range: 'today', timezone: 'UTC', generatedAt: now,
       days: [
-        {
-          day: new Date().toLocaleDateString('sv-SE'),
-          costUsd: 2,
-          unpriced: 0,
-          inputTokens: 1_000,
-          outputTokens: 100,
-          requests: 2,
-          toolCalls: 1,
-          commandCalls: 1,
-          groups: [
-            { projectId, label: '项目甲', costUsd: 1.5, unpriced: 0 },
-            { label: 'Kind 对话', costUsd: 0.5, unpriced: 0 },
-          ],
-        },
-        {
-          day: new Date(Date.now() - 86_400_000).toLocaleDateString('sv-SE'),
-          costUsd: 1,
-          unpriced: 0,
-          inputTokens: 0,
-          outputTokens: 0,
-          requests: 1,
-          toolCalls: 0,
-          commandCalls: 0,
-          groups: [{ projectId, label: '项目甲', costUsd: 1, unpriced: 0 }],
-        },
+        day(0, [
+          { projectId: projectA, label: '项目甲', costUsd: 1.5, unpriced: 0 },
+          { label: 'Kind 对话', costUsd: 0.5, unpriced: 0 },
+        ]),
+        day(1, [{ projectId: projectA, label: '项目甲', costUsd: 1, unpriced: 0 }]),
       ],
-      tasks: [task],
-      projects: [],
+      tasks: [task], projects: [],
       models: [
-        { key: 'deepseek-flash', label: 'deepseek-flash', projectId, requests: 2, inputTokens: 1_000, outputTokens: 100, cacheReadTokens: 500, cacheWriteTokens: 0, costUsd: 1.5, unpriced: false },
+        { key: 'deepseek-flash', label: 'deepseek-flash', projectId: projectA, requests: 2, inputTokens: 1_000, outputTokens: 100, cacheReadTokens: 500, cacheWriteTokens: 0, costUsd: 1.5, unpriced: false },
+        { key: 'deepseek-pro', label: 'deepseek-pro', projectId: projectB, requests: 3, inputTokens: 300, outputTokens: 30, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.5, unpriced: false },
       ],
-      tools: [{ key: 'read', label: 'read', projectId, requests: 1, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: null, unpriced: false }],
-      commands: [{ key: 'ls', label: 'ls', projectId, requests: 1, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: null, unpriced: false }],
+      tools: [{ key: 'read', label: 'read', projectId: projectA, requests: 1, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: null, unpriced: false }],
+      commands: [{ key: 'ls', label: 'ls', projectId: projectA, requests: 1, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: null, unpriced: false }],
       rings: { costUsd: 2, unpriced: false, busyMs: 120_000, requestMs: 90_000, toolMs: 20_000, commandMs: 10_000, tokens: 1_100 },
-      anomalies: [],
-      running: { seats: 2, running: 1, queue: 0, anomalous: 0, tasks: [task] },
-      queue: [],
+      anomalies: [], running: { seats: 2, running: 1, queue: 0, anomalous: 0, tasks: [task] }, queue: [],
+    };
+    // 「今天」要显示整月柱：month 快照给 8 天，today 只给 2 天，证明页面取的是 month 那份。
+    const monthSnapshot = {
+      ...snapshot,
+      range: 'month',
+      days: Array.from({ length: 8 }, (_, index) => day(index, [{ projectId: projectA, label: '项目甲', costUsd: 0.5, unpriced: 0 }])),
     };
     const detail = {
-      task: { taskId: 'task-1', title: '任务一', state: 'running', model: 'deepseek-flash', projectId, running: true },
+      task: { taskId: 'task-1', title: '任务一', state: 'running', model: 'deepseek-flash', projectId: projectA, running: true },
       attempts: [{ attemptId: 1, startedAt: now - 60_000, requests: 2, inputTokens: 1_000, outputTokens: 100, costUsd: 1.5, unpriced: false }],
       contextParts: { fixedBlock: 10, toolDefinitions: 20, taskBookMessages: 30, modelReplies: 1_234, toolResults: 40 },
-      todo: [{ content: '做一半', status: 'in_progress' }],
-      events: [],
+      todo: [{ content: '做一半', status: 'in_progress' }], events: [],
     };
+    let monthCalls = 0;
     await page.route('**/api', async (route) => {
-      let method = '';
+      let body: { method?: string; range?: string } = {};
       try {
-        method = (route.request().postDataJSON() as { method?: string }).method ?? '';
+        body = route.request().postDataJSON() as { method?: string; range?: string };
       } catch {
         // 非 JSON 请求原样放行。
       }
-      if (method === 'monitor-snapshot') {
-        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(snapshot) });
+      if (body.method === 'monitor-snapshot') {
+        if (body.range === 'month') {
+          monthCalls += 1;
+          await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(monthSnapshot) });
+        } else {
+          await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(snapshot) });
+        }
         return;
       }
-      if (method === 'monitor-task') {
+      if (body.method === 'monitor-task') {
         await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(detail) });
         return;
       }
@@ -506,48 +483,57 @@ test('监控照原型：五卡、项目标签、日柱叠色、两环、排行�
     await page.goto(urlOf(fixture, '#monitor'));
     await expect(page.locator('[data-page="monitor"]')).toBeVisible({ timeout: 30_000 });
 
-    // 顶上五张卡。
+    // 顶上五张卡；花费卡副标写 Kind 对话自己的数，不当全站合计。
     const kpis = page.locator('[data-kind="kpis"] [data-kind="kpi"]');
     await expect(kpis).toHaveCount(5);
     for (const label of ['花费', 'Token', '缓存命中', '模型请求', '在忙']) {
       await expect(kpis.filter({ hasText: label })).toHaveCount(1);
     }
-    await expect(page.locator('[data-kind="kpi"]').filter({ hasText: '缓存命中' })).toContainText('50%');
-    await expect(page.locator('[data-kind="kpi"]').filter({ hasText: '在忙' })).toContainText('02:00');
+    const spendKpi = kpis.filter({ hasText: '花费' });
+    await expect(spendKpi).toContainText('其中 Kind 对话 $0.500');
+    await expect(kpis.filter({ hasText: '缓存命中' })).toContainText('38%');
+    await expect(kpis.filter({ hasText: '在忙' })).toContainText('02:00');
+    await expect(page.locator('[data-kind="kind-card-cost"]')).toHaveText('$0.500');
 
-    // 项目筛选是一排标签。
+    // 项目筛选是一排标签；「在跑」页签带数。
     await expect(page.locator('[data-kind="monitor-project-tag"]').filter({ hasText: '全部项目' })).toBeVisible();
     await expect(page.locator('[data-kind="monitor-project-tag"]').filter({ hasText: '项目甲' })).toBeVisible();
+    await expect(page.locator('[data-tab-key="live"]')).toContainText('1');
 
-    // 日柱按项目叠色（项目甲 + Kind），今天也画整月。
-    await expect(page.locator('[data-kind="cost-day"]')).toHaveCount(2);
-    await expect(
-      page.locator('[data-kind="cost-bar-group"][data-project-id="' + projectId + '"]'),
-    ).toHaveCount(2);
-    await expect(page.locator('[data-kind="cost-bar-group"][data-project-id="kind"]')).toHaveCount(1);
+    // 今天也画整月：month 请求发生、柱数是 month 的 8 根；只有今天上色，其余置灰。
+    await expect.poll(() => monthCalls).toBeGreaterThan(0);
+    await expect(page.locator('[data-kind="cost-day"]')).toHaveCount(8);
+    const todayBar = page.locator('[data-kind="cost-day"][data-day="' + today + '"]');
+    await expect(todayBar).toHaveCount(1);
+    await expect(todayBar.locator('[data-kind="cost-bar-group"]').first()).not.toHaveAttribute('style', /line-2/);
+    const dimBars = page.locator('[data-kind="cost-day"]:not([data-day="' + today + '"]) [data-kind="cost-bar-group"]');
+    await expect(dimBars).toHaveCount(7);
+    await expect(dimBars.first()).toHaveAttribute('style', /line-2/);
 
-    // 两环：钱按项目/Kind；时间含模型/工具/命令，缺的段照实写。
+    // 两环：钱按项目/Kind；时间五段，缺的段照实写。
     await expect(page.getByText('钱花在哪')).toBeVisible();
     await expect(page.locator('[data-kind="donut"]').first()).toContainText('项目甲');
     await expect(page.locator('[data-kind="donut"]').first()).toContainText('Kind 对话');
-    await expect(page.locator('[data-kind="time-donut"]')).toContainText('等首字');
-    await expect(page.locator('[data-kind="time-donut"]')).toContainText('模型生成');
-    await expect(page.locator('[data-kind="time-donut"]')).toContainText('工具');
-    await expect(page.locator('[data-kind="time-donut"]')).toContainText('命令');
-    await expect(page.locator('[data-kind="time-donut"]')).toContainText('没采到');
-    await expect(page.locator('[data-kind="time-ring-missing"]')).toContainText('等首字');
-    // 「在跑」页签带数目。
-    await expect(page.locator('[data-tab-key="live"]')).toContainText('1');
+    for (const segment of ['等首字', '模型生成', '工具', '命令', '没采到']) {
+      await expect(page.locator('[data-kind="time-donut"]')).toContainText(segment);
+    }
 
-    // 排行按项目拆：模型行带项目名。
+    // 排行按项目拆；切项目筛选后只合计这个项目。
     await expect(page.locator('[data-kind="rank-row"]').filter({ hasText: '项目甲 · deepseek-flash' }).first()).toBeVisible();
+    await expect(page.locator('[data-kind="rank-row"]').filter({ hasText: '项目乙 · deepseek-pro' }).first()).toBeVisible();
+    await page.locator('[data-kind="monitor-project-tag"][data-project="' + projectA + '"]').click();
+    await expect(page.locator('[data-kind="project-scope-note"]')).toContainText('日柱按 groups 拆（Kind/个人合并）；时间环/在忙/全站合计不能拆');
+    await expect(page.locator('[data-kind="rank-row"]').filter({ hasText: 'deepseek-flash' }).first()).toBeVisible();
+    await expect(page.locator('[data-kind="rank-row"]').filter({ hasText: '项目乙 · deepseek-pro' })).toHaveCount(0);
 
-    // 模型回复从上下文蓝条移除，悬浮看约值。
+    // 模型回复从上下文蓝条移除；整条悬浮给约值。
     await page.goto(urlOf(fixture, '#monitor?tab=live'));
     const card = page.locator('[data-kind="live-card"]').first();
     await expect(card).toBeVisible({ timeout: 30_000 });
     const context = card.locator('[data-kind="live-context"]');
     await expect(context).toHaveAttribute('title', /模型回复 约 1\.2K/);
+    const visibleText = await context.evaluate((element) => (element as HTMLElement).innerText);
+    expect(visibleText).not.toContain('模型回复');
     await expect(context.locator('[data-kind="live-context-reply"]')).toHaveCount(1);
   } finally {
     await fixture.close();

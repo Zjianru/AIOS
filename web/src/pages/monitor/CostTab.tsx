@@ -297,6 +297,11 @@ export function CostTab() {
   }
 
   const rowStats = sumRows(models);
+  // Kind 卡只算 Kind 对话自己的花费：从日 groups 里按当前范围取，不能拿全站合计冒名。
+  const kindGroups = (snapshot.days ?? []).flatMap((day) => day.groups).filter((group) => group.label === 'Kind 对话');
+  const kindPriced = kindGroups.map((group) => group.costUsd).filter((value): value is number => value != null);
+  const kindCost = kindPriced.length ? kindPriced.reduce((sum, value) => sum + value, 0) : null;
+  const kindUnpriced = kindGroups.some((group) => group.unpriced > 0);
   const priced = tasks.map((task) => task.costUsd).filter((value): value is number => value != null);
   const projectCost = projectFilter
     ? (priced.length ? priced.reduce((sum, value) => sum + value, 0) : null)
@@ -338,7 +343,7 @@ export function CostTab() {
         {loading ? <span className="text-1 text-ink-3">刷新中…</span> : null}
         {projectFilter ? (
           <span className="text-1 text-ink-3" data-kind="project-scope-note">
-            日柱/时间环/全站合计无法按项目拆开；排行只合计这个项目，不混全量。
+            日柱按 groups 拆（Kind/个人合并）；时间环/在忙/全站合计不能拆。
           </span>
         ) : null}
       </div>
@@ -349,7 +354,15 @@ export function CostTab() {
         </div>
       ) : null}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-5" data-kind="kpis">
-        <Kpi label="花费" value={projectCost == null ? <Missing /> : formatUsd(projectCost, partial)} sub={projectFilter ? '只算这个项目' : '含 Kind / 后台；无价轮不计'} />
+        <Kpi
+          label="花费"
+          value={projectCost == null ? <Missing /> : formatUsd(projectCost, partial)}
+          sub={
+            projectFilter
+              ? '只算这个项目，不混全量'
+              : '其中 Kind 对话 ' + (kindCost == null ? '没采到' : formatUsd(kindCost, kindUnpriced))
+          }
+        />
         <Kpi label="Token" value={formatTokens(tokens)} sub={'输入 ' + formatTokens(rowStats.input) + ' · 输出 ' + formatTokens(rowStats.output)} />
         <Kpi label="缓存命中" value={cacheHit ?? <Missing what="没有输入" />} sub={'读缓存 ' + formatTokens(rowStats.cacheRead)} />
         <Kpi label="模型请求" value={rowStats.requests.toLocaleString('en-US')} sub={'工具调用 ' + tools.reduce((sum, row) => sum + row.requests, 0).toLocaleString('en-US') + ' 次'} />
@@ -451,7 +464,9 @@ export function CostTab() {
                 <Sparkles className="size-[18px] text-ink-3" />
                 Kind 对话
               </div>
-              <div className="brand-type mt-2 text-5 text-ink">{formatUsd(rings?.costUsd ?? null, rings?.unpriced)}</div>
+              <div className="brand-type mt-2 text-5 text-ink" data-kind="kind-card-cost">
+                {kindCost == null ? <Missing /> : formatUsd(kindCost, kindUnpriced)}
+              </div>
               <div className="text-1 text-ink-3">不分项目，不做诊断</div>
             </div>
           ) : null}
