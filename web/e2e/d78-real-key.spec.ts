@@ -325,3 +325,56 @@ test('D78 贴假 key：工具/回复无串、无保存卡、只指设置页', as
   }
 });
 
+// T090.2 / spec v1.1：问题卡在等回答时，用户在下方输入框直接发送一句 = 回答这张卡；
+/// Kind 在同一轮里接着做。真 key 单跑一条（D78），隔离 HOME 由 startD78KernelFixture 提供，
+/// key 只从环境变量读、不落文件/命令行/证据。
+test('D78 问题卡等时直接发送：当回答、同一轮继续', async ({ page }) => {
+  const fixture = await startD78KernelFixture();
+  try {
+    // 隔离 HOME：真 key 用例不该落进本机 $HOME。
+    expect(path.resolve(fixture.homeDir!)).not.toBe(
+      path.resolve(process.env.HOME ?? '/nonexistent-d78-home'),
+    );
+    await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind');
+    await send(page, '先别做别的：用问题卡问我「会议定在周三还是周五」，给两个选项：周三、周五。');
+    const card = page.locator('[data-kind="question"]').last();
+    await expect(card).toBeVisible({ timeout: 180_000 });
+
+    // 卡在等回答时，直接在下方输入框发送一句。
+    await page.getByPlaceholder('和 Kind 说…').fill('就周五吧');
+    await page.keyboard.press('Enter');
+
+    // 卡收成回执「你直接回复了」，Kind 在同一轮里继续到收尾。
+    await expect(page.getByText('你直接回复了', { exact: false })).toBeVisible({
+      timeout: 60_000,
+    });
+    await expect
+      .poll(
+        async () =>
+          (await rootEvents(fixture)).some(
+            (event) =>
+              event.type === 'turn/end' && event.data?.reason?.kind === 'completed',
+          ),
+        { timeout: 180_000 },
+      )
+      .toBe(true);
+
+    const events = await rootEvents(fixture);
+    const kinds = (name: string) => events.filter((event) => event.type === name);
+    expect(kinds('tool/call').some((event) => event.data?.name === 'ask_user_question')).toBe(true);
+    expect(kinds('question/cancelled').length).toBeGreaterThan(0);
+    expect(kinds('question/answered').length).toBe(0);
+    // 工具结果带用户原话（直接回复不是 ASK_ABORTED 错误）。
+    const toolResults = JSON.stringify(kinds('tool/result'));
+    expect(toolResults).toContain('用户没有选，直接说了：就周五吧');
+    expect(toolResults).not.toContain('ask_user_question was aborted');
+    // 只有一轮：没有 aborted、没有第二轮。
+    expect(kinds('turn/start').length).toBe(1);
+    expect(
+      kinds('turn/end').some((event) => event.data?.reason?.kind === 'aborted'),
+    ).toBe(false);
+  } finally {
+    await fixture.close();
+  }
+});
+
