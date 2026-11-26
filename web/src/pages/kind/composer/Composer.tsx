@@ -20,6 +20,7 @@ import { fileMentions } from '../atGrammar';
 import type { QueueRestore } from '../inbox';
 import { mimeFromFileName } from '../fileMime.ts';
 import { canRecallCleared } from '../rewind.ts';
+import { takePendingDraft } from '@/lib/pendingDraft';
 import type { RewindSource } from '../rewind.ts';
 import { attachmentGet, attachmentPut, fileReferences } from '@/data/service';
 import type { FileReferenceEntry, SendAttachmentRef } from '@/data/service';
@@ -92,7 +93,7 @@ interface ComposerProps {
   placeholder?: string;
   /** 从日志恢复的排队消息（被停止清掉的那些）；每条 seq 最多放回一次。 */
   queueRestores?: QueueRestore[];
-  /** T098.2：输入框里的页面位置标签（Kind 传「现在」；任务对话不传）。 */
+  /** 本票：输入框里的页面位置标签（Kind 传「现在」；任务对话不传）。 */
   pageTag?: string;
 }
 
@@ -300,7 +301,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     requestAnimationFrame(() => inputRef.current?.focus());
   }, [pageQuote]);
 
-  // T098：记忆页「加一条」没有页面直写协议，经这个键把一句草稿带进 Kind 输入框。
+  // 本票：记忆页「加一条」没有页面直写协议，经这个键把一句草稿带进 Kind 输入框。
   // T013.8：会话 id 就绪后读一次草稿（读不出当空）。
   useEffect(() => {
     if (!draftScope || draftLoadedRef.current === draftScope) return;
@@ -321,8 +322,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     if (touchedRef.current) return; // ready 前已经输入：以用户输入为准，草稿不覆盖
     try {
       const raw = localStorage.getItem('aios.kind.draft.' + draftScope);
-      const pendingText = localStorage.getItem('aios.kind.pending-draft');
-      if (pendingText !== null) localStorage.removeItem('aios.kind.pending-draft');
+      const pendingText = takePendingDraft();
       if (!raw) {
         if (pendingText !== null) setText(pendingText);
         return;

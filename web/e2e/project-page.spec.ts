@@ -28,7 +28,10 @@ test('项目页：跟 Kind 说、目录说明/建于、项目记忆/监控入口
     await expect(page.locator('[data-kind="project-name"]')).toContainText('T098 项目页对照');
     await expect(page.getByText('把项目页照原型补齐', { exact: false })).toBeVisible();
     await expect(page.getByText('派任务时预填成任务的目录', { exact: false })).toBeVisible();
-    await expect(page.locator('[data-kind="project-created-at"]')).toContainText('月');
+    const today = new Date();
+    await expect(page.locator('[data-kind="project-created-at"]')).toHaveText(
+      today.getMonth() + 1 + ' 月 ' + today.getDate() + ' 日',
+    );
     await expect(page.locator('[data-kind="project-memory-count"]')).toHaveAttribute('data-project-memory-mine', '0');
     await expect(page.locator('[data-kind="project-memory-count"]')).toHaveAttribute('data-project-memory-kinds', '0');
     await expect(page.locator('[data-kind="project-memory-link"]')).toContainText('项目记忆');

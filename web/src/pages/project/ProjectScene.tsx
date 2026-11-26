@@ -252,6 +252,8 @@ function ProjectPage() {
   };
 
   const allTasks = groups.wait.length + groups.doing.length + groups.queue.length + doneAll;
+  // ProjectView.createdAt 是毫秒（service projects.rs now_ms），不是秒。
+  const created = new Date(project.createdAt);
 
   return (
     <div className="h-full overflow-y-auto" data-page="project" data-project-id={project.id}>
@@ -331,7 +333,7 @@ function ProjectPage() {
           </dd>
           <dt className="text-1 text-ink-3">建于</dt>
           <dd className="text-1 text-ink-3" data-kind="project-created-at">
-            {new Date(project.createdAt * 1000).getMonth() + 1} 月 {new Date(project.createdAt * 1000).getDate()} 日
+            {created.getMonth() + 1} 月 {created.getDate()} 日
           </dd>
         </dl>
         {saveError ? (

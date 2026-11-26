@@ -28,9 +28,7 @@ const SECTIONS = [
   { id: 'quarantine', label: '隔离区' },
 ] as const;
 import { mountMemoryLive, useMemoryState } from './memoryStore';
-
-/** 关于你没有页面直写协议：点「加一条」把一句草稿带进 Kind 输入框，由对话写记忆。 */
-const PENDING_DRAFT_KEY = 'aios.kind.pending-draft';
+import { setPendingDraft } from '@/lib/pendingDraft';
 
 function clock(at: number | null | undefined): string {
   if (!at) return '未知';
@@ -555,7 +553,7 @@ export function MemoryScene() {
                 type="button"
                 data-kind="memory-add-about"
                 onClick={() => {
-                  localStorage.setItem(PENDING_DRAFT_KEY, '记住：');
+                  setPendingDraft('记住：');
                   go('kind');
                 }}
                 className={btn}
