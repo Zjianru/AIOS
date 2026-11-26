@@ -11,7 +11,7 @@ import { formatTokens } from '@/lib/numbers';
 import { elapsedSeconds } from './diagnoseTime';
 import { TraceTimeline } from './TraceTimeline';
 import { cn } from '@/lib/utils';
-import { useMonitorStore } from './monitorStore';
+import { detailKeyOf, useMonitorStore } from './monitorStore';
 import { useProjectName } from '@/pages/project/projectStore';
 import { Card, Kpi, Missing, StackBar, fmtClock, fmtTime, useTick } from './monitorParts';
 
@@ -101,8 +101,11 @@ export function Diagnose({ taskId }: { taskId: string }) {
   const snapshot = useMonitorStore((state) => state.snapshot);
   const summary = snapshot?.tasks.find((task) => task.taskId === taskId);
   const [attemptId, setAttemptId] = useState<number | null>(null);
-  const detail = useMonitorStore((state) => state.details[taskId]);
-  const error = useMonitorStore((state) => state.detailErrors[taskId] ?? null);
+  const effectiveAttempt = attemptId ?? summary?.attemptId ?? null;
+  const detail = useMonitorStore((state) => state.details[detailKeyOf(taskId, effectiveAttempt)]);
+  const error = useMonitorStore(
+    (state) => state.detailErrors[detailKeyOf(taskId, effectiveAttempt)] ?? null,
+  );
   const loadTask = useMonitorStore((state) => state.loadTask);
   const [selected, setSelected] = useState<ServiceEvent | null>(null);
   const [traceRange, setTraceRange] = useState<{ from: number; to: number } | null>(null);
@@ -111,8 +114,8 @@ export function Diagnose({ taskId }: { taskId: string }) {
   // 诊断页不再自己取一次就停：读 store 的 details，跟同一路 WS 由事件刷新；
   // Attempt 切换仍按需重读（带 attemptId）。
   useEffect(() => {
-    void loadTask(taskId, attemptId ?? undefined);
-  }, [attemptId, loadTask, taskId]);
+    void loadTask(taskId, effectiveAttempt ?? undefined);
+  }, [effectiveAttempt, loadTask, taskId]);
 
   const events = detail?.events ?? [];
   const traceEvents = traceRange
@@ -166,7 +169,9 @@ export function Diagnose({ taskId }: { taskId: string }) {
                   <button
                     key={attempt.attemptId}
                     type="button"
-                    className={cn('rounded-btn px-2 py-0.5 text-1', (attemptId ?? attempts[attempts.length - 1]?.attemptId) === attempt.attemptId ? 'bg-active text-ink' : 'text-ink-3 hover:text-ink-2')}
+                    data-kind="diagnose-attempt"
+                    data-attempt-id={attempt.attemptId}
+                    className={cn('rounded-btn px-2 py-0.5 text-1', effectiveAttempt === attempt.attemptId ? 'bg-active text-ink' : 'text-ink-3 hover:text-ink-2')}
                     onClick={() => setAttemptId(attempt.attemptId)}
                   >
                     {attemptLabel(attempt)}

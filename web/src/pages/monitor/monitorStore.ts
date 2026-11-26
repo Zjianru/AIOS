@@ -19,6 +19,14 @@ import type {
 
 export type MonitorTab = 'cost' | 'live';
 
+/** 诊断快照按 taskId+attemptId 分开存：看旧 Attempt 时新事件不能把它盖掉。 */
+export function detailKeyOf(
+  taskId: string,
+  attemptId: number | null | undefined,
+): string {
+  return taskId + '@' + (attemptId === null || attemptId === undefined ? 'latest' : String(attemptId));
+}
+
 function timezone(): string {
   try {
     return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
@@ -66,25 +74,51 @@ export const useMonitorStore = create<MonitorState>()((set, get) => ({
     try {
       const snapshot = await monitorSnapshot(wanted, timezone());
       if (get().snapshotGeneration !== generation) return;
-      set({ snapshot, loading: false });
+      set((state) => {
+        const alive = new Set(snapshot.tasks.map((task) => task.taskId));
+        const details: Record<string, MonitorTaskResponse> = {};
+        for (const [key, value] of Object.entries(state.details)) {
+          if (alive.has(key.split('@')[0] ?? '')) details[key] = value;
+        }
+        const detailGenerations: Record<string, number> = {};
+        for (const [key, value] of Object.entries(state.detailGenerations)) {
+          if (alive.has(key.split('@')[0] ?? '')) detailGenerations[key] = value;
+        }
+        const detailErrors: Record<string, string> = {};
+        for (const [key, value] of Object.entries(state.detailErrors)) {
+          if (alive.has(key.split('@')[0] ?? '')) detailErrors[key] = value;
+        }
+        return { snapshot, loading: false, details, detailGenerations, detailErrors };
+      });
     } catch (error) {
       if (get().snapshotGeneration !== generation) return;
       set({ snapshotError: error instanceof Error ? error.message : String(error), loading: false });
     }
   },
   loadTask: async (taskId, attemptId) => {
-    const generation = (get().detailGenerations[taskId] ?? 0) + 1;
-    set((state) => ({ detailGenerations: { ...state.detailGenerations, [taskId]: generation } }));
+    // 不传 attempt 时按快照里的当前 Attempt 定位，保证 LiveCard 与事件刷新读写同一份。
+    const resolved =
+      attemptId ?? get().snapshot?.tasks.find((task) => task.taskId === taskId)?.attemptId;
+    const key = detailKeyOf(taskId, resolved);
+    const generation = (get().detailGenerations[key] ?? 0) + 1;
+    set((state) => ({ detailGenerations: { ...state.detailGenerations, [key]: generation } }));
     try {
-      const detail = await monitorTask(taskId, attemptId);
-      if (get().detailGenerations[taskId] !== generation) return;
-      set((state) => ({ details: { ...state.details, [taskId]: detail } }));
+      const detail = await monitorTask(taskId, resolved ?? undefined);
+      if (get().detailGenerations[key] !== generation) return;
+      set((state) => ({
+        details: {
+          ...state.details,
+          [key]: detail,
+          // 卡片在快照还没给出 attemptId 时按「最新」读；这里同步一份别名，避免读不到。
+          [detailKeyOf(taskId, null)]: detail,
+        },
+      }));
     } catch (error) {
-      if (get().detailGenerations[taskId] !== generation) return;
+      if (get().detailGenerations[key] !== generation) return;
       set((state) => ({
         detailErrors: {
           ...state.detailErrors,
-          [taskId]: error instanceof Error ? error.message : String(error),
+          [key]: error instanceof Error ? error.message : String(error),
         },
       }));
     }
@@ -95,9 +129,17 @@ export const useMonitorStore = create<MonitorState>()((set, get) => ({
   refreshAll: async () => {
     await get().loadSnapshot();
     const state = get();
-    const ids = new Set<string>(Object.keys(state.details));
-    for (const task of state.snapshot?.tasks ?? []) if (task.running) ids.add(task.taskId);
-    await Promise.all([...ids].map((taskId) => get().loadTask(taskId)));
+    const wanted = new Map<string, number | undefined>();
+    for (const key of Object.keys(state.details)) {
+      const [taskId, attempt] = key.split('@');
+      if (taskId) wanted.set(taskId, attempt && attempt !== 'latest' ? Number(attempt) : undefined);
+    }
+    for (const task of state.snapshot?.tasks ?? []) {
+      if (task.running) wanted.set(task.taskId, task.attemptId ?? undefined);
+    }
+    await Promise.all(
+      [...wanted.entries()].map(([taskId, attemptId]) => get().loadTask(taskId, attemptId)),
+    );
   },
 }));
 

@@ -11,7 +11,7 @@ import { useRouteStore } from '@/app/routeStore';
 import { formatPercent, formatTokens } from '@/lib/numbers';
 import { cn } from '@/lib/utils';
 import { matchesProject, useProjectName } from '@/pages/project/projectStore';
-import { useMonitorStore } from './monitorStore';
+import { detailKeyOf, useMonitorStore } from './monitorStore';
 import type { MonitorTaskSummary, ServiceEvent } from '@/data/service';
 import { Card, Kpi, Missing, StackBar, fmtClock, useTick } from './monitorParts';
 
@@ -65,7 +65,7 @@ function CtxBar({ used, window, parts }: { used: number; window: number; parts?:
     { key: 'result', name: '工具结果', value: parts.toolResults, color: 'var(--kf-c3)' },
   ];
   return (
-    <div>
+    <div data-kind="live-context">
       <div className="mb-1 flex text-1 text-ink-3">
         <span>上下文</span>
         <span className="flex-1" />
@@ -79,13 +79,13 @@ function CtxBar({ used, window, parts }: { used: number; window: number; parts?:
 function LiveCard({ task }: { task: MonitorTaskSummary }) {
   const projectName = useProjectName(task.projectId);
   const tick = useTick();
-  const detail = useMonitorStore((state) => state.details[task.taskId]);
-  const error = useMonitorStore((state) => state.detailErrors[task.taskId]);
+  const detail = useMonitorStore((state) => state.details[detailKeyOf(task.taskId, task.attemptId)]);
+  const error = useMonitorStore((state) => state.detailErrors[detailKeyOf(task.taskId, task.attemptId)]);
   const loadTask = useMonitorStore((state) => state.loadTask);
 
   useEffect(() => {
-    if (!detail) void loadTask(task.taskId);
-  }, [detail, loadTask, task.taskId]);
+    if (!detail) void loadTask(task.taskId, task.attemptId ?? undefined);
+  }, [detail, loadTask, task.attemptId, task.taskId]);
 
   const events = detail?.events ?? [];
   const now = nowOf(events);

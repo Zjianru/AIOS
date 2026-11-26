@@ -276,3 +276,132 @@ test('慢的旧快照不会盖掉新数据（代次丢弃）', async ({ page, br
     await fixture.close();
   }
 });
+test('看旧 Attempt：新事件不把页面换成最新 Attempt', async ({ page, browser }) => {
+  test.setTimeout(180_000);
+  const fixture = await startKernelFixture({ taskResult: 'live', slowMs: 2500 });
+  try {
+    await page.route('**/api', async (route) => {
+      let requestBody: { method?: string; attemptId?: number } = {};
+      try {
+        requestBody = route.request().postDataJSON() as { method?: string; attemptId?: number };
+      } catch {
+        // 非 JSON 请求原样放行。
+      }
+      if (requestBody.method !== 'monitor-task') {
+        await route.continue();
+        return;
+      }
+      const response = await route.fetch();
+      const json = (await response.json()) as Record<string, unknown>;
+      const requested = requestBody.attemptId;
+      json.attempts = [
+        { attemptId: 1, startedAt: 1_700_000_000_000, endedAt: 1_700_000_100_000, requests: 1, inputTokens: 10, outputTokens: 5, unpriced: false },
+        { attemptId: 2, startedAt: 1_700_000_200_000, requests: 1, inputTokens: 20, outputTokens: 5, unpriced: false },
+      ];
+      json.todo = [
+        {
+          content: requested === 1 ? '旧 Attempt 的待办' : '新 Attempt 的待办',
+          status: 'in_progress',
+        },
+      ];
+      await route.fulfill({ response, json });
+    });
+    await page.goto(urlOf(fixture, '#monitor?tab=live'));
+    await expect(page.locator('[data-page="monitor"]')).toBeVisible({ timeout: 30_000 });
+    const kindPage = await browser.newPage();
+    try {
+      await kindPage.goto(urlOf(fixture, '#kind'));
+      await sendKind(kindPage, '帮我查一下新闻归档里的判重规则');
+      const card = page.locator('[data-kind="live-card"]').first();
+      await expect(card).toBeVisible({ timeout: 90_000 });
+      await card.click();
+      await expect(page.locator('[data-page="monitor-task"]')).toBeVisible({ timeout: 30_000 });
+      const oldAttempt = page.locator('[data-kind="diagnose-attempt"][data-attempt-id="1"]');
+      await expect(oldAttempt).toBeVisible({ timeout: 30_000 });
+      await oldAttempt.click();
+      await expect(page.getByText('旧 Attempt 的待办')).toBeVisible({ timeout: 20_000 });
+      await page.waitForTimeout(4000);
+      await expect(page.getByText('旧 Attempt 的待办')).toBeVisible();
+      await expect(page.getByText('新 Attempt 的待办')).toHaveCount(0);
+      await expect(oldAttempt).toHaveClass(/bg-active/);
+    } finally {
+      await kindPage.close();
+    }
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('在跑卡的花费/token/上下文跟着任务事件出现，不用刷新', async ({ page, browser }) => {
+  test.setTimeout(180_000);
+  const fixture = await startKernelFixture({ taskResult: 'live', slowMs: 8000 });
+  try {
+    await page.route('**/api', async (route) => {
+      let method = '';
+      try {
+        method = (route.request().postDataJSON() as { method?: string }).method ?? '';
+      } catch {
+        // 非 JSON 请求原样放行。
+      }
+      if (method === 'monitor-snapshot') {
+        const response = await route.fetch();
+        const json = (await response.json()) as {
+          tasks?: { running?: boolean; costUsd?: number | null; inputTokens?: number; outputTokens?: number; contextUsed?: number; contextWindow?: number }[];
+          running?: { tasks?: { costUsd?: number | null; inputTokens?: number; outputTokens?: number; contextUsed?: number; contextWindow?: number }[] };
+        };
+        const running = json.running?.tasks ?? [];
+        for (const task of json.tasks ?? []) {
+          if (!task.running) continue;
+          task.costUsd = 1.5;
+          task.inputTokens = 1500;
+          task.outputTokens = 500;
+          task.contextUsed = 1234;
+          task.contextWindow = 200_000;
+        }
+        for (const task of running) {
+          task.costUsd = 1.5;
+          task.inputTokens = 1500;
+          task.outputTokens = 500;
+          task.contextUsed = 1234;
+          task.contextWindow = 200_000;
+        }
+        await route.fulfill({ response, json });
+        return;
+      }
+      if (method === 'monitor-task') {
+        const response = await route.fetch();
+        const json = (await response.json()) as Record<string, unknown>;
+        json.todo = [{ content: '事件里新增的待办', status: 'in_progress' }];
+        json.contextParts = {
+          fixedBlock: 100,
+          toolDefinitions: 200,
+          taskBookMessages: 300,
+          modelReplies: 400,
+          toolResults: 234,
+        };
+        await route.fulfill({ response, json });
+        return;
+      }
+      await route.continue();
+    });
+    await page.goto(urlOf(fixture, '#monitor?tab=live'));
+    await expect(page.locator('[data-page="monitor"]')).toBeVisible({ timeout: 30_000 });
+    // 页面在任务开始前就开着：此刻没有在跑卡/数字。
+    await expect(page.locator('[data-kind="live-card"]')).toHaveCount(0);
+    const kindPage = await browser.newPage();
+    try {
+      await kindPage.goto(urlOf(fixture, '#kind'));
+      await sendKind(kindPage, '帮我查一下新闻归档里的判重规则');
+      const card = page.locator('[data-kind="live-card"]').first();
+      // 任务事件到了以后卡和数字出现（页面没刷新、没手动重取）。
+      await expect(card).toBeVisible({ timeout: 90_000 });
+      await expect(card.locator('[data-kind="live-cost"]')).toHaveText('$1.500');
+      await expect(card.locator('[data-kind="live-token"]')).toContainText('2K');
+      await expect(card.locator('[data-kind="live-context"]')).toContainText('1.2K');
+    } finally {
+      await kindPage.close();
+    }
+  } finally {
+    await fixture.close();
+  }
+});
