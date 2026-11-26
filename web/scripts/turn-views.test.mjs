@@ -277,5 +277,28 @@ function toolResultEvent(callId, output) {
   ]);
   assert.notEqual(views[0].question.status, 'replied', '只有旧正文前缀、没有 meta → 不派生 replied');
 }
+// —— T095.6 K4：旧日志没有 meta：不判答没答，收成一行显示工具结果原文 ——
+{
+  seq = 0;
+  const raw = '用户没有选，直接说了：旧日志里的一句话';
+  const views = deriveTurnViews([
+    event('turn/start', {}),
+    userEvent('问我一个问题'),
+    event('question/asked', {
+      call_id: 'call-ask',
+      question_id: 'q1',
+      question: '选一个？',
+      options: ['是'],
+      multi_select: false,
+    }),
+    event('question/cancelled', { call_id: 'call-ask', question_id: 'q1' }),
+    event('tool/result', {
+      message: { toolCallId: 'call-ask', content: [{ type: 'text', text: raw }] },
+    }),
+    event('turn/end', { reason: { kind: 'completed' } }),
+  ]);
+  assert.equal(views[0].question.status, 'legacy-reply', '没有 meta：不判答没答');
+  assert.equal(views[0].question.text, raw, '保留工具结果原文给一行显示');
+}
 console.log('turn-views.test.mjs: all assertions passed');
 

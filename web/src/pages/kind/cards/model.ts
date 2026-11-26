@@ -105,7 +105,9 @@ export interface QuestionSlots {
 export interface QuestionCardFact {
   /** 问题批次 id（ask_user_question 调用的 call id），不用数组下标。 */
   batchId: string;
-  status: 'pending' | 'answered' | 'dismissed' | 'replied' | 'void';
+  status: 'pending' | 'answered' | 'dismissed' | 'replied' | 'void' | 'legacy-reply';
+  /** 旧日志没有 meta 时工具结果原文（只显示一行，不判断答没答）。 */
+  text?: string;
   questions: {
     id: string;
     question: string;
@@ -246,6 +248,12 @@ function questionReceiptOf(fact: QuestionCardFact, count: number): CardReceipt |
       return { outcome: 'success', summary: '你直接回复了' };
     case 'void':
       return { outcome: 'cancelled', summary: '这一轮停下了，问题没再等回答' };
+    case 'legacy-reply':
+      // 旧日志：没有结构化 meta，不知道答没答；收成一行显示工具结果原文。
+      return {
+        outcome: 'cancelled',
+        summary: (fact.text ?? '').split('\n').find((line) => line.trim())?.trim() ?? '',
+      };
     default:
       return null;
   }

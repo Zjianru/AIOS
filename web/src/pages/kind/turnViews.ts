@@ -68,19 +68,100 @@ export function summaryTextOf(data: Record<string, unknown>): string {
     .join('');
 }
 
+export interface ManualSummaryMark {
+  manual: 'from' | 'upTo';
+  /** 总结到这里为止选中的那句 seq（旧日志没有就是 undefined）。 */
+  targetSeq?: number;
+}
+
 export function compactionViewOf(
   data: Record<string, unknown>,
   auto: boolean,
-  manual?: 'from' | 'upTo',
+  manual?: ManualSummaryMark,
 ): CompactionView {
-  return { auto, ...(manual ? { manual } : {}), summary: summaryTextOf(data) };
+  return {
+    auto,
+    ...(manual ? { manual: manual.manual } : {}),
+    ...(manual?.targetSeq !== undefined ? { targetSeq: manual.targetSeq } : {}),
+    summary: summaryTextOf(data),
+  };
 }
 
-/** T095.5：两种总结的 sourceCommandId 标记（agent rewind_summarize_* 写入）。 */
-export function manualSummaryOf(sourceCommandId: unknown): 'from' | 'upTo' | undefined {
-  if (sourceCommandId === 'rewind:from') return 'from';
-  if (sourceCommandId === 'rewind:up-to') return 'upTo';
-  return undefined;
+/** T095.5/.6：两种总结的 sourceCommandId 标记（agent rewind_summarize_* 写入，
+ * 形如 rewind:from:<seq> / rewind:up-to:<seq>；旧标记没有 seq 也认）。 */
+export function manualSummaryOf(sourceCommandId: unknown): ManualSummaryMark | undefined {
+  if (typeof sourceCommandId !== 'string') return undefined;
+  const match = /^rewind:(from|up-to)(?::(\d+))?$/.exec(sourceCommandId);
+  if (!match) return undefined;
+  const parsed = match[2] === undefined ? undefined : Number(match[2]);
+  return {
+    manual: match[1] === 'from' ? 'from' : 'upTo',
+    ...(parsed !== undefined && Number.isFinite(parsed) ? { targetSeq: parsed } : {}),
+  };
+}
+
+/** 总结分隔的伪一轮（不属于任何 turn；T095.6：刷新/翻页后也能重建）。 */
+function dividerViewOf(
+  id: string,
+  compaction: CompactionView,
+  seqStart?: number,
+): TurnViewData {
+  return {
+    id,
+    ...(seqStart !== undefined ? { seqStart } : {}),
+    startedAt: null,
+    durationMs: null,
+    status: 'completed',
+    user: null,
+    taskResults: [],
+    says: [],
+    reasoning: null,
+    tools: [],
+    answer: null,
+    thinkingSeconds: 0,
+    tokens: { input: 0, output: 0 },
+    model: '模型服务',
+    cost: null,
+    retry: null,
+    failure: null,
+    question: null,
+    compaction,
+    canvas: null,
+    card: null,
+    delivery: null,
+    stoppedAt: null,
+  };
+}
+
+/** 把一条总结分隔插回它在轮次之间的位置：到这里为止插在选中那句前，其余按事件 seq。 */
+function insertDivider(views: TurnViewData[], divider: TurnViewData): void {
+  const target = divider.compaction?.targetSeq;
+  if (divider.compaction?.manual === 'upTo' && target !== undefined) {
+    const index = views.findIndex((view) => view.user?.seq === target);
+    if (index >= 0) {
+      views.splice(index, 0, divider);
+      return;
+    }
+  }
+  if (divider.seqStart !== undefined) {
+    const index = views.findIndex(
+      (view) => typeof view.seqStart === 'number' && view.seqStart > divider.seqStart!,
+    );
+    if (index >= 0) {
+      views.splice(index, 0, divider);
+      return;
+    }
+  }
+  views.push(divider);
+}
+
+/** T095.6：刷新/翻页/实时追加后，把总结分隔按 targetSeq/seq 重新放回轮次之间。 */
+export function placeManualDividers(views: TurnViewData[]): TurnViewData[] {
+  const dividers = views.filter((view) => view.compaction?.manual);
+  if (dividers.length === 0) return views;
+  const others = views.filter((view) => !view.compaction?.manual);
+  for (const divider of dividers) insertDivider(others, divider);
+  return others;
 }
 
 export function deriveTurnViews(
@@ -89,6 +170,8 @@ export function deriveTurnViews(
 ): TurnViewData[] {
   interface Raw {
     turn: number;
+    /** 这一轮第一条日志事件的 seq（放总结分隔时定位）。 */
+    seqStart?: number;
     startedAt: number | null;
     endedAt: number | null;
     user: TurnUserView | null;
@@ -175,11 +258,15 @@ export function deriveTurnViews(
   }
   // T010.4：每次压缩摘要等「压缩后第一条响应」来算 after。
   const pendingCompaction = new Map<number, { view: CompactionView; window?: number }>();
+  /** T095.6：没有 turn 的 compaction/summary（手动压缩、两种总结）先收起来，等轮建完再插。 */
+  const orphanDividers: { seq: number; view: CompactionView }[] = [];
+  let currentSeq = 0;
   const ensure = (turn: number): Raw => {
     let raw = turns.get(turn);
     if (!raw) {
       raw = {
         turn,
+        seqStart: currentSeq,
         startedAt: null,
         endedAt: null,
         user: null,
@@ -392,6 +479,7 @@ export function deriveTurnViews(
   // 页面看日志事实，只认第一次出现，免得旧轮状态被替换事件重置；旧版调用参数仍按原文显示。
   const seenAssistantMessages = new Set<string>();
   for (const event of events) {
+    currentSeq = event.seq;
     const data = event.data ?? {};
     if (event.type === 'assistant/message') {
       const id = (data.message as { id?: unknown } | undefined)?.id;
@@ -401,7 +489,18 @@ export function deriveTurnViews(
       }
     }
     const turn = typeof data.turn === 'number' ? data.turn : null;
-    if (turn === null) continue;
+    if (turn === null) {
+      // T095.6：没有 turn 的 compaction/summary（手动压缩、两种总结）也要出分隔；
+      // 先收起来，等轮次建完按 seq/targetSeq 插回原位。
+      if (event.type === 'compaction/summary') {
+        const manual = manualSummaryOf(data.sourceCommandId);
+        const auto = manual
+          ? false
+          : data.sourceCommandId === undefined || data.sourceCommandId === null;
+        orphanDividers.push({ seq: event.seq, view: compactionViewOf(data, auto, manual) });
+      }
+      continue;
+    }
     switch (event.type) {
       case 'turn/start': {
         const raw = ensure(turn);
@@ -555,14 +654,26 @@ export function deriveTurnViews(
           callId &&
           raw.question &&
           (raw.question.status === 'dismissed' || raw.question.status === 'pending') &&
-          raw.question.batchId === callId &&
-          resultMeta?.ask_direct_reply === true
+          raw.question.batchId === callId
         ) {
-          raw.question = {
-            status: 'replied',
-            batchId: raw.question.batchId,
-            questions: raw.question.questions,
-          };
+          if (resultMeta?.ask_direct_reply === true) {
+            raw.question = {
+              status: 'replied',
+              batchId: raw.question.batchId,
+              questions: raw.question.questions,
+            };
+          } else if (resultMeta === undefined) {
+            // T095.6：旧日志没有 meta——不判答没答；收成一行显示工具结果原文，不回填日志。
+            const text = (textOfToolResult(data.message) || textOf(data.message)).trim();
+            if (text) {
+              raw.question = {
+                status: 'legacy-reply',
+                batchId: raw.question.batchId,
+                questions: raw.question.questions,
+                text,
+              };
+            }
+          }
         }
         const step = callId ? raw.tools.find((item) => item.id === callId) : undefined;
         if (step) {
@@ -811,6 +922,10 @@ export function deriveTurnViews(
       delivery: null,
       stoppedAt: raw.stoppedAt,
     }));
+  for (const item of orphanDividers) {
+    const id = 'turn-' + String(item.seq + 0.5) + '-compaction-' + String(item.seq);
+    insertDivider(views, dividerViewOf(id, item.view, item.seq));
+  }
   const memoCards: MemoCardInfo[] = events
     .filter((event) => event.type === 'memory/card')
     .map((event) => {

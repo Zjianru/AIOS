@@ -353,3 +353,140 @@ test('刚压缩完：菜单空列表照原型文案，只有「算了」', async
   await expect(menu(page)).toContainText('最后一次压缩之后，你还没说过话。');
   await expect(menu(page).locator('[data-kind="rewind-cancel"]')).toBeVisible();
 });
+test('两种总结的「已总结」刷新后还在，往上翻页后也在', async ({ page, request }) => {
+  await openKind(page);
+  for (const text of ['第一句', '第二句', '第三句', '第四句', '第五句', '第六句', '第七句']) {
+    await sendAndWait(page, request, text);
+  }
+  await openMenu(page);
+  await selectRow(page, '第四句');
+  await menu(page).locator('[data-kind="rewind-action"][data-action="summarize-from"]').click();
+  const fromDivider = page.locator('[data-kind="compaction"][data-manual="from"]');
+  await expect(fromDivider).toHaveCount(1, { timeout: 20_000 });
+
+  // K1/K5：刷新后分隔还在（从日志里的 compaction 事件重建，不再只靠 live）。
+  await page.reload();
+  await expect(input(page)).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator('[data-kind="compaction"][data-manual="from"]')).toHaveCount(1, {
+    timeout: 20_000,
+  });
+
+  // K5：往上翻到更早的页，分隔还在。
+  await page.locator('[data-pane="conversation"]').hover();
+  for (let index = 0; index < 12; index += 1) {
+    await page.mouse.wheel(0, -3000);
+    await page.waitForTimeout(150);
+    if (await page.locator('[data-kind="user-bubble"]').filter({ hasText: '第一句' }).count()) break;
+  }
+  await expect(
+    page.locator('[data-kind="user-bubble"]').filter({ hasText: '第一句' }),
+  ).toHaveCount(1, { timeout: 60_000 });
+  await expect(page.locator('[data-kind="compaction"][data-manual="from"]')).toHaveCount(1);
+});
+
+test('总结到这里为止：刷新/翻页后分隔还在原位，后续说话也不挪位', async ({ page, request }) => {
+  await openKind(page);
+  for (const text of ['第一句', '第二句', '第三句', '第四句', '第五句', '第六句', '第七句']) {
+    await sendAndWait(page, request, text);
+  }
+  await openMenu(page);
+  await selectRow(page, '第三句');
+  await menu(page).locator('[data-kind="rewind-action"][data-action="summarize-up-to"]').click();
+  const upTo = page.locator('[data-kind="compaction"][data-manual="upTo"]');
+  await expect(upTo).toHaveCount(1, { timeout: 20_000 });
+  const third = page.locator('[data-kind="user-bubble"]').filter({ hasText: '第三句' }).first();
+  const before = await upTo.boundingBox();
+  const thirdBox = await third.boundingBox();
+  expect(before).not.toBeNull();
+  expect(thirdBox).not.toBeNull();
+  expect(before!.y).toBeLessThan(thirdBox!.y);
+
+  await page.reload();
+  await expect(input(page)).toBeVisible({ timeout: 20_000 });
+  const afterReload = page.locator('[data-kind="compaction"][data-manual="upTo"]');
+  await expect(afterReload).toHaveCount(1, { timeout: 20_000 });
+  const thirdReload = page.locator('[data-kind="user-bubble"]').filter({ hasText: '第三句' }).first();
+  const dividerBox = await afterReload.boundingBox();
+  const targetBox = await thirdReload.boundingBox();
+  expect(dividerBox).not.toBeNull();
+  expect(targetBox).not.toBeNull();
+  expect(dividerBox!.y).toBeLessThan(targetBox!.y);
+
+  // K7：再发一句，分隔仍按 targetSeq 留在原位（不指向旧 id/被挪到末尾）。
+  await sendAndWait(page, request, '第八句');
+  await expect(page.locator('[data-kind="compaction"][data-manual="upTo"]')).toHaveCount(1);
+  const laterDivider = await page
+    .locator('[data-kind="compaction"][data-manual="upTo"]')
+    .boundingBox();
+  const laterThird = await page
+    .locator('[data-kind="user-bubble"]')
+    .filter({ hasText: '第三句' })
+    .first()
+    .boundingBox();
+  expect(laterDivider).not.toBeNull();
+  expect(laterThird).not.toBeNull();
+  expect(laterDivider!.y).toBeLessThan(laterThird!.y);
+});
+
+test('恢复对话：目标不在首屏时原文也能回输入框', async ({ page, request }) => {
+  await openKind(page);
+  for (const text of ['第一句', '第二句', '第三句', '第四句', '第五句', '第六句', '第七句']) {
+    await sendAndWait(page, request, text);
+  }
+  // 刷新后首屏只加载最近几轮：第一句还没上翻出来。
+  await page.reload();
+  await expect(input(page)).toBeVisible({ timeout: 20_000 });
+  await expect(
+    page.locator('[data-kind="user-bubble"]').filter({ hasText: '第一句' }),
+  ).toHaveCount(0);
+  await openMenu(page);
+  await selectRow(page, '第一句');
+  await menu(page).locator('[data-kind="rewind-action"][data-action="restore"]').click();
+  await expect(menu(page)).toHaveCount(0);
+  await expect(input(page)).toHaveValue('第一句');
+});
+test('只有引用卡时：两下 Esc 清空（不开菜单），↑ 找回引用卡，引用卡在时不误召回', async ({ page, request }) => {
+  await openKind(page);
+  await sendAndWait(page, request, '引用回答');
+  const answer = page.locator('[data-kind="answer"]').last();
+  await expect(answer).toContainText('（T007 e2e 假回放）', { timeout: 30_000 });
+  await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0, { timeout: 60_000 });
+  await expect(answer).toBeVisible();
+
+  const range = await page.evaluate(() => {
+    const targets = document.querySelectorAll('[data-kind="answer"]');
+    const element = targets[targets.length - 1];
+    if (!element) throw new Error('没有回答正文');
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    const node = walker.nextNode() as Text | null;
+    if (!node) throw new Error('回答正文没有可选的文字');
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    const value = document.createRange();
+    value.setStart(node, 0);
+    value.setEnd(node, 5);
+    const rect = value.getBoundingClientRect();
+    return { left: rect.left + 1, right: rect.right - 1, y: rect.top + rect.height / 2 };
+  });
+  await page.mouse.move(range.left, range.y);
+  await page.mouse.down();
+  await page.mouse.move(range.right, range.y, { steps: 8 });
+  await page.mouse.up();
+  await page.locator('[data-kind="quote-button"]').click();
+  const quoteCard = page.locator('[data-kind="quote-card"]');
+  await expect(quoteCard).toHaveCount(1);
+  await expect(input(page)).toHaveValue('');
+
+  // K3：引用卡算「有内容」——两下 Esc 清空，不是开菜单。
+  await input(page).click();
+  await doubleEsc(page);
+  await expect(menu(page)).toHaveCount(0);
+  await expect(quoteCard).toHaveCount(0);
+
+  // ↑ 找回：引用卡一起回来；引用卡在时再按 ↑ 不会把它清掉。
+  await input(page).press('ArrowUp');
+  await expect(quoteCard).toHaveCount(1);
+  await input(page).press('ArrowUp');
+  await expect(quoteCard).toHaveCount(1);
+  await expect(menu(page)).toHaveCount(0);
+});

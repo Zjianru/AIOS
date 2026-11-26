@@ -85,6 +85,7 @@ export function canRecallCleared(input: {
   hasText: boolean;
   hasPastes: boolean;
   hasAttachments: boolean;
+  hasQuotes: boolean;
   hasCanvas: boolean;
   hasResultCard: boolean;
   hasExtraCanvases: boolean;
@@ -94,6 +95,7 @@ export function canRecallCleared(input: {
     !input.hasText &&
     !input.hasPastes &&
     !input.hasAttachments &&
+    !input.hasQuotes &&
     !input.hasCanvas &&
     !input.hasResultCard &&
     !input.hasExtraCanvases &&

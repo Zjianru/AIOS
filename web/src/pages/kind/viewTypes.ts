@@ -39,6 +39,8 @@ export type QuestionView =
   | { status: 'dismissed'; batchId: string; questions: AskQuestion[] }
   /** 问题卡等回答时用户直接发送，卡收成「你直接回复了」。 */
   | { status: 'replied'; batchId: string; questions: AskQuestion[] }
+  /** 旧日志没有 meta：不判答没答，只把工具结果原文收成一行（T095.6）。 */
+  | { status: 'legacy-reply'; batchId: string; questions: AskQuestion[]; text: string }
   | { status: 'void'; batchId: string; questions: AskQuestion[] };
 
 
@@ -47,6 +49,8 @@ export interface CompactionView {
   auto: boolean;
   /** T095.5：两种总结的分隔（从这里起 / 到这里为止）；普通压缩没有。 */
   manual?: 'from' | 'upTo';
+  /** T095.6：总结到这里为止选中的那句 seq（刷新/翻页后按它把分隔放回原位）。 */
+  targetSeq?: number;
  /** ：压缩前占窗口的百分比（窗口/前后任一拿不到就不显示）。 */
   before?: number;
  /** ：压缩后第一条响应占窗口的百分比。 */
@@ -113,6 +117,8 @@ export interface MemoCardInfo {
 
 
 export interface TurnViewData {
+  /** 这一轮第一条日志事件的 seq（仅派生用；放总结分隔时定位）。 */
+  seqStart?: number;
   id: string;
   startedAt: number | null;
   durationMs: number | null;

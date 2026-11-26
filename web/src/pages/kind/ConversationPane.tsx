@@ -17,7 +17,8 @@ import { RewindPanel } from './RewindPanel';
 import type { RewindAction } from './RewindPanel';
 import { viewOfSeq } from './rewind.ts';
 import type { RewindRow } from './rewind.ts';
-import { ServiceHttpError, rewindApply, rewindList } from '@/data/service';
+import { ServiceHttpError, fetchEventsPage, rewindApply, rewindList } from '@/data/service';
+import { rewindSourceOfMessage } from './rewind.ts';
 import { ModelPicker } from './ModelPicker';
 import { ComposerDock } from './ComposerDock';
 import { Composer } from './composer/Composer';
@@ -301,6 +302,27 @@ export function ConversationPane() {
     }
   }, []);
 
+  /** T095.6：原文按 seq 从日志取（目标不在首屏也拿得到），不依赖 liveEvents 的首屏缓存。 */
+  const loadRewindSource = useCallback(async (seq: number) => {
+    try {
+      const page = await fetchEventsPage({
+        beforeSeq: seq + 1,
+        maxMessages: 10,
+        minMessages: 1,
+        minTurns: 1,
+      });
+      const event = page.events.find((item) => item.seq === seq && item.type === 'user/message');
+      if (event) {
+        const message = (event.data as { message?: unknown } | undefined)?.message;
+        const source = rewindSourceOfMessage(message);
+        if (source) return source;
+      }
+    } catch {
+      // 取不到就退回当前首屏缓存；放回失败不阻塞动作。
+    }
+    return rewindSourceOf(seq);
+  }, []);
+
   const applyRewind = useCallback(
     async (action: RewindAction) => {
       const seq = rewindSelected;
@@ -310,19 +332,15 @@ export function ConversationPane() {
         setRewindPhase('list');
         return;
       }
-      // 总结到这里为止：分隔线要落在选中的那句之前。live 事件可能比 HTTP 回执先到，
-      // 所以先把目标轮记下，事件到时按它插；被拒再清掉。
-      const upToViewId =
-        action === 'summarize-up-to'
-          ? (viewOfSeq(useKindStore.getState().views, seq)?.id ?? null)
+      const source =
+        action === 'restore' || action === 'summarize-from'
+          ? await loadRewindSource(seq)
           : null;
-      if (upToViewId) useKindStore.getState().setRewindDividerBeforeId(upToViewId);
       try {
         const response = await rewindApply(action, seq);
         if (!response.applied) throw new Error('服务没有回写入结果');
         if (action === 'restore') {
           const view = viewOfSeq(useKindStore.getState().views, seq);
-          const source = rewindSourceOf(seq);
           if (view) {
             useKindStore
               .getState()
@@ -333,17 +351,13 @@ export function ConversationPane() {
           return;
         }
         if (action === 'summarize-from') {
-          const source = rewindSourceOf(seq);
           if (source) composerRef.current?.putBack(source);
           closeRewind();
           return;
         }
-        // 总结到这里为止：分隔线要落在选中的那句之前（live 事件到时按这个 id 插）。
-        const view = viewOfSeq(useKindStore.getState().views, seq);
-        useKindStore.getState().setRewindDividerBeforeId(view?.id ?? null);
+        // 总结到这里为止：服务回的 sourceCommandId 带选中那句 seq，live 事件按它把分隔插到前面。
         closeRewind();
       } catch (error) {
-        if (upToViewId) useKindStore.getState().setRewindDividerBeforeId(null);
         const detail =
           error instanceof ServiceHttpError
             ? error.detail ?? error.message
@@ -354,7 +368,7 @@ export function ConversationPane() {
         setRewindPhase('list');
       }
     },
-    [closeRewind, rewindSelected],
+    [closeRewind, loadRewindSource, rewindSelected],
   );
 
   // T095.5：Esc 照 Claude Code——跑着按一下先停（D12）；停着 500ms 内两下：有字清空（↑ 找回），空着开菜单。

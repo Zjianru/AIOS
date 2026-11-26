@@ -1,6 +1,7 @@
 // T095.5：回退前端的纯函数（原文还原顺序、菜单禁用条件）。
 import assert from 'node:assert/strict';
 import { canRecallCleared, hasBefore, rewindSourceOfMessage, viewOfSeq } from '../src/pages/kind/rewind.ts';
+import { questionCardEntryOf } from '../src/pages/kind/cards/model.ts';
 
 const source = rewindSourceOfMessage({
   content: [
@@ -32,6 +33,7 @@ const blank = {
   hasText: false,
   hasPastes: false,
   hasAttachments: false,
+  hasQuotes: false,
   hasCanvas: false,
   hasResultCard: false,
   hasExtraCanvases: false,
@@ -42,6 +44,7 @@ for (const key of [
   'hasText',
   'hasPastes',
   'hasAttachments',
+  'hasQuotes',
   'hasCanvas',
   'hasResultCard',
   'hasExtraCanvases',
@@ -49,4 +52,13 @@ for (const key of [
 ]) {
   assert.equal(canRecallCleared({ ...blank, [key]: true }), false, key + ' 存在时不召回');
 }
+// K4（T095.6）：旧日志没有 meta：不判答没答，回执收成工具结果原文一行。
+const legacyReply = questionCardEntryOf({
+  batchId: 'call-ask',
+  status: 'legacy-reply',
+  questions: [{ id: 'q1', question: '选一个？', options: [{ label: '是' }], multiSelect: false }],
+  text: '用户没有选，直接说了：旧日志里的原话',
+});
+assert.equal(legacyReply.receipt.summary, '用户没有选，直接说了：旧日志里的原话');
+assert.ok(!legacyReply.receipt.summary.includes('你没回答'), '不判答没答');
 console.log('rewind.test.mjs: all assertions passed');

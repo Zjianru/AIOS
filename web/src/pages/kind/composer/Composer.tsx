@@ -67,6 +67,7 @@ export interface ComposerHandle {
 
 interface ClearedDraft {
   text: string;
+  quotes: string[];
   pastes: string[];
   attachments: { id: string; name: string; bytes: number; mime: string }[];
   fromCanvas: { id: string; title: string } | null;
@@ -621,6 +622,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     () =>
       Boolean(
         text.trim() ||
+          quotes.length > 0 ||
           pastes.length > 0 ||
           attachments.length > 0 ||
           fromCanvas ||
@@ -628,7 +630,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           extraCanvases.length > 0 ||
           extraResultCards.length > 0,
       ),
-    [attachments.length, extraCanvases.length, extraResultCards.length, fromCanvas, pastes.length, resultCard, text],
+    [attachments.length, extraCanvases.length, extraResultCards.length, fromCanvas, pastes.length, quotes.length, resultCard, text],
   );
 
   /** T095.5：两下 Esc 清空输入框；清掉的东西压进 cleared，↑ 能取回。 */
@@ -639,6 +641,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     setCleared((previous) =>
       previous.concat({
         text,
+        quotes,
         pastes,
         attachments: attachments.map(({ id, name, bytes, mime }) => ({ id, name, bytes, mime })),
         fromCanvas,
@@ -657,7 +660,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     setExtraResultCards([]);
     setAtMenu(null);
     requestAnimationFrame(() => resize());
-  }, [attachments, extraCanvases, extraResultCards, fromCanvas, hasDraftContent, pastes, resize, resultCard, text]);
+  }, [attachments, extraCanvases, extraResultCards, fromCanvas, hasDraftContent, pastes, quotes, resize, resultCard, text]);
 
   /** T095.5：输入框空着按 ↑，取回最近清掉的一条。 */
   const recallCleared = useCallback(() => {
@@ -667,7 +670,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     changedDuringSendRef.current = true;
     setCleared((previous) => previous.slice(0, -1));
     setText(recalled.text);
-    setQuotes([]);
+    setQuotes(recalled.quotes ?? []);
     setPastes(recalled.pastes);
     setAttachments(recalled.attachments);
     setFromCanvas(recalled.fromCanvas);
@@ -791,6 +794,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         hasText: text.trim().length > 0,
         hasPastes: pastes.length > 0,
         hasAttachments: attachments.length > 0,
+        hasQuotes: quotes.length > 0,
         hasCanvas: fromCanvas !== null,
         hasResultCard: resultCard !== null,
         hasExtraCanvases: extraCanvases.length > 0,

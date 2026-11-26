@@ -29,7 +29,7 @@ import type { TaskReadHeader } from '@/data/generated/TaskReadHeader';
 import type { TurnLabels } from './turnViews';
 import type { TurnViewData } from './turnViews';
 import { applyTaskCardStates } from './taskCardState';
-import { canvasTracks, compactionViewOf, deriveTurnViews, manualSummaryOf, mergeCanvasTracks, prependOlderViews, reconcileTaskCards, taskCcFacts } from './turnViews';
+import { canvasTracks, compactionViewOf, deriveTurnViews, manualSummaryOf, mergeCanvasTracks, placeManualDividers, prependOlderViews, reconcileTaskCards, taskCcFacts } from './turnViews';
 import { rewindSourceOfMessage } from './rewind.ts';
 import { contextPercent, contextTokens } from '@/data/turnUsage';
 import { partialKindReactId, partialKindSayParts } from './kindOutput';
@@ -206,7 +206,8 @@ function refreshTurn(turn: number): void {
       views.sort((left, right) => Number(left.id.split('-')[1]) - Number(right.id.split('-')[1]));
     }
     // T038：本轮新到的 relay 卡并回派发卡（派发卡在别的轮里，单轮 derive 看不到它）。
-    const reconciled = finishViews(views);
+    // T095.6：刷新/追加后把总结分隔重新插回轮次之间。
+    const reconciled = placeManualDividers(finishViews(views));
     return {
       views: reconciled,
       byId: indexOf(reconciled),
@@ -350,6 +351,7 @@ function applyLiveEvent(event: ServiceEvent): void {
         'turn-' + String(dividerTurn ?? state.views.length + 0.5) + '-compaction-' + compactionId;
       const view: TurnViewData = {
         id,
+        seqStart: event.seq,
         startedAt: null,
         durationMs: null,
         status: 'completed',
@@ -373,26 +375,13 @@ function applyLiveEvent(event: ServiceEvent): void {
         stoppedAt: null,
       };
       livePendingCompaction = { id, window };
-      if (manual === 'upTo' && state.rewindDividerBeforeId) {
-        // 总结到这里为止：分隔插在选中的那句之前，而不是末尾。
-        const target = state.rewindDividerBeforeId;
-        const before = state.views.slice();
-        const index = before.findIndex((item) => item.id === target);
-        if (index >= 0) {
-          before.splice(index, 0, view);
-          return {
-            views: before,
-            byId: indexOf(before),
-            ...decorate(before),
-            rewindDividerBeforeId: null,
-          };
-        }
-      }
       const exists = state.views.some((item) => item.id === id);
-      const views = (exists ? state.views.map((item) => (item.id === id ? view : item)) : state.views.concat(view)).sort(
-        (left, right) => Number(left.id.split('-')[1]) - Number(right.id.split('-')[1]),
-      );
-      return { views, byId: indexOf(views) };
+      const merged = exists
+        ? state.views.map((item) => (item.id === id ? view : item))
+        : state.views.concat(view);
+      // T095.6：两种总结的分隔按 targetSeq/seq 插回轮次之间（刷新/翻页同一条规则）。
+      const placed = placeManualDividers(merged);
+      return { views: placed, byId: indexOf(placed), ...decorate(placed) };
     });
     return;
   }
@@ -680,8 +669,8 @@ export const useKindStore = create<KindState>()((set, get) => ({
       // 先换上这页日志再折视图：T054.2 F1 的「改要求回执 seq」等派生要读到这一页里的
       // card/decision，否则刷新后旧结果卡的按钮会先按旧规则出来、之后也没人重算。
       liveEvents = page.events.slice();
-      const views = finishViews(
-        mergeCcViews(deriveTurnViews(page.events, turnLabels()), page.events),
+      const views = placeManualDividers(
+        finishViews(mergeCcViews(deriveTurnViews(page.events, turnLabels()), page.events)),
       );
       const lastSeqOfPage = page.events[page.events.length - 1]?.seq ?? 0;
       const oldestSeq = page.events[0]?.seq ?? null;
@@ -735,7 +724,9 @@ export const useKindStore = create<KindState>()((set, get) => ({
       set((current) => {
         // 跨页的同一行（抄送的 spliced 与领取后的 user/message）只留已经在列表里的那条。
         // T038：同一任务的派发卡可能在更早的页里，relay 卡要并回去。
-        const views = finishViews(prependOlderViews(older, current.views));
+        const views = placeManualDividers(
+          finishViews(prependOlderViews(older, current.views)),
+        );
         return {
           views,
           byId: indexOf(views),
