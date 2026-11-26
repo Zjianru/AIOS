@@ -388,6 +388,71 @@ async fn dismiss_pending_questions_returns_ask_aborted_and_turn_continues() {
     );
 }
 
+/// T090.2：问题卡等回答时用户直接发送一句话 = 回答整批：不进 inbox、没有 user/message，
+/// 工具结果写「用户没有选，直接说了：…」，同一轮继续、本轮 completed。
+#[tokio::test]
+async fn typing_while_a_question_waits_answers_the_batch_and_continues_the_turn() {
+    let server = MockServer::start().await;
+    mount(&server, vec![sse(ASK_TWO_SSE), sse(FINAL_TEXT_SSE)], 2).await;
+    let (agent, data_dir, id) = setup(&server).await;
+    let service = ServiceHost::new(agent.clone());
+    let mut events = service.subscribe_events();
+    let started = service
+        .send(send_request("req-typed", "要问两个问题"))
+        .await;
+    assert!(started.is_ok(), "send 应成功：{started:?}");
+    wait_for(&mut events, "question/asked", 2).await;
+
+    let typed = service
+        .send(send_request("req-typed-reply", "我直接说一句"))
+        .await;
+    assert!(typed.is_ok(), "直接回复应受理：{typed:?}");
+    assert!(typed.unwrap().accepted);
+    agent.idle().await;
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2, "直接回复后同一轮继续发第二次请求");
+    let second = String::from_utf8(requests[1].body.clone()).unwrap();
+    assert!(
+        second.contains("用户没有选，直接说了：我直接说一句"),
+        "工具结果带用户原话：{second}"
+    );
+    assert!(
+        !second.contains("ask_user_question was aborted"),
+        "不是 ASK_ABORTED 错误：{second}"
+    );
+
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
+    let cancelled = store
+        .events()
+        .iter()
+        .filter(|event| matches!(event.kind, session::EventKind::QuestionCancelled { .. }))
+        .count();
+    assert_eq!(cancelled, 2, "两个问题各写 question/cancelled");
+    assert!(
+        !store
+            .events()
+            .iter()
+            .any(|event| matches!(event.kind, session::EventKind::QuestionAnswered { .. })),
+        "直接回复不写 question/answered"
+    );
+    assert!(
+        !store.events().iter().any(|event| matches!(
+            &event.kind,
+            session::EventKind::UserMessage { message, .. }
+                if message.content.iter().any(|block| block.as_text() == Some("我直接说一句"))
+        )),
+        "直接回复不进 user/message"
+    );
+    assert_eq!(
+        turn_ends(data_dir.path(), &id),
+        vec![session::TurnEndReason::Completed],
+        "本轮 completed、不是 aborted"
+    );
+    let quiet = service.status(StatusRequest {}).await.unwrap();
+    assert_eq!(quiet.pending_questions, 0, "回答后没有待答问题");
+}
+
 /// 没有待答问题时关掉不答：方法成功、dismissed=false（可辨结果，不报错）。
 #[tokio::test]
 async fn dismiss_without_pending_questions_reports_nothing() {

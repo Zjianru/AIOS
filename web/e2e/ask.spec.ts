@@ -41,6 +41,48 @@ test('提问整批：选项 + 自己写作答', async ({ page }) => {
   await expect(page.getByText('我自己写的答', { exact: true })).toBeVisible();
 });
 
+/// T090.2：问题卡等回答时直接在输入框发送 = 回答这张卡；Kind 同轮继续，卡写「你直接回复了」。
+test('提问卡等时直接发送：当回答、同轮继续、卡回执「你直接回复了」', async ({ page }) => {
+  await openAndAsk(page);
+  await page.locator('[data-kind="composer-input"]').fill('我直接说一句');
+  await page.keyboard.press('Enter');
+  await expect(page.getByText('（T007 e2e 假回放）')).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByText('你直接回复了', { exact: false })).toBeVisible();
+  await expect(page.getByText('你没回答 Kind 的问题', { exact: false })).toHaveCount(0);
+});
+
+/// T090.2：带粘贴/附件的发送也当回答（不是只认纯文字）。
+test('提问卡等时带粘贴发送：也当回答', async ({ page }) => {
+  await openAndAsk(page);
+  await page.locator('[data-kind="composer-input"]').evaluate((element) => {
+    const data = new DataTransfer();
+    data.setData('text/plain', '粘'.repeat(1200));
+    const event = new ClipboardEvent('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'clipboardData', { value: data });
+    element.dispatchEvent(event);
+  });
+  await expect(page.locator('[data-kind="paste-card"]')).toHaveCount(1, { timeout: 10_000 });
+  await page.keyboard.press('Enter');
+  await expect(page.getByText('（T007 e2e 假回放）')).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByText('你直接回复了', { exact: false })).toBeVisible();
+});
+
+/// T090.2：带附件的发送也当回答（不是只认纯文字/粘贴）。
+test('提问卡等时带附件发送：也当回答', async ({ page }) => {
+  await openAndAsk(page);
+  await page.locator('[data-kind="composer-input"]').evaluate((element) => {
+    const data = new DataTransfer();
+    data.items.add(new File(['附件正文'], '提问附件.txt', { type: 'text/plain' }));
+    const event = new ClipboardEvent('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'clipboardData', { value: data });
+    element.dispatchEvent(event);
+  });
+  await expect(page.locator('[data-kind="file-card"]')).toHaveCount(1, { timeout: 10_000 });
+  await page.keyboard.press('Enter');
+  await expect(page.getByText('（T007 e2e 假回放）')).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByText('你直接回复了', { exact: false })).toBeVisible();
+});
+
 /// T007.6 清单 4：整批不答，模型收到用户没答后照常收尾。
 test('提问整批：整批不答', async ({ page, request }) => {
   await openAndAsk(page);
