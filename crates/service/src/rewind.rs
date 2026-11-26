@@ -27,13 +27,15 @@ fn is_hidden(seq: u64, ranges: &[(u64, u64)]) -> bool {
 }
 
 /// 最后一次压缩 checkpoint 的边界（总结复用同一 checkpoint；恢复不算 checkpoint）。
+///
+/// 边界取成功的 compaction/end 的 seq：压缩替换区间只圈到可压缩消息，被保留的尾部消息
+/// 在 replace end 之后、checkpoint 之前；「最后一次压缩之后」指的是 checkpoint 之后。
 fn last_checkpoint_boundary(events: &[Event]) -> u64 {
     events
         .iter()
-        .filter(|event| !matches!(event.kind, EventKind::ConversationRewound { .. }))
-        .filter_map(|event| match event.surface_op {
-            Some(SurfaceOp::Replace { end_seq, .. }) => Some(end_seq),
-            None => None,
+        .filter_map(|event| match &event.kind {
+            EventKind::CompactionEnd { error: None, .. } => Some(event.seq),
+            _ => None,
         })
         .max()
         .unwrap_or(0)
@@ -59,6 +61,21 @@ fn is_visible_user_message(event: &Event, hidden: &[(u64, u64)]) -> bool {
     };
     matches!(&message.source, model::MessageSource::User { .. })
         && !crate::program_messages::is_program_message(message)
+}
+
+/// 总结请求的输入口径：可见的派生消息，排除 system 和压缩 checkpoint。
+fn is_summary_input_message(event: &Event) -> bool {
+    match &event.kind {
+        EventKind::SystemMessage { .. } => false,
+        EventKind::UserMessage { message, .. } => {
+            !matches!(
+                message.source,
+                model::MessageSource::CompactCheckpoint { .. }
+            ) && !crate::program_messages::is_program_message(message)
+        }
+        EventKind::AssistantMessage { .. } | EventKind::ToolResult { .. } => true,
+        _ => false,
+    }
 }
 
 /// 菜单候选：最后一次 checkpoint 之后、可见、用户自己发的消息（最新在下）。
@@ -120,17 +137,13 @@ pub(crate) fn validate(
         ));
     }
     if action == RewindAction::SummarizeUpTo {
+        // 「前面有内容」按可见派生消息算：System 不算总结对象；上一份 checkpoint
+        // 是压缩产物（MessageSource::CompactCheckpoint），不能当被总结的内容。
         let has_earlier = events.iter().any(|candidate| {
             candidate.seq > boundary
                 && candidate.seq < from_seq
                 && !is_hidden(candidate.seq, &hidden)
-                && matches!(
-                    candidate.kind,
-                    EventKind::SystemMessage { .. }
-                        | EventKind::UserMessage { .. }
-                        | EventKind::AssistantMessage { .. }
-                        | EventKind::ToolResult { .. }
-                )
+                && is_summary_input_message(candidate)
         });
         if !has_earlier {
             return Err(ServiceError::RewindRejected(

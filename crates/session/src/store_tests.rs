@@ -1,4 +1,4 @@
-//! 日志版本读 14–16（旧版原样读、续写 header 留原版本）、13- 与 17+ 拒绝且文件不动；只读读取（不截尾）。
+//! 日志版本读 14–20（旧版原样读、续写 header 留原版本）、13- 与 21+ 拒绝且文件不动；只读读取（不截尾）。
 //!
 //! DSH 依据：`packages/core/session/src/types.ts:90`（SESSION_FORMAT_VERSION）、
 //! `packages/session/session-persistence-jsonl/README.md:77,87,93`（读打开不改历史；
@@ -556,5 +556,155 @@ fn hook_panic_signal() {
         warnings[0].contains("注入的追加钩子 panic"),
         "警告要带原因：{}",
         warnings[0]
+    );
+}
+
+/// T095.4 F2：last_todos 不算恢复区间里的 todo/write，区间外的照旧算。
+#[test]
+fn last_todos_skip_todos_inside_rewound_ranges() {
+    let (data_dir, _cwd, mut store) = create_store();
+    let id = store.id().clone();
+    let seqs = store
+        .append(&[
+            EventKind::TurnStart { turn: 1 },
+            EventKind::UserMessage {
+                turn: 1,
+                step: 1,
+                message: Message::text(model::Role::User, "这句话被恢复掉"),
+            },
+            EventKind::TodoWrite {
+                todos: vec![crate::TodoItem {
+                    content: "恢复区间里的待办".to_owned(),
+                    status: crate::TodoStatus::Pending,
+                }],
+            },
+            EventKind::TurnEnd {
+                turn: 1,
+                reason: TurnEndReason::Completed,
+            },
+        ])
+        .unwrap();
+    store
+        .append_surface(
+            EventKind::ConversationRewound {},
+            crate::SurfaceOp::Replace {
+                start_seq: seqs[1],
+                end_seq: seqs[2],
+            },
+            Vec::new(),
+        )
+        .unwrap();
+    let outside_seqs = store
+        .append(&[EventKind::TodoWrite {
+            todos: vec![crate::TodoItem {
+                content: "区间外要留着的待办".to_owned(),
+                status: crate::TodoStatus::InProgress,
+            }],
+        }])
+        .unwrap();
+    drop(store);
+
+    let reopened = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
+    let todos = crate::last_todos(reopened.events()).expect("区间外还有待办");
+    assert_eq!(
+        todos
+            .iter()
+            .map(|todo| todo.content.as_str())
+            .collect::<Vec<_>>(),
+        vec!["区间外要留着的待办"],
+        "恢复区间里的 todo/write 不算",
+    );
+
+    drop(reopened);
+    let mut writer = SessionStore::open(data_dir.path(), &id).unwrap();
+    writer
+        .append_surface(
+            EventKind::ConversationRewound {},
+            crate::SurfaceOp::Replace {
+                start_seq: outside_seqs[0],
+                end_seq: outside_seqs[0],
+            },
+            Vec::new(),
+        )
+        .unwrap();
+    drop(writer);
+    let reopened = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
+    assert_eq!(
+        crate::last_todos(reopened.events()),
+        None,
+        "区间外那条也被恢复后，没有可算的待办",
+    );
+}
+
+/// T095.4 F2：画布当前版按恢复区间重算（区间里的版本不算）。
+#[test]
+fn canvases_skip_versions_inside_rewound_ranges() {
+    let (data_dir, _cwd, mut store) = create_store();
+    let id = store.id().clone();
+    let canvas_meta = |n: u64| {
+        serde_json::json!({
+            "canvas": {
+                "id": "cv-1",
+                "html": format!("<p>v{n}</p>"),
+                "title": "测试画布",
+                "n": n,
+            }
+        })
+    };
+    let seqs = store
+        .append(&[EventKind::ToolResult {
+            turn: 1,
+            step: 1,
+            message: Message::tool_result("call-canvas-1", "已显示", false),
+            error: None,
+            meta: Some(canvas_meta(1)),
+        }])
+        .unwrap();
+    store
+        .append_surface(
+            EventKind::ConversationRewound {},
+            crate::SurfaceOp::Replace {
+                start_seq: seqs[0],
+                end_seq: seqs[0],
+            },
+            Vec::new(),
+        )
+        .unwrap();
+    let outside = store
+        .append(&[EventKind::ToolResult {
+            turn: 1,
+            step: 1,
+            message: Message::tool_result("call-canvas-2", "已显示", false),
+            error: None,
+            meta: Some(canvas_meta(2)),
+        }])
+        .unwrap();
+    drop(store);
+
+    let reopened = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
+    let canvases = crate::projection::canvases(reopened.events());
+    assert_eq!(canvases.len(), 1);
+    assert_eq!(
+        canvases[0].n, 2,
+        "区间里的第 1 版不算，当前版是区间外的第 2 版"
+    );
+
+    drop(reopened);
+    let mut writer = SessionStore::open(data_dir.path(), &id).unwrap();
+    writer
+        .append_surface(
+            EventKind::ConversationRewound {},
+            crate::SurfaceOp::Replace {
+                start_seq: outside[0],
+                end_seq: outside[0],
+            },
+            Vec::new(),
+        )
+        .unwrap();
+    drop(writer);
+    let reopened = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
+    assert!(
+        crate::projection::canvases(reopened.events()).is_empty(),
+        "两版都被恢复后没有当前版",
     );
 }

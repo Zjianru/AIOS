@@ -40,6 +40,14 @@ async fn open_with(server: &MockServer) -> (service::RootHost, tempfile::TempDir
     (host, data)
 }
 
+async fn mount_sequence_response(server: &MockServer, bodies: Vec<ResponseTemplate>) {
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(SequenceResponder::new(bodies))
+        .mount(server)
+        .await;
+}
+
 async fn mount_sequence(server: &MockServer, bodies: Vec<String>) {
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
@@ -425,15 +433,111 @@ async fn apply_rejects_while_a_turn_is_running() {
 }
 
 #[tokio::test]
-async fn compact_then_restore_recomputes_derived_and_page_history() {
+async fn summarize_up_to_after_compaction_ignores_previous_checkpoint() {
     let server = MockServer::start().await;
     mount_sequence(
         &server,
         vec![
             text_sse("回答一"),
             text_sse("回答二"),
-            text_sse("压缩总结正文"),
+            text_sse("压缩总结"),
             text_sse("回答三"),
+            text_sse("回答四"),
+            text_sse("第二份总结"),
+        ],
+    )
+    .await;
+    let (host, data) = open_with(&server).await;
+    send(&host, "req-1", "第一句").await;
+    wait_turns(&host, data.path(), 1).await;
+    send(&host, "req-2", "第二句").await;
+    wait_turns(&host, data.path(), 2).await;
+    wait_idle(&host).await;
+    host.dispatch(Call::Compact(service::CompactRequest::default()))
+        .await
+        .expect("compact");
+
+    send(&host, "req-3", "第三句").await;
+    wait_turns(&host, data.path(), 3).await;
+    send(&host, "req-4", "第四句").await;
+    wait_turns(&host, data.path(), 4).await;
+    wait_idle(&host).await;
+    let listed = rewind(&host, RewindAction::List, None).await.expect("list");
+    assert_eq!(
+        listed
+            .messages
+            .iter()
+            .map(|message| message.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["第三句", "第四句"],
+        "压缩后菜单只剩之后的话",
+    );
+    let third = listed.messages[0].seq;
+    let fourth = listed.messages[1].seq;
+
+    // 压缩后第一句前面只有上一份 checkpoint：不能总结到这里为止。
+    let error = rewind(&host, RewindAction::SummarizeUpTo, Some(third))
+        .await
+        .expect_err("checkpoint 不算前面有内容");
+    assert!(
+        error.to_string().contains("前面没有可以总结"),
+        "原因要可读：{error}",
+    );
+
+    // 选后面一句：区间从压缩后第一句起，不含 checkpoint。
+    let applied = rewind(&host, RewindAction::SummarizeUpTo, Some(fourth))
+        .await
+        .expect("从第三句起能总结")
+        .applied
+        .expect("回执");
+    assert_eq!(applied.start_seq, third, "区间从压缩后第一句起");
+    assert!(applied.end_seq >= third && applied.end_seq < fourth);
+    let events = read_root_events(data.path());
+    let checkpoint_seq = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            session::EventKind::UserMessage { message, .. }
+                if matches!(
+                    message.source,
+                    model::MessageSource::CompactCheckpoint { .. }
+                ) =>
+            {
+                Some(event.seq)
+            }
+            _ => None,
+        })
+        .expect("压缩 checkpoint 在日志里");
+    assert!(
+        applied.start_seq > checkpoint_seq,
+        "上一份 checkpoint 不在总结区间里"
+    );
+}
+
+#[tokio::test]
+async fn compact_then_restore_recomputes_derived_page_and_todos() {
+    let server = MockServer::start().await;
+    let first_todo = r#"{"todos":[{"content":"第一轮留下的待办","status":"pending"}]}"#;
+    let restored_todo = r#"{"todos":[{"content":"恢复区间里的待办","status":"in_progress"}]}"#;
+    mount_sequence_response(
+        &server,
+        vec![
+            sse(crate::common::tool_use_sse(
+                0,
+                "call-todo-1",
+                "todo_write",
+                first_todo,
+            )),
+            sse(text_sse("回答一")),
+            sse(text_sse("回答二")),
+            sse(text_sse("压缩总结")),
+            sse(crate::common::tool_use_sse(
+                0,
+                "call-todo-2",
+                "todo_write",
+                restored_todo,
+            )),
+            sse(text_sse("回答三")),
+            sse(text_sse("回答四")),
         ],
     )
     .await;
@@ -444,7 +548,6 @@ async fn compact_then_restore_recomputes_derived_and_page_history() {
     wait_turns(&host, data.path(), 2).await;
     wait_idle(&host).await;
 
-    // 先压缩：第二句被 checkpoint 替换，菜单只剩 checkpoint 之后的话。
     let compacted = host
         .dispatch(Call::Compact(service::CompactRequest::default()))
         .await
@@ -453,45 +556,38 @@ async fn compact_then_restore_recomputes_derived_and_page_history() {
         panic!("compact 响应")
     };
     assert!(compacted.compacted.is_some(), "有可压缩历史");
-    assert!(
-        rewind(&host, RewindAction::List, None)
-            .await
-            .expect("list")
-            .messages
-            .is_empty(),
-        "压缩后没有 checkpoint 之后的用户消息",
+    let events = read_root_events(data.path());
+    assert_eq!(
+        session::last_todos(&events).map(|todos| todos[0].content.clone()),
+        Some("第一轮留下的待办".to_owned()),
+        "压缩不藏待办（待办照旧算）",
     );
 
+    // 压缩后再写一张 todo，落在恢复区间里。
     send(&host, "req-3", "第三句").await;
     let events = wait_turns(&host, data.path(), 3).await;
     wait_idle(&host).await;
-    let third = user_seq(&events, "第三句");
-    let listed = rewind(&host, RewindAction::List, None).await.expect("list");
     assert_eq!(
-        listed
-            .messages
-            .iter()
-            .map(|message| message.text.as_str())
-            .collect::<Vec<_>>(),
-        vec!["第三句"],
-        "菜单只给最后一次压缩之后的话",
+        session::last_todos(&events).map(|todos| todos[0].content.clone()),
+        Some("恢复区间里的待办".to_owned()),
     );
-
+    let third = user_seq(&events, "第三句");
     let applied = rewind(&host, RewindAction::Restore, Some(third))
         .await
         .expect("restore")
         .applied
         .expect("回执");
     assert_eq!(applied.start_seq, third);
+
     let events = read_root_events(data.path());
     assert_eq!(
-        session::rewound_ranges(&events).len(),
-        1,
-        "压缩后恢复再写一条 rewound 区间",
+        session::last_todos(&events).map(|todos| todos[0].content.clone()),
+        Some("第一轮留下的待办".to_owned()),
+        "恢复区间里的待办不算，压缩区间里的照旧算",
     );
-    assert_eq!(session::last_todos(&events), None);
+    assert_eq!(session::rewound_ranges(&events).len(), 1);
 
-    // 页面历史过滤恢复区间；恢复后发新一句，请求里没有再带第三句。
+    // 页面历史过滤恢复区间。
     let page = host
         .dispatch(Call::Events(EventsRequest {
             before_seq: None,
@@ -509,5 +605,23 @@ async fn compact_then_restore_recomputes_derived_and_page_history() {
             .iter()
             .all(|event| !(event.seq >= applied.start_seq && event.seq <= applied.end_seq)),
         "页面分页不返回恢复区间里的历史",
+    );
+
+    // 恢复后再发一句：派生请求按恢复后的历史来。
+    send(&host, "req-4", "第四句").await;
+    wait_turns(&host, data.path(), 4).await;
+    let requests = server.received_requests().await.unwrap();
+    let last: serde_json::Value = serde_json::from_slice(&requests.last().unwrap().body).unwrap();
+    let texts = body_user_texts(&last);
+    assert!(texts.iter().any(|text| text.contains("第四句")));
+    assert!(
+        !texts
+            .iter()
+            .any(|text| text.contains("第三句") || text.contains("恢复区间里的待办")),
+        "恢复掉的段不进派生：{texts:?}",
+    );
+    assert!(
+        texts.iter().any(|text| text.contains("压缩总结")),
+        "压缩 checkpoint 还在派生里：{texts:?}",
     );
 }

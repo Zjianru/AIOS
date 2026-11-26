@@ -709,17 +709,21 @@ pub(crate) async fn rewind_summarize_up_to(
             .events()
             .iter()
             .filter(|event| event.seq < to_seq)
-            .filter_map(|event| match event.surface_op {
-                Some(SurfaceOp::Replace { end_seq, .. }) => Some(end_seq),
-                None => None,
+            .filter_map(|event| match &event.kind {
+                EventKind::CompactionEnd { error: None, .. } => Some(event.seq),
+                _ => None,
             })
             .max()
             .unwrap_or(0)
     };
-    // 系统消息不进总结区间（和手动压缩从 derived[1] 起同一口径）。
+    // 系统消息和上一份 checkpoint（压缩产物）都不进总结区间：checkpoint 不是被总结的内容。
     let start = derived
         .iter()
-        .position(|(seq, message)| *seq > boundary && message.role != Role::System)
+        .position(|(seq, message)| {
+            *seq > boundary
+                && message.role != Role::System
+                && !matches!(message.source, MessageSource::CompactCheckpoint { .. })
+        })
         .unwrap_or(derived.len());
     if start >= target {
         return Err(AgentError::Compaction(
