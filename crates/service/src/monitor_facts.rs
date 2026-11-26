@@ -393,7 +393,12 @@ impl Agg {
                 }
                 EventKind::ToolCall { call_id, name, .. } => {
                     calls.insert(call_id.clone(), (event.time, name == "bash"));
-                    add_count(&mut self.tools, name, project_id.clone());
+                    add_count(
+                        &mut self.tools,
+                        name,
+                        project_id.clone(),
+                        matches!(group, CostGroup::Kind),
+                    );
                     self.add_day_count(tz, event.time, true);
                 }
                 EventKind::ToolResult { message, .. } => {
@@ -412,7 +417,12 @@ impl Agg {
             }
         }
         for fact in crate::commands::command_facts(events) {
-            add_count(&mut self.commands, &fact.program, project_id.clone());
+            add_count(
+                &mut self.commands,
+                &fact.program,
+                project_id.clone(),
+                matches!(group, CostGroup::Kind),
+            );
             self.add_day_count(tz, fact.time, false);
         }
         for repeat in crate::commands::repeated_commands(events) {
@@ -503,10 +513,11 @@ impl Agg {
 
     fn add_usage(&mut self, key: &str, usage: &Usage, cost: Option<f64>, group: &CostGroup) {
         let project_id = group.project_id().map(str::to_owned);
+        let is_kind = matches!(group, CostGroup::Kind);
         if let Some(row) = self
             .models
             .iter_mut()
-            .find(|row| row.key == key && row.project_id == project_id)
+            .find(|row| row.key == key && row.project_id == project_id && row.is_kind == is_kind)
         {
             row.requests += 1;
             row.input_tokens += usage.input_tokens.unwrap_or(0);
@@ -525,6 +536,7 @@ impl Agg {
             key: key.to_owned(),
             label: key.to_owned(),
             project_id,
+            is_kind,
             requests: 1,
             input_tokens: usage.input_tokens.unwrap_or(0),
             output_tokens: usage.output_tokens.unwrap_or(0),
@@ -536,10 +548,15 @@ impl Agg {
     }
 }
 
-fn add_count(rows: &mut Vec<MonitorUsageRow>, key: &str, project_id: Option<String>) {
+fn add_count(
+    rows: &mut Vec<MonitorUsageRow>,
+    key: &str,
+    project_id: Option<String>,
+    is_kind: bool,
+) {
     if let Some(row) = rows
         .iter_mut()
-        .find(|row| row.key == key && row.project_id == project_id)
+        .find(|row| row.key == key && row.project_id == project_id && row.is_kind == is_kind)
     {
         row.requests += 1;
         return;
@@ -548,6 +565,7 @@ fn add_count(rows: &mut Vec<MonitorUsageRow>, key: &str, project_id: Option<Stri
         key: key.to_owned(),
         label: key.to_owned(),
         project_id,
+        is_kind,
         requests: 1,
         input_tokens: 0,
         output_tokens: 0,
@@ -1457,8 +1475,23 @@ mod bucket_tests {
             .iter()
             .filter(|row| row.key == "deepseek-flash" && row.project_id.is_none())
             .collect();
-        assert_eq!(none_rows.len(), 1, "个人+Kind 合并成一行");
-        assert_eq!(none_rows[0].requests, 2, "两边的请求合在一起");
+        assert_eq!(none_rows.len(), 2, "个人与 Kind 用 isKind 分成两行");
+        assert_eq!(
+            none_rows
+                .iter()
+                .find(|row| !row.is_kind)
+                .expect("个人行")
+                .requests,
+            1
+        );
+        assert_eq!(
+            none_rows
+                .iter()
+                .find(|row| row.is_kind)
+                .expect("Kind 行")
+                .requests,
+            1
+        );
         assert!(
             agg.models
                 .iter()

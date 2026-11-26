@@ -194,7 +194,7 @@ test('项目：侧栏新建、项目页逐项改、工作页 ?p=、监控 ?p= �
       .locator('[data-kind="kpis"] [data-kind="kpi"]')
       .filter({ hasText: '花费' });
     await expect(costKpi).toContainText(expectedCost, { timeout: 20_000 });
-    await expect(page.locator('[data-kind="project-scope-note"]')).toContainText('日柱按 groups 拆');
+    await expect(page.locator('[data-kind="project-scope-note"]')).toContainText('选了项目时，每天的花费和排行只算这个项目');
     await expect(page.locator('[data-kind="cost-daily"]')).toBeVisible();
     await expect(page.locator('[data-kind="task-cards"] [data-kind="task-card"]')).toHaveCount(1);
     const taskCard = page.locator('[data-kind="task-card"]').filter({ hasText: '判重改成按' }).first();

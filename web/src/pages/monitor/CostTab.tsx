@@ -100,7 +100,8 @@ function DailyBars({
       </div>
     );
   }
-  const inFilter = (group: MonitorDayGroup) => !filter || matchesProject(group.projectId, filter);
+  const inFilter = (group: MonitorDayGroup) =>
+    !filter || (group.label !== 'Kind 对话' && matchesProject(group.projectId, filter));
   const series = filter
     ? [
         {
@@ -257,19 +258,26 @@ export function CostTab() {
   const loading = useMonitorStore((state) => state.loading);
   const range = useMonitorStore((state) => state.range);
   const setRange = useMonitorStore((state) => state.setRange);
+  const [sort, setSort] = useState<'spend' | 'tokens' | 'busy'>('spend');
   const monthDays = useMonthDays(range);
   const projectsList = projects ?? [];
   const tasks = (snapshot?.tasks ?? []).filter((task) => matchesProject(task.projectId, projectFilter));
-  const models = (snapshot?.models ?? []).filter((row) => matchesProject(row.projectId, projectFilter));
-  const tools = (snapshot?.tools ?? []).filter((row) => matchesProject(row.projectId, projectFilter));
-  const commands = (snapshot?.commands ?? []).filter((row) => matchesProject(row.projectId, projectFilter));
+  const models = (snapshot?.models ?? []).filter(
+    (row) => matchesProject(row.projectId, projectFilter) && !(projectFilter && row.isKind),
+  );
+  const tools = (snapshot?.tools ?? []).filter(
+    (row) => matchesProject(row.projectId, projectFilter) && !(projectFilter && row.isKind),
+  );
+  const commands = (snapshot?.commands ?? []).filter(
+    (row) => matchesProject(row.projectId, projectFilter) && !(projectFilter && row.isKind),
+  );
   const rings = snapshot?.rings;
 
   const dayGroups = useMemo(() => {
     const groups = new Map<string, { key: string; name: string; color: string; value: number }>();
     for (const day of snapshot?.days ?? []) {
       for (const group of day.groups) {
-        if (projectFilter && !matchesProject(group.projectId, projectFilter)) continue;
+        if (projectFilter && (group.label === 'Kind 对话' || !matchesProject(group.projectId, projectFilter))) continue;
         const key = group.projectId ?? (group.label === 'Kind 对话' ? 'kind' : 'personal');
         const current = groups.get(key) ?? {
           key,
@@ -320,7 +328,15 @@ export function CostTab() {
         { key: 'cmd', name: '命令', value: rings?.commandMs ?? 0, color: CMD_COLOR },
         { key: 'unknown', name: '没采到', value: 0, color: 'var(--line-3)' },
       ];
-  const sortedTasks = [...tasks].sort((left, right) => (right.costUsd ?? 0) - (left.costUsd ?? 0));
+  const durationOf = (task: MonitorTaskSummary) =>
+    task.startedAt ? (task.endedAt ?? Date.now()) - task.startedAt : 0;
+  const sortedTasks = [...tasks].sort((left, right) => {
+    if (sort === 'tokens') {
+      return right.inputTokens + right.outputTokens - (left.inputTokens + left.outputTokens);
+    }
+    if (sort === 'busy') return durationOf(right) - durationOf(left);
+    return (right.costUsd ?? 0) - (left.costUsd ?? 0);
+  });
   const daysForBars = range === 'today' ? (monthDays.length ? monthDays : snapshot.days) : snapshot.days;
   const rankProject = (row: MonitorUsageRow) =>
     row.projectId ? (projectsList.find((project) => project.id === row.projectId)?.name ?? row.projectId) : '个人';
@@ -343,7 +359,7 @@ export function CostTab() {
         {loading ? <span className="text-1 text-ink-3">刷新中…</span> : null}
         {projectFilter ? (
           <span className="text-1 text-ink-3" data-kind="project-scope-note">
-            日柱按 groups 拆（Kind/个人合并）；时间环/在忙/全站合计不能拆。
+            选了项目时，每天的花费和排行只算这个项目；在忙和时间环拆不开，还是全部任务的。
           </span>
         ) : null}
       </div>
@@ -359,7 +375,9 @@ export function CostTab() {
           value={projectCost == null ? <Missing /> : formatUsd(projectCost, partial)}
           sub={
             projectFilter
-              ? '只算这个项目，不混全量'
+              ? projectFilter === 'personal'
+                ? '个人'
+                : (projectsList.find((project) => project.id === projectFilter)?.name ?? projectFilter)
               : '其中 Kind 对话 ' + (kindCost == null ? '没采到' : formatUsd(kindCost, kindUnpriced))
           }
         />
@@ -453,6 +471,18 @@ export function CostTab() {
         <div className="mb-3 mt-6 flex flex-wrap items-center gap-2">
           <h2 className="text-3 font-semibold text-ink">任务</h2>
           <span className="text-1 text-ink-3">{tasks.length} 件 · 点开看诊断</span>
+          <span className="flex-1" />
+          <span data-kind="task-sort">
+            <Segmented
+              value={sort}
+              onChange={setSort}
+              options={[
+                ['spend', '按花费'],
+                ['tokens', '按 token'],
+                ['busy', '按时长'],
+              ]}
+            />
+          </span>
         </div>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3" data-kind="task-cards">
           {sortedTasks.map((task) => (
