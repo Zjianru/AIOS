@@ -4,7 +4,7 @@ use super::*;
 fn protocol_version_is_31() {
     assert_eq!(
         PROTOCOL_VERSION, 31,
-        "T095：放回字段（mime/resultCards/canvases）与回退请求，升到 31"
+        "本票：放回字段（mime/resultCards/canvases）与回退请求，升到 31"
     );
 }
 

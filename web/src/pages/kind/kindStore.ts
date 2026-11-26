@@ -127,7 +127,7 @@ let contextWindow = 0;
 let pendingCompactionAuto = true;
 let livePendingCompaction: { id: string; window?: number } | null = null;
 
-/** T095.5：按日志 seq 取那一条用户消息的原文（恢复时放回输入框用）。 */
+/** 本票：按日志 seq 取那一条用户消息的原文（恢复时放回输入框用）。 */
 export function rewindSourceOf(seq: number) {
   const event = liveEvents.find((item) => item.seq === seq && item.type === 'user/message');
   if (!event) return null;
@@ -206,7 +206,7 @@ function refreshTurn(turn: number): void {
       views.sort((left, right) => Number(left.id.split('-')[1]) - Number(right.id.split('-')[1]));
     }
     // T038：本轮新到的 relay 卡并回派发卡（派发卡在别的轮里，单轮 derive 看不到它）。
-    // T095.6：刷新/追加后把总结分隔重新插回轮次之间。
+    // 本票：刷新/追加后把总结分隔重新插回轮次之间。
     const reconciled = placeManualDividers(finishViews(views));
     return {
       views: reconciled,
@@ -379,7 +379,7 @@ function applyLiveEvent(event: ServiceEvent): void {
       const merged = exists
         ? state.views.map((item) => (item.id === id ? view : item))
         : state.views.concat(view);
-      // T095.6：两种总结的分隔按 targetSeq/seq 插回轮次之间（刷新/翻页同一条规则）。
+      // 本票：两种总结的分隔按 targetSeq/seq 插回轮次之间（刷新/翻页同一条规则）。
       const placed = placeManualDividers(merged);
       return { views: placed, byId: indexOf(placed), ...decorate(placed) };
     });
@@ -538,11 +538,9 @@ export const useKindStore = create<KindState>()((set, get) => ({
   composerResultCard: null,
   queueRestores: [],
   restoreMissing: false,
-  rewindDividerBeforeId: null,
-  setRewindDividerBeforeId: (id) => set({ rewindDividerBeforeId: id }),
   dropViewsFromSeq: (startSeq, endSeq) =>
     set((state) => {
-      // T095.6 F1：按 applied.startSeq 过滤已加载的 views（不依赖目标轮是否在首屏）。
+      // 本票 F1：按 applied.startSeq 过滤已加载的 views（不依赖目标轮是否在首屏）。
       // 命中第一个「这一轮的用户消息 seq 或首事件 seq >= startSeq」的轮，从它起全部收起。
       const index = state.views.findIndex((view) => {
         if (view.compaction) return false;
@@ -551,7 +549,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
       });
       if (index < 0) return {};
       const views = state.views.slice(0, index);
-      // 恢复区间里的历史不再参与画布当前版（T095.5：第 2 版被收起，当前版回到第 1 版）。
+      // 恢复区间里的历史不再参与画布当前版（本票：第 2 版被收起，当前版回到第 1 版）。
       liveEvents = liveEvents.filter(
         (event) => event.seq < startSeq || event.seq > endSeq,
       );

@@ -1,4 +1,4 @@
-// T095.5：双击 Esc 回退的前端数据（原文还原 + 菜单行）。
+// 本票：双击 Esc 回退的前端数据（原文还原 + 菜单行）。
 // 候选列表以服务 rewind list 为准（内核给 seq/time/一行），这里只做「seq → 本地轮」的映射
 // 和「从日志消息还原原文（字/粘贴/附件/结果卡/画布标记）」。
 
@@ -80,7 +80,7 @@ export function rewindSourceOfMessage(message: unknown): RewindSource | null {
   return source;
 }
 
-/** T095.5：输入框空着才允许 ↑ 找回（字/粘贴/附件/结果卡/画布任一存在就不召回）。 */
+/** 本票：输入框空着才允许 ↑ 找回（字/粘贴/附件/结果卡/画布任一存在就不召回）。 */
 export function canRecallCleared(input: {
   hasText: boolean;
   hasPastes: boolean;

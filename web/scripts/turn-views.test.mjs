@@ -232,7 +232,7 @@ function toolResultEvent(callId, output) {
   assert.equal(views[0].answer.text, '我只写了一半');
 }
 
-// —— T095.3 F1：问题卡 replied 只从 tool/result.meta 派生，不看工具结果正文 ——
+// —— 本票 F1：问题卡 replied 只从 tool/result.meta 派生，不看工具结果正文 ——
 {
   seq = 0;
   const arbitrary = '随便改过的工具结果文案（没有旧前缀）';
@@ -277,7 +277,7 @@ function toolResultEvent(callId, output) {
   ]);
   assert.notEqual(views[0].question.status, 'replied', '只有旧正文前缀、没有 meta → 不派生 replied');
 }
-// —— T095.6 K4：旧日志没有 meta：不判答没答，收成一行显示工具结果原文 ——
+// —— 本票 K4：旧日志没有 meta：不判答没答，收成一行显示工具结果原文 ——
 {
   seq = 0;
   const raw = '用户没有选，直接说了：旧日志里的一句话';

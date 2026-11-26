@@ -364,7 +364,7 @@ async fn compact_once(
     Ok(outcome)
 }
 
-/// 一次可指定区间的 checkpoint 事务（T095.4：压缩/两种总结共用）。
+/// 一次可指定区间的 checkpoint 事务（本票：压缩/两种总结共用）。
 ///
 /// 语义与旧 compact_once 相同：start → 摘要 → summary → 替换消息 → end。summary_input
 /// 是投给摘要请求的消息；shadowed_seqs 是这次要替换掉的派生节点。expected_start_index
@@ -593,7 +593,7 @@ async fn compact_transaction(
     ))
 }
 
-/// 恢复对话（T095.4）：写 conversation/rewound 事件，外壳 replace 圈住 from_seq 到当前日志末尾。
+/// 恢复对话（本票）：写 conversation/rewound 事件，外壳 replace 圈住 from_seq 到当前日志末尾。
 pub(crate) async fn rewind_restore(
     host: &dyn LoopAccess,
     from_seq: u64,
@@ -646,7 +646,7 @@ fn visible_derived(host: &dyn LoopAccess) -> Vec<(u64, Message)> {
     store.derive_messages_with_seqs()
 }
 
-/// 从这里起总结（T095.4）：from_seq 到末尾压成一段。
+/// 从这里起总结（本票）：from_seq 到末尾压成一段。
 pub(crate) async fn rewind_summarize_from(
     host: &dyn LoopAccess,
     from_seq: u64,
@@ -693,7 +693,7 @@ pub(crate) async fn rewind_summarize_from(
     })
 }
 
-/// 总结到这里为止（T095.4）：上次 checkpoint 之后到 to_seq 之前压成一段。
+/// 总结到这里为止（本票）：上次 checkpoint 之后到 to_seq 之前压成一段。
 pub(crate) async fn rewind_summarize_up_to(
     host: &dyn LoopAccess,
     to_seq: u64,

@@ -1,5 +1,5 @@
 /**
- * T095.5：双击 Esc 的菜单（照 app-v14 c6c7073 的 RewindPanel）。
+ * 本票：双击 Esc 的菜单（照 app-v14 c6c7073 的 RewindPanel）。
  *
  * 贴在输入框上面：列表是你发过的话（服务 rewind list，最新在下，默认选最新）；
  * 选一条后四个动作：恢复对话 / 从这里起总结 / 总结到这里为止 / 算了。
@@ -67,7 +67,6 @@ export function RewindPanel({
   }, [phase, notice]);
 
   const selected = rows.find((row) => row.seq === selectedSeq) ?? null;
-  const selectedView = selectedSeq === null ? undefined : viewOfSeq(views, selectedSeq);
   const upToBlocked = selected ? !hasBefore(rows, selected.seq) : true;
   const listRows = rows.length + 1;
 
@@ -198,7 +197,6 @@ export function RewindPanel({
           <div className="mx-3 mb-1 truncate border-l-2 border-line-2 pl-2 text-ink-2">
             <span className="mr-2 text-1 text-ink-3">{clockOf(selected.time)}</span>
             {firstLine(selected.text)}
-            {selectedView === undefined ? null : null}
           </div>
           {ACTIONS.map((item, index) => {
             const blocked = item.action === 'summarize-up-to' && upToBlocked;

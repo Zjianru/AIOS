@@ -193,7 +193,7 @@ export interface SendAttachmentRef {
   id: string;
   name: string;
   bytes: number;
-  /** T095.2：原类型（旧页面/旧日志没有）。 */
+  /** 本票：原类型（旧页面/旧日志没有）。 */
   mime?: string | null;
 }
 
@@ -206,7 +206,7 @@ export interface SendOptions {
   canvas?: { id: string; title: string };
   /** T054.2：结果卡「要求修改」带进输入框的那张卡。 */
   resultCard?: SendResultCardRef;
-  /** T095.2（N2）：一次放回多条结果卡/画布标记，按顺序发送。 */
+  /** 本票（N2）：一次放回多条结果卡/画布标记，按顺序发送。 */
   resultCards?: SendResultCardRef[];
   canvases?: { id: string; title: string }[];
 }
@@ -247,7 +247,7 @@ export async function sendMessage(
     delivery: 'follow-up',
     pastes: options.pastes ?? [],
     attachments: options.attachments ?? [],
-    // T095.2（N2）：多条放回按顺序走列表；单条旧字段不再重复发（服务端两套都收）。
+    // 本票（N2）：多条放回按顺序走列表；单条旧字段不再重复发（服务端两套都收）。
     resultCards: options.resultCards ?? [],
     canvases: options.canvases ?? [],
   });
@@ -316,12 +316,12 @@ export async function compactThread(commandId: string): Promise<void> {
   await post({ method: 'compact', commandId });
 }
 
-/** T095.5：回退菜单的候选（最后一次压缩之后、可见的用户消息，最新在下）。 */
+/** 本票：回退菜单的候选（最后一次压缩之后、可见的用户消息，最新在下）。 */
 export async function rewindList(): Promise<RewindResponse> {
   return post({ method: 'rewind', action: 'list' });
 }
 
-/** T095.5：执行一个回退动作；被拒时服务端回可读原因。 */
+/** 本票：执行一个回退动作；被拒时服务端回可读原因。 */
 export async function rewindApply(
   action: 'restore' | 'summarize-from' | 'summarize-up-to',
   fromSeq: number,

@@ -450,7 +450,7 @@ async fn typing_while_waiting_answers_the_batch_and_continues() {
     assert_eq!(
         result_meta,
         Some(serde_json::json!({ "ask_direct_reply": true })),
-        "直接回复的结构化标记在 tool/result.meta（T095.3/N3）"
+        "直接回复的结构化标记在 tool/result.meta（本票/N3）"
     );
     assert_eq!(
         events

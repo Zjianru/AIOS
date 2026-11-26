@@ -122,7 +122,7 @@ export interface KindState {
       canvas?: { id: string; title: string };
  /** ：结果卡「要求修改」带进输入框的那张卡。 */
       resultCard?: { taskId: string; title: string; version: number };
- /** T095.2（N2）：一次放回多条画布/结果卡，按顺序。 */
+ /** 本票（N2）：一次放回多条画布/结果卡，按顺序。 */
       canvases?: { id: string; title: string }[];
       resultCards?: { taskId: string; title: string; version: number }[];
     },
@@ -145,10 +145,7 @@ export interface KindState {
   ) => Promise<void>;
   /** 页面从日志折叠出的、被停止清掉的排队消息（Composer 按 seq 最多放回一次）。 */
   queueRestores: QueueRestore[];
-  /** T095.5：总结到这里为止时，分隔线要插在选中的那一轮之前。 */
-  rewindDividerBeforeId: string | null;
-  setRewindDividerBeforeId: (id: string | null) => void;
-  /** T095.5/.6：恢复对话后按区间起点把已加载的轮及之后的本地视图去掉（服务端日志区间也藏了）。 */
+  /** 本票/.6：恢复对话后按区间起点把已加载的轮及之后的本地视图去掉（服务端日志区间也藏了）。 */
   dropViewsFromSeq: (startSeq: number, endSeq: number) => void;
   /** 往前翻到日志开头还有被清消息对不上（输入框上方提示，不静默）。 */
   restoreMissing: boolean;

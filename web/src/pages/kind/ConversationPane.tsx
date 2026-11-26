@@ -273,7 +273,7 @@ export function ConversationPane() {
   }, [reveal, firstItemIndex, viewCount]);
 
 
-  // T095.5：双击 Esc 的菜单与第一下提示。
+  // 本票：双击 Esc 的菜单与第一下提示。
   const [rewindPhase, setRewindPhase] = useState<'closed' | 'list' | 'actions'>('closed');
   const [rewindRows, setRewindRows] = useState<RewindRow[]>([]);
   const [rewindSelected, setRewindSelected] = useState<number | null>(null);
@@ -301,7 +301,7 @@ export function ConversationPane() {
     }
   }, []);
 
-  /** T095.6：原文按 seq 从日志取（目标不在首屏也拿得到），不依赖 liveEvents 的首屏缓存。 */
+  /** 本票：原文按 seq 从日志取（目标不在首屏也拿得到），不依赖 liveEvents 的首屏缓存。 */
   const loadRewindSource = useCallback(async (seq: number) => {
     try {
       const page = await fetchEventsPage({
@@ -339,7 +339,7 @@ export function ConversationPane() {
         const response = await rewindApply(action, seq);
         if (!response.applied) throw new Error('服务没有回写入结果');
         if (action === 'restore') {
-          // T095.6 F1：按区间起点收起已加载的较新轮（目标不在首屏也立即消失）。
+          // 本票 F1：按区间起点收起已加载的较新轮（目标不在首屏也立即消失）。
           useKindStore
             .getState()
             .dropViewsFromSeq(response.applied.startSeq, response.applied.endSeq);
@@ -368,7 +368,7 @@ export function ConversationPane() {
     [closeRewind, loadRewindSource, rewindSelected],
   );
 
-  // T095.5：Esc 照 Claude Code——跑着按一下先停（D12）；停着 500ms 内两下：有字清空（↑ 找回），空着开菜单。
+  // 本票：Esc 照 Claude Code——跑着按一下先停（D12）；停着 500ms 内两下：有字清空（↑ 找回），空着开菜单。
   // 有弹层/菜单开着时让它们先处理 Esc。
   useEffect(() => {
     let timer = 0;

@@ -720,7 +720,7 @@ impl Inner {
     pub(crate) async fn cancel(&self) -> Result<(), AgentError> {
         {
             let _gate = self.inbox_mutations.lock().await;
-            // T095.1：只清用户自己发的排队消息；程序消息（任务报回、固定块等）留在队列，
+            // 本票：只清用户自己发的排队消息；程序消息（任务报回、固定块等）留在队列，
             // 之后照旧送到。连续区段各落一条 InboxSpliced（outcome=canceled）；从后往前删，
             // 前面的下标不受影响。
             for target in [InboxTarget::NextTurn, InboxTarget::NextStep] {

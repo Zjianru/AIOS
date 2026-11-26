@@ -275,7 +275,7 @@ async fn send_without_canvas_keeps_a_single_text_block() {
     );
 }
 
-/// T095.2（N2/N1）：多条结果卡/画布标记按顺序成块，附件原 MIME 跟着文件块落日志。
+/// 本票（N2/N1）：多条结果卡/画布标记按顺序成块，附件原 MIME 跟着文件块落日志。
 #[tokio::test]
 async fn send_appends_multi_markers_in_order_and_keeps_attachment_mime() {
     let data = tempdir().unwrap();

@@ -25,10 +25,10 @@ canvas?: SendCanvas | null,
  */
 resultCard?: SendResultCard | null,
 /**
- * T095.2（N2）：一次放回多条结果卡时按顺序排列（旧字段 resultCard 保留兼容）。
+ * 本票（N2）：一次放回多条结果卡时按顺序排列（旧字段 resultCard 保留兼容）。
  */
 resultCards?: Array<SendResultCard>,
 /**
- * T095.2（N2）：一次放回多个画布标记时按顺序排列（旧字段 canvas 保留兼容）。
+ * 本票（N2）：一次放回多个画布标记时按顺序排列（旧字段 canvas 保留兼容）。
  */
 canvases?: Array<SendCanvas>, };

@@ -387,7 +387,7 @@ fn parse_log(bytes: &[u8]) -> Result<(SessionHeader, Vec<Event>, u64), SessionEr
         .map_err(|_| SessionError::CorruptHeader("header 不是合法 UTF-8".to_owned()))?;
     let header: SessionHeader = serde_json::from_str(header_text)
         .map_err(|error| SessionError::CorruptHeader(error.to_string()))?;
-    // T013.1：读 14–20；更早、更新的拒绝（不迁移、文件一字不改）；更新的另说「请升级」。
+    // 早先票：读 14–20；更早、更新的拒绝（不迁移、文件一字不改）；更新的另说「请升级」。
     if header.version < MIN_READ_VERSION {
         return Err(SessionError::UnsupportedVersion {
             version: header.version,

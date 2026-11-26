@@ -39,7 +39,7 @@ export interface QueueRestore {
   text: string;
   pastes: string[];
   attachments: { id: string; name: string; bytes: number; mime?: string | null }[];
-  /** T095.2（N2）：一次放回的多张结果卡/多个画布标记，按原顺序。 */
+  /** 本票（N2）：一次放回的多张结果卡/多个画布标记，按原顺序。 */
   resultCards: { taskId: string; title: string; version: number }[];
   canvases: { id: string; title: string }[];
 }

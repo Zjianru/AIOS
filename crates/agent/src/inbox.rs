@@ -115,7 +115,7 @@ impl Inbox {
         self.next_step.is_empty()
     }
 
-    /// T095.1：这个队列里「用户自己发的」消息连续区段（start, len）——程序消息留在原地。
+    /// 本票：这个队列里「用户自己发的」消息连续区段（start, len）——程序消息留在原地。
     /// 取消时只清这些区段；从后往前删，前面的下标不受影响。
     pub(crate) fn user_message_runs(&self, target: InboxTarget) -> Vec<(usize, usize)> {
         let list = self.list(target);

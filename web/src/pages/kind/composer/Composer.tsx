@@ -44,7 +44,7 @@ export interface ComposerSendOptions {
   canvas?: { id: string; title: string };
   /** T054.2：结果卡「要求修改」带进来的那张卡。 */
   resultCard?: { taskId: string; title: string; version: number };
-  /** T095.2（N2）：一次放回多条时按顺序的列表（单个时仍给 canvas/resultCard 兼容）。 */
+  /** 本票（N2）：一次放回多条时按顺序的列表（单个时仍给 canvas/resultCard 兼容）。 */
   canvases?: { id: string; title: string }[];
   resultCards?: { taskId: string; title: string; version: number }[];
 }
@@ -55,13 +55,13 @@ export interface ComposerHandle {
   focus: () => void;
   /** T015.4：画布里的按钮把一句话放进输入框（接在已经写的后面，不发送）。 */
   putFromCanvas: (text: string, canvas: { id: string; title: string }) => void;
-  /** T095.5：输入框里有没有东西（两下 Esc 决定清空还是开菜单）。 */
+  /** 本票：输入框里有没有东西（两下 Esc 决定清空还是开菜单）。 */
   hasDraftContent: () => boolean;
-  /** T095.5：两下 Esc 清空：草稿压进 cleared，↑ 能取回。 */
+  /** 本票：两下 Esc 清空：草稿压进 cleared，↑ 能取回。 */
   clearToHistory: () => void;
-  /** T095.5：↑ 取回最近清掉的一条。 */
+  /** 本票：↑ 取回最近清掉的一条。 */
   recallCleared: () => boolean;
-  /** T095.5：恢复对话时把原文（字/粘贴/附件/结果卡/画布标记）放回输入框。 */
+  /** 本票：恢复对话时把原文（字/粘贴/附件/结果卡/画布标记）放回输入框。 */
   putBack: (source: RewindSource) => void;
 }
 
@@ -156,12 +156,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   /** T015.4：这句话是画布放进来的（发出去时带标记，气泡上留着）。 */
   const [fromCanvas, setFromCanvas] = useState<{ id: string; title: string } | null>(null);
-  // T095.2（N2）：一次放回多条画布标记/结果卡；第一条走上面的单值状态（兼容旧 UI），其余放这里。
+  // 本票（N2）：一次放回多条画布标记/结果卡；第一条走上面的单值状态（兼容旧 UI），其余放这里。
   const [extraCanvases, setExtraCanvases] = useState<{ id: string; title: string }[]>([]);
   const [extraResultCards, setExtraResultCards] = useState<
     { taskId: string; title: string; version: number }[]
   >([]);
-  // T095.5：两下 Esc 清掉的草稿，↑ 取最近一条；跟草稿一起存 localStorage。
+  // 本票：两下 Esc 清掉的草稿，↑ 取最近一条；跟草稿一起存 localStorage。
   const [cleared, setCleared] = useState<ClearedDraft[]>([]);
   /** T054.2：结果卡「要求修改」放进输入框的那张卡（一次一张，再点别的卡就换掉）。 */
   const [resultCard, setResultCard] = useState<{
@@ -633,7 +633,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     [attachments.length, extraCanvases.length, extraResultCards.length, fromCanvas, pastes.length, quotes.length, resultCard, text],
   );
 
-  /** T095.5：两下 Esc 清空输入框；清掉的东西压进 cleared，↑ 能取回。 */
+  /** 本票：两下 Esc 清空输入框；清掉的东西压进 cleared，↑ 能取回。 */
   const clearToHistory = useCallback(() => {
     if (!hasDraftContent()) return;
     touchedRef.current = true;
@@ -662,7 +662,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     requestAnimationFrame(() => resize());
   }, [attachments, extraCanvases, extraResultCards, fromCanvas, hasDraftContent, pastes, quotes, resize, resultCard, text]);
 
-  /** T095.5：输入框空着按 ↑，取回最近清掉的一条。 */
+  /** 本票：输入框空着按 ↑，取回最近清掉的一条。 */
   const recallCleared = useCallback(() => {
     const recalled = cleared[cleared.length - 1];
     if (!recalled) return false;
@@ -687,7 +687,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     return true;
   }, [cleared, resize]);
 
-  /** T095.5：恢复对话时把原文放回输入框（字接在已有字后面；附带的东西按顺序加在后面）。 */
+  /** 本票：恢复对话时把原文放回输入框（字接在已有字后面；附带的东西按顺序加在后面）。 */
   const putBack = useCallback(
     (source: RewindSource) => {
       touchedRef.current = true;
