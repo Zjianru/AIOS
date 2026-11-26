@@ -142,6 +142,7 @@ async fn accepts_valid_non_default_values() {
         identity_prompt: None,
         project_instructions_path_only: false,
         workspace_context: true,
+        cwd_override: None,
         absolute_paths_only: false,
         compaction_profile: agent::CompactionProfile::Thin,
         compaction_fixed_block: None,

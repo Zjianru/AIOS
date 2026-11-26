@@ -714,14 +714,13 @@ impl Inner {
         Ok(claimed)
     }
 
-    /// 取消：清空输入队列并中止正在跑的一轮（取消也落日志）。
+    /// 取消：清掉这一轮还没领的 next-step，但保留 next-turn 的用户消息。
+    /// 用户已经手打并进队列的字不能因为停止/关服务被吞；next-turn 会留在日志里，
+    /// 重启后由 claim_pending 接着处理。
     pub(crate) async fn cancel(&self) -> Result<(), AgentError> {
-        // 照 DSH clear（inbox.ts:96-100）：先清 next-step、再清 next-turn，普通删除带 canceled。
         {
             let _gate = self.inbox_mutations.lock().await;
             self.inbox_splice(InboxTarget::NextStep, 0, i64::MAX, Vec::new(), true)
-                .await?;
-            self.inbox_splice(InboxTarget::NextTurn, 0, i64::MAX, Vec::new(), true)
                 .await?;
         }
         self.cancel_with(AbortCause::User);

@@ -581,3 +581,26 @@ async fn duplicate_message_id_in_corrupt_inbox_is_reported_on_resume() {
         "要报 CorruptInbox 且带 seq/message id：{error}"
     );
 }
+
+/// 取消/关服务不能吞掉已经排进 next-turn 的用户消息；它留在日志里，重启后还能处理。
+#[tokio::test]
+async fn cancel_keeps_next_turn_input_durably() {
+    let server = MockServer::start().await;
+    let data_dir = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let (agent, id) = create_agent(data_dir.path(), cwd.path(), &server.uri()).await;
+    agent
+        .send(UserMessage::text("排队的一句"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    agent.cancel().await.unwrap();
+
+    let snapshot = read_snapshot(data_dir.path(), &id);
+    let splices = splices(&snapshot);
+    assert_eq!(splices.len(), 1, "插入后不应再被取消：{splices:?}");
+    assert_eq!(splices[0].target, InboxTarget::NextTurn);
+    assert_eq!(splices[0].inserted.len(), 1);
+    assert_eq!(message_text(&splices[0].inserted[0]), "排队的一句");
+    assert!(splices[0].outcome.is_none());
+}
+
