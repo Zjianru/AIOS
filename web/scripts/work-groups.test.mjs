@@ -17,7 +17,7 @@ for (const task of fixture.tasks) {
 assert.deepEqual(groups, fixture.groups);
 assert.deepEqual(STAGE_LABEL, fixture.stageLabels);
 
-// 本票：没绑任务的等你项算个人——全部/个人下显示，选具体项目才藏。
+// 没绑任务的等你项算个人——全部/个人下显示，选具体项目才藏。
 const filterTasks = [
   { id: 'p1', projectId: 'proj' },
   { id: 'mine', projectId: null },

@@ -65,7 +65,7 @@ const olderCancel = {
 const scoped = foldProjectionPages([olderCancel.events, [cancel(40, 0)]], 40);
 assert.equal(scoped.restores.length, 0, '更早页的取消不重放');
 
-// 本票 F1①②：旧日志没有 mime 时按扩展名兜底；结果卡/画布逐条放回且顺序不变。
+// F1①②：旧日志没有 mime 时按扩展名兜底；结果卡/画布逐条放回且顺序不变。
 const richMessage = (id, blocks) => ({
   id,
   role: 'user',

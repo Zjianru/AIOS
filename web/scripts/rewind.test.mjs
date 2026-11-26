@@ -1,4 +1,4 @@
-// 本票：回退前端的纯函数（原文还原顺序、菜单禁用条件）。
+// 回退前端的纯函数（原文还原顺序、菜单禁用条件）。
 import assert from 'node:assert/strict';
 import { canRecallCleared, hasBefore, rewindSourceOfMessage, viewOfSeq } from '../src/pages/kind/rewind.ts';
 import { questionCardEntryOf } from '../src/pages/kind/cards/model.ts';
@@ -52,7 +52,7 @@ for (const key of [
 ]) {
   assert.equal(canRecallCleared({ ...blank, [key]: true }), false, key + ' 存在时不召回');
 }
-// K4（本票）：旧日志没有 meta：不判答没答，回执收成工具结果原文一行。
+// K4：旧日志没有 meta：不判答没答，回执收成工具结果原文一行。
 const legacyReply = questionCardEntryOf({
   batchId: 'call-ask',
   status: 'legacy-reply',
