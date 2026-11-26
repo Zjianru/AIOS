@@ -13,6 +13,12 @@ import { useWorkPolling, useWorkStore } from '@/pages/work/workStore';
 import { STAGE_LABEL, columnOf, filterWorkForProject, nextOf } from '@/pages/work/workModel';
 import { useProjectStore, projectCode, projectColor } from './projectStore';
 
+function clock(at: number): string {
+  const date = new Date(at);
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate());
+}
+
 const GROUP_ORDER = ['wait', 'doing', 'queue', 'done'] as const;
 type Group = (typeof GROUP_ORDER)[number];
 
@@ -159,7 +165,7 @@ function ProjectPage() {
   const [draft, setDraft] = useState('');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [memoryCount, setMemoryCount] = useState<number | null>(null);
+  const [memoryCount, setMemoryCount] = useState<{ mine: number; kinds: number } | null>(null);
 
   useEffect(() => {
     if (projects === null) void refreshProjects();
@@ -171,9 +177,9 @@ function ProjectPage() {
     void memoryRead({ scope: 'project:' + projectId })
       .then((memory) => {
         if (!alive) return;
-        setMemoryCount(
-          memory.aboutYou.length + memory.entries.length + memory.notes.length,
-        );
+        const mine = memory.aboutYou.length + memory.entries.filter((item) => item.binding === 'binding').length;
+        const kinds = memory.entries.filter((item) => item.binding !== 'binding').length + memory.notes.length;
+        setMemoryCount({ mine, kinds });
       })
       .catch(() => {
         if (alive) setMemoryCount(null);
@@ -299,8 +305,21 @@ function ProjectPage() {
               onCancel={() => setEditing(null)}
             />
           </div>
-          <span className="shrink-0 pt-0.5 text-1 text-ink-3">{saving ? '保存中…' : ''}</span>
+          <button
+            type="button"
+            data-kind="project-kind-say"
+            onClick={() => go('kind')}
+            className="shrink-0 rounded-btn border border-line bg-raised px-2.5 py-1 text-1 text-ink-2 transition-colors hover:bg-hover hover:text-ink"
+          >
+            跟 Kind 说
+          </button>
         </div>
+        <p className="mt-1 pl-10 text-1 text-ink-3" data-kind="project-dir-note">
+          默认目录只用来给派任务预填工作目录；不占这个文件夹，也不限定任务能写哪里。
+        </p>
+        <p className="mt-0.5 pl-10 text-1 text-ink-3" data-kind="project-created-at">
+          建于 {clock(project.createdAt)}
+        </p>
         {saveError ? (
           <p data-kind="project-save-error" className="mt-2 text-1 text-fail">
             {saveError}
@@ -332,8 +351,8 @@ function ProjectPage() {
           >
             记忆
             {memoryCount != null ? (
-              <span data-kind="project-memory-count" className="ml-1 text-ink-3">
-                项目记忆 {memoryCount} 条
+              <span data-kind="project-memory-count" className="ml-1 text-ink-3" data-project-memory-mine={memoryCount.mine} data-project-memory-kinds={memoryCount.kinds}>
+                项目记忆 · 你定的 {memoryCount.mine} · Kind 记的 {memoryCount.kinds}
               </span>
             ) : null}
           </button>
