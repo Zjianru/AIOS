@@ -33,14 +33,10 @@ interface MonitorState {
   loading: boolean;
   details: Record<string, MonitorTaskResponse>;
   detailErrors: Record<string, string>;
-  /** 每次 loadTask 的代号；慢的旧响应回来时不能盖掉新的。 */
-  detailLoads: Record<string, number>;
   loadSnapshot: (range?: MonitorRange) => Promise<void>;
   loadTask: (taskId: string, attemptId?: number) => Promise<void>;
   setRange: (range: MonitorRange) => void;
 }
-
-let snapshotGeneration = 0;
 
 export const useMonitorStore = create<MonitorState>()((set, get) => ({
   range: 'today',
@@ -49,43 +45,31 @@ export const useMonitorStore = create<MonitorState>()((set, get) => ({
   loading: false,
   details: {},
   detailErrors: {},
-  detailLoads: {},
   setRange: (range) => {
     set({ range });
     void get().loadSnapshot(range);
   },
   loadSnapshot: async (range) => {
     const wanted = range ?? get().range;
-    const generation = ++snapshotGeneration;
     set({ loading: true, snapshotError: null });
     try {
       const snapshot = await monitorSnapshot(wanted, timezone());
-      if (generation !== snapshotGeneration) return;
       set({ snapshot, loading: false });
     } catch (error) {
-      if (generation !== snapshotGeneration) return;
       set({ snapshotError: error instanceof Error ? error.message : String(error), loading: false });
     }
   },
   loadTask: async (taskId, attemptId) => {
-    const generation = (get().detailLoads[taskId] ?? 0) + 1;
-    set((state) => ({ detailLoads: { ...state.detailLoads, [taskId]: generation } }));
     try {
       const detail = await monitorTask(taskId, attemptId);
-      set((state) => {
-        if ((state.detailLoads[taskId] ?? 0) !== generation) return {};
-        return { details: { ...state.details, [taskId]: detail } };
-      });
+      set((state) => ({ details: { ...state.details, [taskId]: detail } }));
     } catch (error) {
-      set((state) => {
-        if ((state.detailLoads[taskId] ?? 0) !== generation) return {};
-        return {
-          detailErrors: {
-            ...state.detailErrors,
-            [taskId]: error instanceof Error ? error.message : String(error),
-          },
-        };
-      });
+      set((state) => ({
+        detailErrors: {
+          ...state.detailErrors,
+          [taskId]: error instanceof Error ? error.message : String(error),
+        },
+      }));
     }
   },
 }));
@@ -98,13 +82,6 @@ export function useMonitorLive(): void {
     let socket: WebSocket | null = null;
     let closed = false;
     let timer = 0;
-    let snapshotTimer = 0;
-    // 任务事件很多：快照合并到一小段窗口里刷新，避免每个事件打一次 /api；
-    // 待办/诊断仍由 loadTask 立即更新。
-    const refreshSnapshot = () => {
-      window.clearTimeout(snapshotTimer);
-      snapshotTimer = window.setTimeout(() => void loadSnapshot(), 350);
-    };
     // 重连从各任务 0 补：lastSeq 是全局的，两个任务 seq 差大时会把另一个任务的
     // 事件当成已读；这里按 task+attempt 记已收到的最大 seq，重复帧直接丢。
     const seen = new Map<string, { attemptId: number; seq: number }>();
@@ -121,12 +98,8 @@ export function useMonitorLive(): void {
         if (frame.type === 'task-event') {
           if (!accept(frame.taskId, frame.attemptId, frame.event.seq)) return;
           void loadTask(frame.taskId);
-          refreshSnapshot();
         } else if (frame.type === 'task-changed') {
-          // task-changed 也可能只表示「事件掉帧了」，快照之外还要重读这张卡的诊断；
-          // 否则待办/当前动作会停在旧值。空 taskId 是项目变更，只刷快照。
-          if (frame.taskId) void loadTask(frame.taskId);
-          refreshSnapshot();
+          void loadSnapshot();
         }
       }, () => {
         if (closed) return;
@@ -138,7 +111,6 @@ export function useMonitorLive(): void {
     return () => {
       closed = true;
       window.clearTimeout(timer);
-      window.clearTimeout(snapshotTimer);
       socket?.close();
     };
   }, [loadSnapshot, loadTask]);
