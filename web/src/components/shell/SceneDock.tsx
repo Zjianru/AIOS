@@ -114,6 +114,8 @@ export function SceneDock({ scene, panes, renderPane, resetToken, onNarrowChange
           api.addPanel({ id: pane.id, component: pane.id, title: pane.title });
         }
       }
+      // 默认布局先看第一个面板（Kind 是对话）；窄窗折成标签页时也不要把右栏当成首页。
+      if (!used && panes[0]) api.getPanel(panes[0].id)?.api.setActive();
       applyingRef.current = false;
       api.onDidLayoutChange(() => {
         if (applyingRef.current || narrowRef.current) return;
