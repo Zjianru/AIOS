@@ -865,6 +865,11 @@ impl Inner {
         self.capabilities.pending_questions()
     }
 
+    /// T090.2：问题卡等待时用户直接发送 = 回答整批；返回是否确有等待中的批。
+    pub(crate) fn reply_questions_direct(&self, text: String) -> bool {
+        self.capabilities.reply_questions_direct(text)
+    }
+
     /// jobs_capability 安装结算回调用（任务注册表在 tools 层）。
     pub(crate) fn job_session(&self) -> &Arc<ToolSessionState> {
         &self.tool_session

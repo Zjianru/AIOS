@@ -534,6 +534,22 @@ export function deriveTurnViews(
         // T013.5：按 call id 配对（不再用「最后一条 running」猜），并留下 meta。
         const message = (data.message ?? {}) as Record<string, unknown>;
         const callId = String(message.toolCallId ?? message.tool_call_id ?? '');
+        // T090.2：问题卡等回答时用户直接发送 → 工具结果是「用户没有选，直接说了：…」。
+        // 卡状态由 question/cancelled 派生为 dismissed；这里按同批工具结果把它改成 replied，
+        // 回执写「你直接回复了」，和 ASK_ABORTED 的「不答」区分。
+        if (
+          callId &&
+          raw.question &&
+          (raw.question.status === 'dismissed' || raw.question.status === 'pending') &&
+          raw.question.batchId === callId &&
+          (textOfToolResult(data.message) || textOf(data.message)).startsWith('用户没有选，直接说了：')
+        ) {
+          raw.question = {
+            status: 'replied',
+            batchId: raw.question.batchId,
+            questions: raw.question.questions,
+          };
+        }
         const step = callId ? raw.tools.find((item) => item.id === callId) : undefined;
         if (step) {
           // 普通工具错误没有结构化 error，消息级的 isError 同样是失败。

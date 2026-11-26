@@ -105,7 +105,7 @@ export interface QuestionSlots {
 export interface QuestionCardFact {
   /** 问题批次 id（ask_user_question 调用的 call id），不用数组下标。 */
   batchId: string;
-  status: 'pending' | 'answered' | 'dismissed' | 'void';
+  status: 'pending' | 'answered' | 'dismissed' | 'replied' | 'void';
   questions: {
     id: string;
     question: string;
@@ -242,6 +242,8 @@ function questionReceiptOf(fact: QuestionCardFact, count: number): CardReceipt |
       return { outcome: 'success', summary: answeredSummary(count) };
     case 'dismissed':
       return { outcome: 'cancelled', summary: '你没回答 Kind 的问题；它知道你没答，照常收尾' };
+    case 'replied':
+      return { outcome: 'success', summary: '你直接回复了' };
     case 'void':
       return { outcome: 'cancelled', summary: '这一轮停下了，问题没再等回答' };
     default:

@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use agent::{Agent, SendAdmission};
-use model::UserMessage;
+use model::{ContentBlock, Message, UserMessage};
 use tokio::sync::broadcast;
 
 use crate::SERVICE_EVENT_CHANNEL_CAPACITY;
@@ -212,11 +212,26 @@ impl ServiceHost {
         message: UserMessage,
         delivery: DeliveryMode,
     ) -> Result<SendResponse, ServiceError> {
+        // T090.2：问题卡等回答时，任何一次会唤醒的发送都当回答这张卡：不进 inbox、
+        // 不产生 user/message，工具结果带回原文/粘贴原文/附件位置和大小，本轮继续。
+        let wakes = !matches!(delivery, DeliveryMode::Inject);
+        let delivery: agent::Delivery = delivery.into();
+        if wakes && self.agent.is_running() && !self.agent.pending_questions().is_empty() {
+            let _serialized = self.send_lock.lock().await;
+            let text = question_reply_text(message.as_message());
+            if self.agent.reply_questions_with_text(text) {
+                return Ok(SendResponse {
+                    request_id: request_id.to_owned(),
+                    accepted: true,
+                    duplicate: false,
+                });
+            }
+        }
         // 串行受理：并发同 id 时第一个进，其余在 Agent 的 durable 判重里变成 Duplicate。
         let _serialized = self.send_lock.lock().await;
         let admission = self
             .agent
-            .send_with_request_id(request_id, message, delivery.into())
+            .send_with_request_id(request_id, message, delivery)
             .await?;
         Ok(SendResponse {
             request_id: request_id.to_owned(),
@@ -337,6 +352,30 @@ impl ServiceHost {
             has_more,
         })
     }
+}
+
+/// T090.2：把用户这条消息换成 Kind 平时看到的样子（原话、粘贴原文、附件位置和大小），
+/// 放进工具结果「用户没有选，直接说了：<…>」。
+fn question_reply_text(message: &Message) -> String {
+    let mut parts = Vec::new();
+    for block in &message.content {
+        match block {
+            ContentBlock::Text { text, .. } => parts.push(text.clone()),
+            ContentBlock::File {
+                name, bytes, path, ..
+            } => parts.push(format!(
+                "附件：{name}（{bytes} 字节，位置 {}）",
+                path.as_deref().unwrap_or("未知")
+            )),
+            ContentBlock::ResultCard {
+                task_id,
+                title,
+                version,
+            } => parts.push(format!("结果卡：{title}（任务 {task_id}，第 {version} 版）")),
+            _ => {}
+        }
+    }
+    parts.join("\n")
 }
 
 impl Drop for ServiceHost {

@@ -775,6 +775,12 @@ impl Agent {
         self.inner.cancel_question(question_id).await
     }
 
+    /// T090.2：问题卡等回答时，用户直接发送（文字/粘贴/附件）当作回答整批；
+    /// 未答问题记 dismissed，工具结果「用户没有选，直接说了：<原话>」，Kind 本轮继续。
+    pub fn reply_questions_with_text(&self, text: String) -> bool {
+        self.inner.reply_questions_direct(text)
+    }
+
     /// 当前待答问题（等待中 + 重启恢复）；界面服务 从这里接。
     pub fn pending_questions(&self) -> Vec<Question> {
         self.inner.pending_questions()

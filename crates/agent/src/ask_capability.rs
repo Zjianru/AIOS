@@ -37,6 +37,8 @@ struct LiveQuestion {
     questions: Vec<Question>,
     answers: BTreeMap<String, AnswerItem>,
     cancelled: BTreeSet<String>,
+    /// T090.2：用户不选选项、直接发送的原文（整批按 dismissed 收尾，工具结果带这句话）。
+    direct: Option<String>,
     /// 整批 settle（全部答完或撤销）时唤醒 hook；只发一次。
     deliver: Option<tokio::sync::oneshot::Sender<()>>,
 }
@@ -82,6 +84,8 @@ struct SettledLive {
     answers: Vec<(String, AnswerItem)>,
     /// 被撤销的问题 id（按问题顺序）。
     cancelled: Vec<String>,
+    /// T090.2：直接发送的原文；Some 时工具结果写「用户没有选，直接说了：<原话>」。
+    direct: Option<String>,
 }
 
 /// 恢复的问题整批答完：driver 写 question/answered 并投递迟到回答。
@@ -166,6 +170,7 @@ impl AskState {
             questions,
             answers: BTreeMap::new(),
             cancelled: BTreeSet::new(),
+            direct: None,
             deliver: Some(deliver),
         });
     }
@@ -282,6 +287,29 @@ impl AskState {
         })
     }
 
+    /// T090.2：用户不等选项、直接发送一句话回答整批。未答的问题记撤销（dismissed），
+    /// 已答的保留；钩子把「用户没有选，直接说了：<原话>」作为工具结果，本轮继续。
+    fn reply_direct(&self, text: String) -> bool {
+        let mut live = self.live.lock().expect("agent 问题锁被毒化");
+        let Some(live) = live.as_mut() else {
+            return false;
+        };
+        let open: Vec<String> = live
+            .questions
+            .iter()
+            .filter(|question| live.is_open(&question.id))
+            .map(|question| question.id.clone())
+            .collect();
+        for question_id in open {
+            live.cancelled.insert(question_id);
+        }
+        live.direct = Some(text);
+        if let Some(deliver) = live.deliver.take() {
+            let _ = deliver.send(());
+        }
+        true
+    }
+
     fn answer(
         &self,
         question_id: &str,
@@ -332,6 +360,7 @@ impl AskState {
             call_id: live.call_id,
             answers,
             cancelled,
+            direct: live.direct,
         })
     }
 
@@ -620,6 +649,10 @@ impl Capability for AskCapability {
         self.state.pending_questions()
     }
 
+    fn reply_questions_with_text(&self, text: String) -> bool {
+        self.state.reply_direct(text)
+    }
+
     fn cancel_questions(&self) {
         self.state.cancel_waiters();
     }
@@ -751,7 +784,17 @@ impl Capability for AskCapability {
                     }
                     return Ok(HookOutcome::AbortStep);
                 }
-                if settled.cancelled.is_empty() {
+                if let Some(direct) = &settled.direct {
+                    // T090.2：问题卡等回答时用户直接发送（文字/粘贴/附件）= 回答这张卡；
+                    // 工具结果带回原文，Kind 在同一轮里接着做（不是 ASK_ABORTED 错误）。
+                    overrides.push((
+                        index,
+                        ToolResult::success(
+                            call.id.clone(),
+                            format!("用户没有选，直接说了：{direct}"),
+                        ),
+                    ));
+                } else if settled.cancelled.is_empty() {
                     overrides.push((
                         index,
                         ToolResult::success(call.id.clone(), answers_json(&settled.answers)),

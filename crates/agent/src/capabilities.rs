@@ -335,6 +335,10 @@ pub(crate) trait Capability: Send + Sync {
         Vec::new()
     }
     fn cancel_questions(&self) {}
+    /// T090.2：问题卡等待时用户直接发送 = 回答整批；返回是否确有等待中的批。
+    fn reply_questions_with_text(&self, _text: String) -> bool {
+        false
+    }
     fn reset_repeat_chain(&self) {}
 }
 
@@ -494,6 +498,15 @@ impl CapabilityRegistry {
         for capability in &self.capabilities {
             capability.cancel_questions();
         }
+    }
+
+    pub(crate) fn reply_questions_direct(&self, text: String) -> bool {
+        for capability in &self.capabilities {
+            if capability.reply_questions_with_text(text.clone()) {
+                return true;
+            }
+        }
+        false
     }
 
     pub(crate) fn reset_repeat_chain(&self) {
