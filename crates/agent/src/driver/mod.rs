@@ -346,7 +346,7 @@ impl Inner {
         } = deps;
         let id = store.id().clone();
         let log_path = store.path().to_path_buf();
-        let cwd = PathBuf::from(store.cwd());
+        let cwd = effective_cwd(&config, Path::new(store.cwd()));
         // 日志路径固定是 <data-dir>/sessions/<id>.jsonl；spill 根按会话分目录。
         let data_dir = log_path
             .parent()
@@ -1042,6 +1042,48 @@ impl Inner {
         self.capabilities
             .compact_manual(self.as_ref(), source_command_id)
             .await
+    }
+}
+
+/// 工具上下文使用的 cwd：无工作区 Kind 用配置里的中性 cwd，
+/// 不继承旧会话日志里的仓库 cwd。
+fn effective_cwd(config: &AgentConfig, store_cwd: &Path) -> PathBuf {
+    if config.workspace_context {
+        return store_cwd.to_path_buf();
+    }
+    config
+        .cwd_override
+        .clone()
+        .unwrap_or_else(|| store_cwd.to_path_buf())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::effective_cwd;
+    use crate::AgentConfig;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn kind_ignores_legacy_repo_cwd() {
+        let home = PathBuf::from("/tmp/kind-home");
+        let repo = Path::new("/tmp/old-repo");
+        let config = AgentConfig {
+            workspace_context: false,
+            cwd_override: Some(home.clone()),
+            ..AgentConfig::default()
+        };
+        assert_eq!(effective_cwd(&config, repo), home);
+    }
+
+    #[test]
+    fn task_agent_keeps_session_cwd() {
+        let repo = Path::new("/tmp/task-worktree");
+        let config = AgentConfig {
+            workspace_context: true,
+            cwd_override: Some(PathBuf::from("/tmp/kind-home")),
+            ..AgentConfig::default()
+        };
+        assert_eq!(effective_cwd(&config, repo), repo);
     }
 }
 

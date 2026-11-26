@@ -208,6 +208,9 @@ pub struct AgentConfig {
     /// 是否把会话工作目录当工作区：系统提示带目录/读法，指令按 cwd 发现。
     /// false = 无工作区的 Kind（D117）；ThinAgent/CLI 默认 true。
     pub workspace_context: bool,
+    /// 无工作区会话恢复旧日志时，工具上下文用的 cwd；None = 仍用日志头。
+    /// Kind 的旧会话可能带着旧仓库 cwd，恢复时用它盖掉。
+    pub cwd_override: Option<PathBuf>,
     /// Kind 的读/搜工具只接受绝对路径（/ 或 ~/）；写类工具和 ThinAgent 不受影响。
     pub absolute_paths_only: bool,
     /// 压缩模板：Kind 七样 / ThinAgent 编码模板。
@@ -276,6 +279,7 @@ impl Default for AgentConfig {
             identity_prompt: None,
             project_instructions_path_only: false,
             workspace_context: true,
+            cwd_override: None,
             absolute_paths_only: false,
             compaction_profile: CompactionProfile::Thin,
             compaction_fixed_block: None,
