@@ -62,7 +62,7 @@ fn truncate_chars(text: &str, max: usize) -> String {
         return text.to_owned();
     }
     let mut truncated: String = text.chars().take(max).collect();
-    truncated.push_str("…（报告过长，全文看任务页）");
+    truncated.push_str("…（报告过长，全文在上一份报告里）");
     truncated
 }
 
@@ -499,7 +499,7 @@ mod ledger_tests {
             "长报告不应撑爆任务包账本：{} 字",
             text.chars().count()
         );
-        assert!(text.contains("报告过长，全文看任务页"), "{text}");
+        assert!(text.contains("报告过长，全文在上一份报告里"), "{text}");
     }
 
     #[test]
