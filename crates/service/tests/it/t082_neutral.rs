@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use agent::AgentConfig;
-use service::{Call, DeliveryMode, RootHost, RootSessionOptions, SendRequest};
+use service::{Call, DeliveryMode, Response, RootHost, RootSessionOptions, SendRequest, StatusRequest};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -133,6 +133,41 @@ async fn old_root_session_with_repo_cwd_upgrades_to_neutral_prompt() {
         "旧仓库目录不进提示：{text}"
     );
     assert!(!system(&bodies[0].body).contains("Your working directory is"));
+}
+
+/// T085 补测：旧根会话日志头 cwd 是仓库；用另一个 options.cwd 重开后，工具上下文 cwd
+/// 必须是这次启动的 options.cwd，不是日志头里的旧仓库。
+///
+/// Kind 没有 bash（KIND_TOOLS 23 项不含 bash；见 root.rs 的 KIND_TOOLS），所以不用
+/// 「bash pwd」断言，改用 service 的 status.cwd——它取 agent.cwd()，也就是 effective_cwd
+/// 的结果，和喂给 ToolContext 的是同一个值（driver/mod.rs:349、session_host.rs status）。
+#[tokio::test]
+async fn old_root_session_restores_tool_cwd_from_options_not_the_logged_repo() {
+    let server = MockServer::start().await;
+    mount(&server, 0).await;
+    let data = tempfile::tempdir().unwrap();
+    let repo = tempfile::tempdir().unwrap();
+    std::fs::create_dir(repo.path().join(".git")).unwrap();
+    // 旧根会话：日志头 cwd 是仓库。
+    let old = crate::common::open(options(data.path(), repo.path(), &server.uri())).await;
+    drop(old);
+
+    let home = tempfile::tempdir().unwrap();
+    let host = crate::common::open(options(data.path(), home.path(), &server.uri())).await;
+    let status = host
+        .dispatch(Call::Status(StatusRequest {}))
+        .await
+        .expect("status 应成功");
+    let Response::Status(status) = status else {
+        panic!("status 响应");
+    };
+    let cwd = status.cwd.expect("status.cwd");
+    let cwd = std::fs::canonicalize(&cwd).unwrap_or_else(|_| std::path::PathBuf::from(&cwd));
+    let home = std::fs::canonicalize(home.path()).unwrap();
+    let repo = std::fs::canonicalize(repo.path()).unwrap();
+    assert_eq!(cwd, home, "工具上下文 cwd 用这次启动的 options.cwd");
+    assert_ne!(cwd, repo, "不能用旧会话日志头的仓库 cwd");
+    host.shutdown().await;
 }
 
 #[tokio::test]
