@@ -608,7 +608,10 @@ pub(super) async fn open_host_with(
         ..AgentConfig::default()
     };
     configure(&mut options);
-    RootHost::open(options, DEFAULT_CONTEXT_WINDOW).await
+    let host = RootHost::open(options, DEFAULT_CONTEXT_WINDOW).await;
+    // 测试不碰外网：打开后预置汇率缓存，Status 里的 fx 就不再拉 open.er-api.com。
+    crate::common::seed_fresh_fx_cache(data);
+    host
 }
 
 pub(super) fn send(_host: &RootHost, request_id: &str, text: &str) -> SendRequest {
