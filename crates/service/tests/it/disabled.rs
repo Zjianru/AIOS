@@ -1016,8 +1016,17 @@ async fn 查询规则返回命中的模型和使用者() {
     );
 
     // 开跑 B：Kind 对话的 running 跟着实际状态。
+    // 等到模型请求真的出站再查：isRunning 翻真和本轮冻结模型记下来之间有一个极短窗口，
+    // 只等 status.running 会撞进去（禁用查询按冻结模型判 running，会读到 false）。
+    let before = request_count(&server).await;
     send(&root, "r1", "跑 B").await;
     wait_host_running(&root).await;
+    for _ in 0..600 {
+        if request_count(&server).await > before {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     let running = check_rule(&root, "deepseek/deepseek-v4-flash").await;
     assert_eq!(
         running.users,

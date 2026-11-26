@@ -43,6 +43,30 @@ pub fn test_credential(data_dir: &Path) -> Arc<dyn model::CredentialSource> {
     Arc::new(TestCredential::new(data_dir, "deepseek"))
 }
 
+/// 预置一份未过期的汇率缓存。
+///
+/// `Status` 每次都会经 `fx::usd_to_cny` 读汇率：缓存没有或过期就去拉
+/// `open.er-api.com`（5 秒超时）。测试的数据目录都是新临时目录，不预置就会去碰外网；
+/// 外网一断/一慢，每次 Status 都要等满 5 秒，靠时间窗判状态的用例就全错位
+/// （停止/暂停/席位这几族在断网窗口里稳定红、断言看到的是「这一轮已经结束」）。
+/// 测试不该依赖外网，预置一份新鲜缓存，行为和拿到缓存时一致。
+pub fn seed_fresh_fx_cache(data_dir: &Path) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default();
+    std::fs::create_dir_all(data_dir).expect("建测试数据目录");
+    // 已经预置过的（各自带期望汇率的用例）不要覆盖。
+    if data_dir.join(service::fx::FX_FILE).exists() {
+        return;
+    }
+    std::fs::write(
+        data_dir.join(service::fx::FX_FILE),
+        format!("{{\"rate\":7.2,\"fetchedAt\":{now}}}"),
+    )
+    .expect("写测试汇率缓存");
+}
+
 /// 根会话的默认测试配置；调用方按需覆盖字段。
 pub fn options(data_dir: &Path) -> RootSessionOptions {
     RootSessionOptions {
@@ -73,7 +97,11 @@ pub fn options(data_dir: &Path) -> RootSessionOptions {
 }
 
 pub async fn open(options: RootSessionOptions) -> RootHost {
-    RootHost::open(options, DEFAULT_CONTEXT_WINDOW).await
+    let data_dir = options.data_dir.clone();
+    let host = RootHost::open(options, DEFAULT_CONTEXT_WINDOW).await;
+    // 打开之后再预置汇率缓存：测试不碰外网（见 seed_fresh_fx_cache），也不影响开根会话时看到的数据目录。
+    seed_fresh_fx_cache(&data_dir);
+    host
 }
 
 /// 一次工具调用的 SSE（参数走 input_json_delta，和真模型一样）。
