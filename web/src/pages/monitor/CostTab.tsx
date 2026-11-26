@@ -339,7 +339,13 @@ export function CostTab() {
   });
   const daysForBars = range === 'today' ? (monthDays.length ? monthDays : snapshot.days) : snapshot.days;
   const rankProject = (row: MonitorUsageRow) =>
-    row.projectId ? (projectsList.find((project) => project.id === row.projectId)?.name ?? row.projectId) : '个人';
+    row.isKind
+      ? 'Kind 对话'
+      : row.projectId
+        ? (projectsList.find((project) => project.id === row.projectId)?.name ?? row.projectId)
+        : '个人';
+  const rankKey = (row: MonitorUsageRow) =>
+    (row.projectId ?? (row.isKind ? 'kind' : 'personal')) + ':' + row.key;
 
   return (
     <div data-tab="cost" className="space-y-4 pt-4">
@@ -420,7 +426,7 @@ export function CostTab() {
           {models.length ? (
             models.map((row) => (
               <RankRow
-                key={(row.projectId ?? 'personal') + ':' + row.key}
+                key={rankKey(row)}
                 name={(projectFilter ? '' : rankProject(row) + ' · ') + row.label}
                 count={row.requests}
                 max={Math.max(1, ...models.map((item) => item.requests))}
@@ -437,7 +443,7 @@ export function CostTab() {
           {tools.length ? (
             tools.map((row) => (
               <RankRow
-                key={(row.projectId ?? 'personal') + ':' + row.key}
+                key={rankKey(row)}
                 name={(projectFilter ? '' : rankProject(row) + ' · ') + row.label}
                 count={row.requests}
                 max={Math.max(1, ...tools.map((item) => item.requests))}
@@ -453,7 +459,7 @@ export function CostTab() {
           {commands.length ? (
             commands.map((row) => (
               <RankRow
-                key={(row.projectId ?? 'personal') + ':' + row.key}
+                key={rankKey(row)}
                 name={(projectFilter ? '' : rankProject(row) + ' · ') + row.label}
                 count={row.requests}
                 max={Math.max(1, ...commands.map((item) => item.requests))}

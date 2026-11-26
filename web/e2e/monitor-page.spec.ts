@@ -446,6 +446,7 @@ test('监控照原型：五卡、项目标签、日柱叠色、两环、排行�
         { key: 'deepseek-flash', label: 'deepseek-flash', projectId: projectA, requests: 2, inputTokens: 1_000, outputTokens: 100, cacheReadTokens: 500, cacheWriteTokens: 0, costUsd: 1.5, unpriced: false },
         { key: 'deepseek-pro', label: 'deepseek-pro', projectId: projectB, requests: 3, inputTokens: 300, outputTokens: 30, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.5, unpriced: false },
         { key: 'kind-model', label: 'Kind 模型', isKind: true, requests: 1, inputTokens: 10, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.5, unpriced: false },
+        { key: 'kind-model', label: 'Kind 模型', requests: 1, inputTokens: 10, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: null, unpriced: false },
       ],
       tools: [{ key: 'read', label: 'read', projectId: projectA, requests: 1, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: null, unpriced: false }],
       commands: [{ key: 'ls', label: 'ls', projectId: projectA, requests: 1, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: null, unpriced: false }],
@@ -539,6 +540,9 @@ test('监控照原型：五卡、项目标签、日柱叠色、两环、排行�
     // 排行按项目拆；切项目筛选后只合计这个项目，Kind 被排除。
     await expect(page.locator('[data-kind="rank-row"]').filter({ hasText: '项目甲 · deepseek-flash' }).first()).toBeVisible();
     await expect(page.locator('[data-kind="rank-row"]').filter({ hasText: '项目乙 · deepseek-pro' }).first()).toBeVisible();
+    // 全部筛选下 Kind 与个人同 key/同名也要分得开：一行「个人 · Kind 模型」，一行「Kind 对话 · Kind 模型」。
+    await expect(page.locator('[data-kind="rank-row"]').filter({ hasText: '个人 · Kind 模型' })).toHaveCount(1);
+    await expect(page.locator('[data-kind="rank-row"]').filter({ hasText: 'Kind 对话 · Kind 模型' })).toHaveCount(1);
     await page.locator('[data-kind="monitor-project-tag"][data-project="' + projectA + '"]').click();
     await expect(page.locator('[data-kind="project-scope-note"]')).toHaveText(
       '选了项目时，每天的花费和排行只算这个项目；在忙和时间环拆不开，还是全部任务的。',
@@ -547,13 +551,13 @@ test('监控照原型：五卡、项目标签、日柱叠色、两环、排行�
     await expect(page.locator('[data-kind="kpis"] [data-kind="kpi"]').filter({ hasText: '花费' })).not.toContainText('不混全量');
     await expect(page.locator('[data-kind="rank-row"]').filter({ hasText: 'deepseek-flash' }).first()).toBeVisible();
     await expect(page.locator('[data-kind="rank-row"]').filter({ hasText: '项目乙 · deepseek-pro' })).toHaveCount(0);
-    await expect(page.locator('[data-kind="rank-row"]').filter({ hasText: 'Kind 模型' })).toHaveCount(0);
+    await expect(page.locator('[data-kind="rank-row"]').filter({ hasText: 'Kind 对话 · Kind 模型' })).toHaveCount(0);
     await expect(page.locator('[data-kind="cost-bar-group"][data-project-id="kind"]')).toHaveCount(0);
 
     // 选「个人」：副标写「个人」，Kind 同样不进日柱/排行。
     await page.locator('[data-kind="monitor-project-tag"][data-project="personal"]').click();
     await expect(page.locator('[data-kind="kpis"] [data-kind="kpi"]').filter({ hasText: '花费' })).toContainText('个人');
-    await expect(page.locator('[data-kind="rank-row"]').filter({ hasText: 'Kind 模型' })).toHaveCount(0);
+    await expect(page.locator('[data-kind="rank-row"]').filter({ hasText: 'Kind 对话 · Kind 模型' })).toHaveCount(0);
     await expect(page.locator('[data-kind="cost-bar-group"][data-project-id="kind"]')).toHaveCount(0);
 
     // 模型回复从上下文蓝条移除；整条悬浮给约值。
