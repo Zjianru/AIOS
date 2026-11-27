@@ -95,13 +95,6 @@ impl RootHost {
     /// 配置了 model_factory 时先解析当前 Keyring 连接；解析失败（空库/读不出）
     /// 仍返回宿主，状态报 Other，设置/首次使用方法照常可读。
     pub async fn open(mut options: RootSessionOptions, fallback_window: u64) -> Self {
-        // 根会话和工具都以同一份 canonical cwd 解析相对路径：macOS 的 /var 与
-        // /private/var 是同一目录的两种写法，status 页面和工具不能各显示一套。
-        // 数据目录可能由这次 open 创建；先让目录存在，canonicalize 才不会退回原写法。
-        if !options.cwd.exists() {
-            let _ = std::fs::create_dir_all(&options.cwd);
-        }
-        options.cwd = std::fs::canonicalize(&options.cwd).unwrap_or(options.cwd);
         // 启动时把 settings 里的插件开关写进共享开关，Agent 打开时按它过滤工具表。
         let settings = crate::settings::load(&options.data_dir);
         let plugin_switches = tools::plugins::switches_for(&options.data_dir);

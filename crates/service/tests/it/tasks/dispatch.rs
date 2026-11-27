@@ -3,7 +3,8 @@
 use super::*;
 
 pub(super) async fn wait_until(label: &str, mut check: impl FnMut() -> bool) {
-    // 续跑的下一张结果卡可能晚几秒才 Steer 进 Kind；给足 18s。
+    // restart/stop 的夹具在 nextest 里单独占满测试槽（见 .config/nextest.toml）；
+    // 正常完成在秒级，18 秒只兜住真正的慢路径。
     for _ in 0..900 {
         if check() {
             return;
