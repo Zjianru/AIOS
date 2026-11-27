@@ -52,6 +52,31 @@ async fn add_vision_connection(host: &RootHost, id: &str, model: &str, endpoint:
     .expect("save vision connection");
 }
 
+async fn add_text_connection(host: &RootHost, id: &str, model: &str, endpoint: &str) {
+    host.dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+        id: id.to_owned(),
+        name: id.to_owned(),
+        model: model.to_owned(),
+        endpoint: endpoint.to_owned(),
+        api_key: "test-key".to_owned(),
+        preset: Some("custom".to_owned()),
+        models: Some(vec![credentials::ModelRow {
+            id: model.to_owned(),
+            name: Some(model.to_owned()),
+            context_window: None,
+            max_tokens: None,
+            price_input: None,
+            price_output: None,
+            price_cache_read: None,
+            price_cache_write: None,
+            input: Some(vec!["text".to_owned()]),
+        }]),
+        auth_header: None,
+    }))
+    .await
+    .expect("save text connection");
+}
+
 #[tokio::test]
 async fn vision_chain_round_trips_order_and_rejects_unimage_models() {
     let server = MockServer::start().await;
@@ -96,7 +121,36 @@ async fn vision_chain_round_trips_order_and_rejects_unimage_models() {
     assert_eq!(settings.vision_models.len(), 2);
     assert_eq!(settings.vision_models[0].model, "vision-b");
     assert!(settings.screen_capture);
-    // 空表合法。
+    // 纯非法 / 混合非法都拒；空表合法。
+    add_text_connection(&host, "vtext", "text-only", &server.uri()).await;
+    let pure_invalid = host
+        .dispatch(Call::SettingsUpdate(SettingsUpdateRequest {
+            vision_models: Some(vec![VisionModelRefView {
+                connection: "vtext".to_owned(),
+                model: "text-only".to_owned(),
+            }]),
+            screen_capture: None,
+            ..Default::default()
+        }))
+        .await;
+    assert!(pure_invalid.is_err(), "只认文字的模型不能进看图链");
+    let mixed_invalid = host
+        .dispatch(Call::SettingsUpdate(SettingsUpdateRequest {
+            vision_models: Some(vec![
+                VisionModelRefView {
+                    connection: "v1".to_owned(),
+                    model: "vision-a".to_owned(),
+                },
+                VisionModelRefView {
+                    connection: "vtext".to_owned(),
+                    model: "text-only".to_owned(),
+                },
+            ]),
+            screen_capture: None,
+            ..Default::default()
+        }))
+        .await;
+    assert!(mixed_invalid.is_err(), "混合里有非法项也整单拒");
     host.dispatch(Call::SettingsUpdate(SettingsUpdateRequest {
         vision_models: Some(Vec::new()),
         screen_capture: None,

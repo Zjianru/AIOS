@@ -22,9 +22,9 @@ pub fn described_text(name: &str, description: &str) -> String {
     )
 }
 
-/// 填了看图模型但本轮没描述成：形态 3（不写会过期的「本轮」字样）。
+/// 填了看图模型但没描述成：形态 3。旁注会逐字冻结，不能写「这一轮」这类会过期的时间指代。
 pub fn backend_failed_text(name: &str, attachment_id: &str) -> String {
     format!(
-        "[图片「{name}」已收到（附件 id: {attachment_id}），这一轮的看图模型没有成功描述它；可以调用 vision_describe/vision_ground 按附件 id 看，OCR 不是通用重试。]"
+        "[图片「{name}」已收到（附件 id: {attachment_id}）；看图模型没有给出描述，可以调用 vision_describe/vision_ground 按附件 id 看，OCR 不是通用重试。]"
     )
 }

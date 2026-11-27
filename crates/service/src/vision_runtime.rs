@@ -224,7 +224,7 @@ impl VisionRuntime {
                 _ => None,
             })?;
         let path = block.2?;
-        let bytes = std::fs::read(&path).ok()?;
+        let bytes = std::fs::read(&path).unwrap_or_default();
         Some(DescribeImage {
             attachment_id: attachment_id.to_owned(),
             name: block.0,
@@ -522,7 +522,219 @@ mod tests {
         let text = notes
             .get("sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
             .expect("backend note");
-        assert!(text.contains("没有成功描述"), "{text}");
+        assert!(text.contains("没有给出描述"), "{text}");
         assert!(!text.contains("此前由视觉模型读取"), "{text}");
+    }
+
+    struct QueueDescriber {
+        results: std::sync::Mutex<std::collections::VecDeque<Result<String, DescribeFailure>>>,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl Describer for QueueDescriber {
+        fn describe<'a>(
+            &'a self,
+            _row: &'a vision::VisionModelRef,
+            _image: &'a DescribeImage,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<String, DescribeFailure>> + Send + 'a>,
+        > {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let result = self
+                .results
+                .lock()
+                .expect("queue describer 锁被毒化")
+                .pop_front()
+                .unwrap_or(Err(DescribeFailure::Other));
+            Box::pin(async move { result })
+        }
+    }
+
+    fn queue(results: Vec<Result<String, DescribeFailure>>) -> std::sync::Arc<QueueDescriber> {
+        std::sync::Arc::new(QueueDescriber {
+            results: std::sync::Mutex::new(results.into()),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+
+    fn save_chain(dir: &std::path::Path, rows: Vec<vision::VisionModelRef>) {
+        let mut settings = crate::settings::Settings::default();
+        settings.vision.models = rows;
+        crate::settings::save(dir, &settings).unwrap();
+    }
+
+    fn first_id() -> String {
+        format!("sha256:{}", "e".repeat(64))
+    }
+
+    fn second_id() -> String {
+        format!("sha256:{}", "f".repeat(64))
+    }
+
+    fn image_message_id(path: &std::path::Path, id: &str) -> UserMessage {
+        UserMessage::new(vec![ContentBlock::Image {
+            attachment_id: id.to_owned(),
+            name: "pic.png".to_owned(),
+            bytes: 9,
+            mime: Some("image/png".to_owned()),
+            path: Some(path.to_string_lossy().into_owned()),
+        }])
+    }
+
+    #[tokio::test]
+    async fn rate_limit_retry_after_wins_and_cools_down() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("pic.png");
+        std::fs::write(&image, b"png-bytes").unwrap();
+        save_chain(
+            dir.path(),
+            vec![vision::VisionModelRef {
+                connection: "a".to_owned(),
+                model: "m1".to_owned(),
+            }],
+        );
+        let describer = queue(vec![Err(DescribeFailure::RateLimited {
+            retry_after_ms: Some(12_345),
+        })]);
+        let runtime =
+            VisionRuntime::with_describer(dir.path().to_path_buf(), None, describer.clone());
+        let notes = runtime
+            .prepare("session-rl", &image_message_id(&image, &first_id()), false)
+            .await
+            .unwrap();
+        assert!(notes[&first_id()].contains("没有给出描述"));
+        let row = vision::VisionModelRef {
+            connection: "a".to_owned(),
+            model: "m1".to_owned(),
+        };
+        let now = VisionRuntime::now_ms();
+        let until = runtime.cooldowns.lock().unwrap()[&VisionRuntime::cooldown_key(&row)];
+        assert!(
+            until >= now + 12_000 && until <= now + 13_000,
+            "retry-after 400ms 优先"
+        );
+        // 冷却中第二次不再调后端。
+        let notes = runtime
+            .prepare("session-rl", &image_message_id(&image, &second_id()), false)
+            .await
+            .unwrap();
+        assert!(notes[&second_id()].contains("没有给出描述"));
+        assert_eq!(describer.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn auth_cools_for_ten_minutes_and_all_fail_is_frozen() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("pic.png");
+        std::fs::write(&image, b"png-bytes").unwrap();
+        save_chain(
+            dir.path(),
+            vec![vision::VisionModelRef {
+                connection: "a".to_owned(),
+                model: "m1".to_owned(),
+            }],
+        );
+        let describer = queue(vec![Err(DescribeFailure::Auth)]);
+        let runtime =
+            VisionRuntime::with_describer(dir.path().to_path_buf(), None, describer.clone());
+        let first = runtime
+            .prepare(
+                "session-auth",
+                &image_message_id(&image, &first_id()),
+                false,
+            )
+            .await
+            .unwrap();
+        let row = vision::VisionModelRef {
+            connection: "a".to_owned(),
+            model: "m1".to_owned(),
+        };
+        let now = VisionRuntime::now_ms();
+        let until = runtime.cooldowns.lock().unwrap()[&VisionRuntime::cooldown_key(&row)];
+        assert!(until >= now + 9 * 60_000, "AUTH 冷却 10 分钟");
+        let second = runtime
+            .prepare(
+                "session-auth",
+                &image_message_id(&image, &first_id()),
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(first[&first_id()], second[&first_id()]);
+        assert_eq!(describer.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn first_backend_rate_limited_then_second_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("pic.png");
+        std::fs::write(&image, b"png-bytes").unwrap();
+        save_chain(
+            dir.path(),
+            vec![
+                vision::VisionModelRef {
+                    connection: "a".to_owned(),
+                    model: "m1".to_owned(),
+                },
+                vision::VisionModelRef {
+                    connection: "b".to_owned(),
+                    model: "m2".to_owned(),
+                },
+            ],
+        );
+        let describer = queue(vec![
+            Err(DescribeFailure::RateLimited {
+                retry_after_ms: Some(60_000),
+            }),
+            Ok("第二个后端看到了".to_owned()),
+            Ok("第二个后端也看到了".to_owned()),
+        ]);
+        let runtime =
+            VisionRuntime::with_describer(dir.path().to_path_buf(), None, describer.clone());
+        let first = runtime
+            .prepare(
+                "session-order",
+                &image_message_id(&image, &first_id()),
+                false,
+            )
+            .await
+            .unwrap();
+        assert!(first[&first_id()].contains("第二个后端看到了"));
+        let second = runtime
+            .prepare(
+                "session-order",
+                &image_message_id(&image, &second_id()),
+                false,
+            )
+            .await
+            .unwrap();
+        assert!(second[&second_id()].contains("第二个后端也看到了"));
+        assert_eq!(describer.calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn unreadable_image_still_writes_backend_failed_not_d120() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.png");
+        save_chain(
+            dir.path(),
+            vec![vision::VisionModelRef {
+                connection: "a".to_owned(),
+                model: "m1".to_owned(),
+            }],
+        );
+        let describer = queue(vec![Err(DescribeFailure::Other)]);
+        let runtime = VisionRuntime::with_describer(dir.path().to_path_buf(), None, describer);
+        let notes = runtime
+            .prepare(
+                "session-missing",
+                &image_message_id(&missing, &first_id()),
+                false,
+            )
+            .await
+            .unwrap();
+        let text = &notes[&first_id()];
+        assert!(text.contains("没有给出描述"), "{text}");
+        assert!(!text.contains("image omitted"), "不能退回 D120：{text}");
     }
 }

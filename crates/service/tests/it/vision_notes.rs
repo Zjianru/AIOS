@@ -70,6 +70,7 @@ async fn no_chain_omitted_line_carries_the_attachment_id_and_stays_frozen() {
         .respond_with(crate::common::SequenceResponder::new(vec![
             sse(&crate::common::text_sse("好")),
             sse(&crate::common::text_sse("还在")),
+            sse(&crate::common::text_sse("仍然在")),
         ]))
         .mount(&server)
         .await;
@@ -104,9 +105,47 @@ async fn no_chain_omitted_line_carries_the_attachment_id_and_stays_frozen() {
         .await
         .expect("send2");
     let second = wait_request(&server, 2).await;
+    host.dispatch(Call::Send(request("vision-3", &id)))
+        .await
+        .expect("send3");
+    let third = wait_request(&server, 3).await;
     let first_omitted = omitted_text(&first[0]);
     let second_omitted = omitted_text(&second[1]);
-    assert_eq!(first_omitted, second_omitted, "前缀要逐字不变");
+    let third_omitted = omitted_text(&third[2]);
+    assert_eq!(first_omitted, second_omitted, "第二次请求前缀要逐字不变");
+    assert_eq!(first_omitted, third_omitted, "第三次请求前缀也要逐字不变");
+    // 会话日志里的原图块仍在，字段不变。
+    let sessions = data.path().join("sessions");
+    let mut image_blocks = Vec::new();
+    for entry in std::fs::read_dir(&sessions).expect("sessions") {
+        let path = entry.expect("entry").path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let text = std::fs::read_to_string(path).expect("session log");
+        for line in text.lines() {
+            let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            if let Some(blocks) = event["data"]["message"]["content"].as_array() {
+                for block in blocks {
+                    if block["type"] == "image" {
+                        image_blocks.push(block.clone());
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(
+        image_blocks.len(),
+        3,
+        "三次发送各留一条原图块，且都没被转述替换：{image_blocks:?}"
+    );
+    for block in &image_blocks {
+        assert_eq!(block["attachmentId"], id);
+        assert_eq!(block["name"], "shot.png");
+        assert_eq!(block["bytes"], 9);
+    }
     host.shutdown().await;
 }
 
