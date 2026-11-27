@@ -740,4 +740,40 @@ mod tests {
         assert!(text.contains("没有给出描述"), "{text}");
         assert!(!text.contains("image omitted"), "不能退回 D120：{text}");
     }
+
+    #[tokio::test]
+    async fn rate_limit_without_retry_after_uses_sixty_seconds() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("pic.png");
+        std::fs::write(&image, b"png-bytes").unwrap();
+        save_chain(
+            dir.path(),
+            vec![vision::VisionModelRef {
+                connection: "a".to_owned(),
+                model: "m1".to_owned(),
+            }],
+        );
+        let describer = queue(vec![Err(DescribeFailure::RateLimited {
+            retry_after_ms: None,
+        })]);
+        let runtime = VisionRuntime::with_describer(dir.path().to_path_buf(), None, describer);
+        runtime
+            .prepare(
+                "session-default",
+                &image_message_id(&image, &first_id()),
+                false,
+            )
+            .await
+            .unwrap();
+        let row = vision::VisionModelRef {
+            connection: "a".to_owned(),
+            model: "m1".to_owned(),
+        };
+        let now = VisionRuntime::now_ms();
+        let until = runtime.cooldowns.lock().unwrap()[&VisionRuntime::cooldown_key(&row)];
+        assert!(
+            until >= now + 59_000 && until <= now + 61_000,
+            "默认冷却 60 秒"
+        );
+    }
 }
