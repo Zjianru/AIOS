@@ -23,7 +23,7 @@ import { canRecallCleared } from '../rewind.ts';
 import { takePendingDraft } from '@/lib/pendingDraft';
 import type { RewindSource } from '../rewind.ts';
 import { attachmentGet, attachmentPut, fileReferences, peekAvailableModels } from '@/data/service';
-import type { FileReferenceEntry, SendAttachmentRef } from '@/data/service';
+import type { FileReferenceEntry, FileReferenceObject, SendAttachmentRef } from '@/data/service';
 import { cn } from '@/lib/utils';
 import {
   AttachmentPreview,
@@ -35,6 +35,7 @@ import {
   QuoteCard,
   ResultCardChip,
   pasteStats,
+  ObjectRefCard,
 } from './AttachmentCard';
 
 const LARGE_PASTE_CHAR_THRESHOLD = 1000;
@@ -43,6 +44,8 @@ const MAX_HEIGHT = 240;
 export interface ComposerSendOptions {
   pastes: string[];
   attachments: SendAttachmentRef[];
+  /** @ 选中的任务/报告/项目引用片。 */
+  objectRefs?: FileReferenceObject[];
   /** T015.4：画布放进来的那一句带着画布身份；没有就是自己写的。 */
   canvas?: { id: string; title: string };
   /** T054.2：结果卡「要求修改」带进来的那张卡。 */
@@ -106,10 +109,14 @@ interface ComposerAttachment extends SendAttachmentRef {
   mime: string;
 }
 
+type AtMenuItem =
+  | { group: 'file'; entry: FileReferenceEntry }
+  | { group: 'task' | 'report' | 'project'; object: FileReferenceObject };
+
 interface AtMenuState {
   start: number;
   query: string;
-  items: FileReferenceEntry[];
+  items: AtMenuItem[];
   index: number;
 }
 
@@ -162,6 +169,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const [quotes, setQuotes] = useState<string[]>([]);
   const [pastes, setPastes] = useState<string[]>([]);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
+  const [objectRefs, setObjectRefs] = useState<FileReferenceObject[]>([]);
   const kindModel = useKindStore((state) => state.model);
   // 查不到/读不到都按看不了图（不猜）；加载完成前也不显示缩略图。
   const [modelSeesImages, setModelSeesImages] = useState(false);
@@ -216,7 +224,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   // 每条放回用 seq+index 唯一标识（N2 逐条放回；同一 splice 可能有多条消息）。
   const restoredKeysRef = useRef<string[]>([]);
 
-  const canSend = text.trim().length > 0 || quotes.length > 0 || pastes.length > 0 || attachments.length > 0;
+  const canSend =
+    text.trim().length > 0 ||
+    quotes.length > 0 ||
+    pastes.length > 0 ||
+    attachments.length > 0 ||
+    objectRefs.length > 0;
   const [pageTagDismissed, setPageTagDismissed] = useState(false);
 
   useEffect(() => {
@@ -537,7 +550,11 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     let cancelled = false;
     const timer = setTimeout(() => {
       void fileReferences(atMenu.query)
-        .then((items) => {
+        .then((result) => {
+          const items: AtMenuItem[] = [
+            ...result.references.map((entry): AtMenuItem => ({ group: 'file', entry })),
+            ...result.objects.map((object): AtMenuItem => ({ group: object.kind as 'task' | 'report' | 'project', object })),
+          ];
           if (!cancelled) setAtMenu((previous) => (previous ? { ...previous, items, index: 0 } : previous));
         })
         .catch(() => undefined);
@@ -549,21 +566,38 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   }, [atMenu?.query]);
 
   const pickReference = useCallback(
-    (entry: FileReferenceEntry) => {
+    (item: AtMenuItem) => {
       const element = inputRef.current;
       if (!element || !atMenu) return;
       // 用 DOM 里的真实值（state 闭包可能比输入慢一拍）。
       const value = element.value;
       const caret = element.selectionStart;
-      const inserted = insertReference(entry.path);
       touchedRef.current = true;
       changedDuringSendRef.current = true;
-      const next = value.slice(0, atMenu.start) + inserted + value.slice(caret);
+      if (item.group === 'file') {
+        const inserted = insertReference(item.entry.path);
+        const next = value.slice(0, atMenu.start) + inserted + value.slice(caret);
+        setText(next);
+        setAtMenu(null);
+        requestAnimationFrame(() => {
+          element.focus();
+          const position = atMenu.start + inserted.length;
+          element.setSelectionRange(position, position);
+        });
+        return;
+      }
+      // 对象引用片不进正文：把打出来的 @query 去掉，卡片挂到附件那一排。
+      const next = value.slice(0, atMenu.start) + value.slice(caret);
       setText(next);
+      setObjectRefs((previous) =>
+        previous.some((object) => object.kind === item.object.kind && object.id === item.object.id)
+          ? previous
+          : previous.concat(item.object),
+      );
       setAtMenu(null);
       requestAnimationFrame(() => {
         element.focus();
-        const position = atMenu.start + inserted.length;
+        const position = atMenu.start;
         element.setSelectionRange(position, position);
       });
     },
@@ -607,14 +641,15 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     const value = [quoted, text.trim()]
       .filter((part) => part.length > 0)
       .join(String.fromCharCode(10));
-    if (!value && pastes.length === 0 && attachments.length === 0) return;
+    if (!value && pastes.length === 0 && attachments.length === 0 && objectRefs.length === 0) return;
     // T013.8：发送时先清空（马上能继续打），受理失败再把内容放回来（草稿不清）。
-    const snapshot = { text, quotes, pastes, attachments, quote, fromCanvas, resultCard, extraCanvases, extraResultCards };
+    const snapshot = { text, quotes, pastes, attachments, objectRefs, quote, fromCanvas, resultCard, extraCanvases, extraResultCards };
     changedDuringSendRef.current = false;
     setText('');
     setQuotes([]);
     setPastes([]);
     setAttachments([]);
+    setObjectRefs([]);
     setAtMenu(null);
     setQuote('');
     setPageQuote(null);
@@ -629,6 +664,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     const accepted = await onSend(value, {
       pastes,
       attachments: attachments.map(({ id, name, bytes, mime }) => ({ id, name, bytes, mime: mime ?? null })),
+      objectRefs,
       canvases: [...(fromCanvas ? [fromCanvas] : []), ...extraCanvases],
       resultCards: [...(resultCard ? [resultCard] : []), ...extraResultCards],
     });
@@ -639,6 +675,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       setQuotes(snapshot.quotes);
       setPastes(snapshot.pastes);
       setAttachments(snapshot.attachments);
+      setObjectRefs(snapshot.objectRefs);
       setQuote(snapshot.quote);
       setFromCanvas(snapshot.fromCanvas);
       setResultCard(snapshot.resultCard);
@@ -651,7 +688,22 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     } catch {
       // 忽略。
     }
-  }, [attachments, draftScope, extraCanvases, extraResultCards, fromCanvas, offline, onSend, pastes, quote, quotes, resize, resultCard, text]);
+  }, [
+    attachments,
+    draftScope,
+    extraCanvases,
+    extraResultCards,
+    fromCanvas,
+    objectRefs,
+    offline,
+    onSend,
+    pastes,
+    quote,
+    quotes,
+    resize,
+    resultCard,
+    text,
+  ]);
 
 
   const hasDraftContent = useCallback(
@@ -661,12 +713,23 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           quotes.length > 0 ||
           pastes.length > 0 ||
           attachments.length > 0 ||
+          objectRefs.length > 0 ||
           fromCanvas ||
           resultCard ||
           extraCanvases.length > 0 ||
           extraResultCards.length > 0,
       ),
-    [attachments.length, extraCanvases.length, extraResultCards.length, fromCanvas, pastes.length, quotes.length, resultCard, text],
+    [
+      attachments.length,
+      extraCanvases.length,
+      extraResultCards.length,
+      fromCanvas,
+      objectRefs.length,
+      pastes.length,
+      quotes.length,
+      resultCard,
+      text,
+    ],
   );
 
   /** 两下 Esc 清空输入框；清掉的东西压进 cleared，↑ 能取回。 */
@@ -851,8 +914,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     // @ 菜单打开且有候选：Enter 选高亮项。
     if (atMenu && atMenu.items.length > 0) {
       event.preventDefault();
-      const entry = atMenu.items[Math.min(atMenu.index, atMenu.items.length - 1)];
-      if (entry) pickReference(entry);
+      const item = atMenu.items[Math.min(atMenu.index, atMenu.items.length - 1)];
+      if (item) pickReference(item);
       return;
     }
     event.preventDefault();
@@ -939,7 +1002,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             />
           </span>
         ))}
-        {quotes.length > 0 || pastes.length > 0 || attachments.length > 0 ? (
+        {quotes.length > 0 || pastes.length > 0 || attachments.length > 0 || objectRefs.length > 0 ? (
           <div ref={cardsRef} className="mb-1.5 flex gap-1.5 overflow-x-auto pb-1" data-kind="composer-cards">
             {quotes.map((item, index) => (
               <QuoteCard
@@ -954,6 +1017,17 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
                 paste={paste}
                 onOpen={() => setPastePreview(index)}
                 onRemove={() => setPastes((previous) => previous.filter((_, item) => item !== index))}
+              />
+            ))}
+            {objectRefs.map((object) => (
+              <ObjectRefCard
+                key={'object-' + object.kind + '-' + object.id}
+                object={object}
+                onRemove={() =>
+                  setObjectRefs((previous) =>
+                    previous.filter((item) => !(item.kind === object.kind && item.id === object.id)),
+                  )
+                }
               />
             ))}
             {attachments.map((file) =>
@@ -1158,23 +1232,46 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           data-kind="at-menu"
           className="absolute bottom-full left-3 mb-1 max-h-[240px] w-80 overflow-y-auto rounded-card border border-line-2 bg-raised p-1 shadow-[var(--shadow-pop)]"
         >
-          {atMenu.items.map((item, index) => (
-            <button
-              key={item.path}
-              type="button"
-              onMouseDown={(event) => {
-                event.preventDefault();
-                pickReference(item);
-              }}
-              className={cn(
-                'flex w-full items-center gap-2 rounded-btn px-2 py-1 text-left text-2',
-                index === atMenu.index ? 'bg-active text-ink' : 'text-ink-2 hover:bg-hover hover:text-ink',
-              )}
-            >
-              <FileText className="size-3 shrink-0" />
-              <span className="min-w-0 flex-1 truncate font-mono">{item.path}</span>
-            </button>
-          ))}
+          {atMenu.items.map((item, index) => {
+            const group = item.group;
+            const previousGroup = index > 0 ? atMenu.items[index - 1].group : null;
+            const header =
+              group === previousGroup
+                ? null
+                : group === 'file'
+                  ? '文件'
+                  : group === 'task'
+                    ? '任务'
+                    : group === 'report'
+                      ? '报告'
+                      : '项目';
+            const label = group === 'file' ? item.entry.path : item.object.title;
+            const key = group === 'file' ? item.entry.path : group + '-' + item.object.id;
+            return (
+              <div key={key} data-group={group}>
+                {header ? (
+                  <div data-kind="mention-group" className="px-2 pb-0.5 pt-1 text-1 text-ink-3">
+                    {header}
+                  </div>
+                ) : null}
+                <button
+                  type="button"
+                  data-kind="mention-item"
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    pickReference(item);
+                  }}
+                  className={cn(
+                    'flex w-full items-center gap-2 rounded-btn px-2 py-1 text-left text-2',
+                    index === atMenu.index ? 'bg-active text-ink' : 'text-ink-2 hover:bg-hover hover:text-ink',
+                  )}
+                >
+                  <FileText className="size-3 shrink-0" />
+                  <span className={cn('min-w-0 flex-1 truncate', group === 'file' && 'font-mono')}>{label}</span>
+                </button>
+              </div>
+            );
+          })}
         </div>
       ) : null}
     </div>

@@ -358,3 +358,46 @@ export function ImageCard({
     </span>
   );
 }
+
+export interface ObjectRefLike {
+  kind: 'task' | 'report' | 'project' | string;
+  id: string;
+  title: string;
+  version?: number | null;
+  taskId?: string | null;
+}
+
+const OBJECT_KIND_LABEL: Record<string, string> = {
+  task: '任务',
+  report: '报告',
+  project: '项目',
+};
+
+/** @ 选中的任务/报告/项目引用片（输入框和消息上同一张卡）。 */
+export function ObjectRefCard({
+  object,
+  onRemove,
+}: {
+  object: ObjectRefLike;
+  onRemove?: () => void;
+}) {
+  const kind = OBJECT_KIND_LABEL[object.kind] ?? object.kind;
+  const version = object.kind === 'task' || object.kind === 'report' ? ' · 第 ' + (object.version ?? 1) + ' 版' : '';
+  return (
+    <span
+      data-kind="attachment-object"
+      data-object-type={object.kind}
+      title={object.id}
+      className="flex max-w-[260px] shrink-0 items-center gap-1 rounded-btn border border-line-2 bg-pane px-2 py-1 text-2 text-ink-2"
+    >
+      <span className="shrink-0 rounded-[3px] bg-active px-1 text-1 text-ink-2">{kind}</span>
+      <span className="min-w-0 truncate text-ink">{object.title}</span>
+      <span className="shrink-0 text-1 text-ink-3">{version}</span>
+      {onRemove ? (
+        <button type="button" aria-label="移除引用" onClick={onRemove} className="text-ink-3 hover:text-ink">
+          <X className="size-3" />
+        </button>
+      ) : null}
+    </span>
+  );
+}

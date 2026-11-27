@@ -621,6 +621,7 @@ pub(super) fn send(_host: &RootHost, request_id: &str, text: &str) -> SendReques
         delivery: DeliveryMode::FollowUp,
         pastes: Vec::new(),
         attachments: Vec::new(),
+        object_refs: Vec::new(),
         canvas: None,
         result_card: None,
         result_cards: Vec::new(),

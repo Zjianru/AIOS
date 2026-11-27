@@ -171,6 +171,7 @@ fn send_request(request_id: &str, text: &str) -> SendRequest {
         delivery: DeliveryMode::FollowUp,
         pastes: Vec::new(),
         attachments: Vec::new(),
+        object_refs: Vec::new(),
         canvas: None,
         result_card: None,
         result_cards: Vec::new(),

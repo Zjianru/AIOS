@@ -63,6 +63,15 @@ export interface CompactionView {
  * 你的消息（ F1）：正文只放打的字；每段粘贴、每个文件各是一张卡。
  * 块从日志的 user/message 来，实时和回放同一份。
  */
+/** 消息里的一个对象引用片（和服务端 ObjectRef 块同字段）。 */
+export interface ObjectRefView {
+  kind: 'task' | 'report' | 'project' | string;
+  id: string;
+  title: string;
+  version?: number;
+  taskId?: string;
+}
+
 export interface TurnUserView {
   text: string;
   elements: TextElement[];
@@ -72,6 +81,8 @@ export interface TurnUserView {
   files: SendAttachmentRef[];
   /** 图片块（attachmentId/name/bytes；预览按 id 读）。 */
   images: SendAttachmentRef[];
+  /** @ 引用片（任务/报告/项目；带身份和版本）。 */
+  objectRefs: ObjectRefView[];
  /** ：这句话是画布里的按钮放进来的（日志块上的 canvas：id + 标题）；没有就是自己写的。 */
   canvas: { id: string; title: string } | null;
  /** ：这句话带着一张结果卡（「要求修改」放进输入框的卡）。 */

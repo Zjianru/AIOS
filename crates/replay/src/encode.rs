@@ -130,7 +130,7 @@ fn encode(records: &[AssistantStreamRecord], complete: bool) -> Vec<String> {
                                     ));
                                 }
                             }
-                            ContentBlock::Image { .. } => {}
+                            ContentBlock::Image { .. } | ContentBlock::ObjectRef { .. } => {}
                             ContentBlock::ToolCall {
                                 id,
                                 name,

@@ -187,6 +187,7 @@ pub(super) async fn say_in_task_dialog(
             text: text.to_owned(),
             pastes: Vec::new(),
             attachments: Vec::new(),
+            object_refs: Vec::new(),
         }))
         .await
         .expect("任务对话里说一句");

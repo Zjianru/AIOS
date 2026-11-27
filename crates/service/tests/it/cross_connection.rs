@@ -204,6 +204,7 @@ async fn send(host: &RootHost, text: &str, serial: u32) {
         delivery: service::DeliveryMode::FollowUp,
         pastes: Vec::new(),
         attachments: Vec::new(),
+        object_refs: Vec::new(),
         canvas: None,
         result_card: None,
         result_cards: Vec::new(),

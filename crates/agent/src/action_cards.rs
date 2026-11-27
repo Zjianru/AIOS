@@ -141,6 +141,7 @@ fn first_text(message: &Message) -> Option<&str> {
         | ContentBlock::ToolCall { .. }
         | ContentBlock::File { .. }
         | ContentBlock::Image { .. }
+        | ContentBlock::ObjectRef { .. }
         | ContentBlock::ResultCard { .. } => None,
     })
 }

@@ -480,6 +480,17 @@ impl TaskRuntime {
                     text: request.text,
                     pastes: request.pastes,
                     attachments,
+                    object_refs: request
+                        .object_refs
+                        .into_iter()
+                        .map(|object| tasks::InputObjectRef {
+                            kind: object.kind,
+                            id: object.id,
+                            title: object.title,
+                            version: object.version,
+                            task_id: object.task_id,
+                        })
+                        .collect(),
                 },
                 Self::now(),
             )
@@ -2256,6 +2267,15 @@ impl TaskRuntime {
             if !paste.is_empty() {
                 blocks.push(model::ContentBlock::paste(paste.clone()));
             }
+        }
+        for object in &input.object_refs {
+            blocks.push(model::ContentBlock::ObjectRef {
+                kind: object.kind.clone(),
+                id: object.id.clone(),
+                title: object.title.clone(),
+                version: object.version,
+                task_id: object.task_id.clone(),
+            });
         }
         for attachment in &input.attachments {
             let stored = tools::attachments::read(&self.data_dir, &attachment.id)

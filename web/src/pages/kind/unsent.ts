@@ -48,6 +48,7 @@ export function addUnsentView(
         pastes,
         files,
         images: [],
+        objectRefs: [],
         canvas: canvases[0] ?? null,
         resultCard: resultCards[0] ?? null,
         rpcId: null,

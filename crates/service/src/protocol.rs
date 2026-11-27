@@ -237,6 +237,9 @@ pub struct SendRequest {
     /// 用户拖进来的文件（已经存进附件仓库）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<SendAttachment>,
+    /// @ 选中的任务/报告/项目引用片（只增字段）。
+    #[serde(default, rename = "objectRefs", skip_serializing_if = "Vec::is_empty")]
+    pub object_refs: Vec<SendObjectRef>,
     /// 画布按钮放进输入框的那一句带着画布身份（id + 标题）；用户自己写的不带。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canvas: Option<SendCanvas>,
@@ -277,10 +280,23 @@ pub struct SendAttachment {
 }
 
 /// 画布放进输入框的那一句带来的画布（页面从日志的 meta.canvas 拿 id 和标题）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct SendCanvas {
     pub id: String,
     pub title: String,
+}
+
+/// 随消息带进输入框的一个对象引用片。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct SendObjectRef {
+    /// task / report / project。
+    pub kind: String,
+    pub id: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u32>,
+    #[serde(default, rename = "taskId", skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
 }
 
 fn default_delivery() -> DeliveryMode {
@@ -1023,6 +1039,9 @@ pub struct TaskSayRequest {
     /// 用户拖进来的文件（已经存进附件仓库）；规则和 Kind 对话一样。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<SendAttachment>,
+    /// @ 选中的任务/报告/项目引用片（只增字段）。
+    #[serde(default, rename = "objectRefs", skip_serializing_if = "Vec::is_empty")]
+    pub object_refs: Vec<SendObjectRef>,
 }
 
 /// 说一句的结果：输入 id 和新 Attempt 编号（在跑时没有新 Attempt）。
@@ -1540,10 +1559,31 @@ pub struct FileReferenceEntry {
     pub bytes: u64,
 }
 
+/// @ 菜单里的一个 AIOS 对象候选（只增分组；任务/报告/项目共用）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct FileReferenceObject {
+    /// task / report / project。
+    pub kind: String,
+    pub id: String,
+    pub title: String,
+    /// 任务/报告的要求版本；项目没有。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u32>,
+    /// 报告所属任务；其他没有。
+    #[serde(default, rename = "taskId", skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    /// 项目目标；其他没有。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<String>,
+}
+
 /// @ 文件候选列表。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, TS)]
 pub struct FileReferencesListResponse {
     pub references: Vec<FileReferenceEntry>,
+    /// 任务/报告/项目分组（只增字段，旧页面忽略）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub objects: Vec<FileReferenceObject>,
 }
 
 /// 编辑连接，只改 endpoint/model（不换 key）。

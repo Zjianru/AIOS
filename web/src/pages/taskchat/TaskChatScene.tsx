@@ -412,7 +412,8 @@ export function TaskChatScene() {
       if (!task?.running) await releaseTaskSocketRefs(socketRef, socketClosedRef);
       const pastes = options.pastes;
       const attachments = options.attachments;
-      const response = await taskSay(taskId, text, { pastes, attachments });
+      const objectRefs = options.objectRefs ?? [];
+      const response = await taskSay(taskId, text, { pastes, attachments, objectRefs });
       // 说了以后（尤其新 Attempt）等它真的跑起来再接回实时帧。
       if (!socketRef.current) void reopenTaskStream(requestToken.current);
       setQueued((current) =>
@@ -867,6 +868,7 @@ export function TaskChatScene() {
               pastes: item.pastes,
               files: item.attachments,
               images: [],
+              objectRefs: [],
               canvas: null,
               resultCard: null,
               rpcId: null,

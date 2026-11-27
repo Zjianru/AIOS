@@ -376,6 +376,7 @@ export function deriveTurnViews(
     const pastes: string[] = [];
     const files: SendAttachmentRef[] = [];
     const images: SendAttachmentRef[] = [];
+    const objectRefs: TurnUserView['objectRefs'] = [];
     let canvas: { id: string; title: string } | null = null;
     let resultCard: { taskId: string; title: string; version: number } | null = null;
     for (const block of content) {
@@ -385,12 +386,14 @@ export function deriveTurnViews(
         text?: unknown;
         paste?: unknown;
         canvas?: unknown;
+        id?: unknown;
         attachmentId?: unknown;
         name?: unknown;
         bytes?: unknown;
         taskId?: unknown;
         version?: unknown;
         title?: unknown;
+        kind?: unknown;
       };
       // T054.2：结果卡块（用户点「要求修改」带进输入框的那张卡）。
       if (
@@ -418,6 +421,16 @@ export function deriveTurnViews(
         else text.push(value);
         continue;
       }
+      if (typed.type === 'object-ref' && typeof typed.id === 'string') {
+        objectRefs.push({
+          kind: typeof typed.kind === 'string' ? typed.kind : 'task',
+          id: typed.id,
+          title: typeof typed.title === 'string' ? typed.title : '',
+          version: typeof typed.version === 'number' ? typed.version : undefined,
+          taskId: typeof typed.taskId === 'string' ? typed.taskId : undefined,
+        });
+        continue;
+      }
       if (typed.type === 'image' && typeof typed.attachmentId === 'string') {
         images.push({
           id: typed.attachmentId,
@@ -435,8 +448,17 @@ export function deriveTurnViews(
       }
     }
     const body = text.join('');
-    if (!body && pastes.length === 0 && files.length === 0 && images.length === 0 && !canvas && !resultCard) return null;
-    return { text: body, elements: [], pastes, files, images, canvas, resultCard, rpcId };
+    if (
+      !body &&
+      pastes.length === 0 &&
+      files.length === 0 &&
+      images.length === 0 &&
+      objectRefs.length === 0 &&
+      !canvas &&
+      !resultCard
+    )
+      return null;
+    return { text: body, elements: [], pastes, files, images, objectRefs, canvas, resultCard, rpcId };
   };
 
   const textOfToolResult = (message: unknown): string => {

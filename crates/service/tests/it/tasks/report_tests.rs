@@ -759,6 +759,7 @@ async fn gate_judge_rejects_stale_report_and_candidate_changed() {
         text: "再改一版".to_owned(),
         pastes: Vec::new(),
         attachments: Vec::new(),
+        object_refs: Vec::new(),
     }))
     .await
     .expect("B 第二轮");
@@ -829,6 +830,7 @@ async fn accepting_an_older_report_after_a_new_one_is_refused() {
             text: "再核对一遍".to_owned(),
             pastes: Vec::new(),
             attachments: Vec::new(),
+            object_refs: Vec::new(),
         }))
         .await
         .expect("再核对");

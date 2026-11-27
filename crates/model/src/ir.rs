@@ -199,6 +199,19 @@ pub enum ContentBlock {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         path: Option<String>,
     },
+    /// 用户引用了一个 AIOS 对象（任务/报告/项目）；投给模型时换成一行身份+版本。
+    ObjectRef {
+        /// task / report / project。
+        kind: String,
+        id: String,
+        title: String,
+        /// 任务/报告的要求版本；项目没有。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<u32>,
+        /// 报告所属任务；任务/项目没有。
+        #[serde(default, rename = "taskId", skip_serializing_if = "Option::is_none")]
+        task_id: Option<String>,
+    },
     /// T013.4：用户消息里的一个文件块（投给模型时换成 fileHandleText）。
     File {
         #[serde(rename = "attachmentId")]
@@ -280,6 +293,29 @@ impl ContentBlock {
         )
     }
 
+    /// 对象引用块投给模型的一行身份/版本（规则只在 Kind 固定说明一处）。
+    pub fn object_ref_text(
+        kind: &str,
+        id: &str,
+        title: &str,
+        version: Option<u32>,
+        task_id: Option<&str>,
+    ) -> String {
+        match kind {
+            "task" => format!(
+                "[引用任务：{title}（{id}，第 {} 版要求）]",
+                version.unwrap_or(1)
+            ),
+            "report" => format!(
+                "[引用报告：{title}（报告 {id}，任务 {}，第 {} 版要求的结果）]",
+                task_id.unwrap_or(""),
+                version.unwrap_or(1)
+            ),
+            "project" => format!("[引用项目：{title}（{id}）]"),
+            _ => format!("[引用了 {kind}：{title}（{id}）]"),
+        }
+    }
+
     /// 文本块的内容；非文本块返回 None。
     pub fn as_text(&self) -> Option<&str> {
         match self {
@@ -288,6 +324,7 @@ impl ContentBlock {
             | Self::ToolCall { .. }
             | Self::File { .. }
             | Self::Image { .. }
+            | Self::ObjectRef { .. }
             | Self::ResultCard { .. } => None,
         }
     }
@@ -304,6 +341,7 @@ impl ContentBlock {
             | Self::Reasoning { .. }
             | Self::File { .. }
             | Self::Image { .. }
+            | Self::ObjectRef { .. }
             | Self::ResultCard { .. } => None,
         }
     }

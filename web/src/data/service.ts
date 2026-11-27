@@ -17,6 +17,7 @@ import type { ConnectionUpdateRequest } from './generated/ConnectionUpdateReques
 import type { DisabledModelsCheckResponse } from './generated/DisabledModelsCheckResponse';
 import type { EventsResponse } from './generated/EventsResponse';
 import type { FileReferenceEntry } from './generated/FileReferenceEntry';
+import type { FileReferenceObject } from './generated/FileReferenceObject';
 import type { FirstUseResponse } from './generated/FirstUseResponse';
 import type { Frame } from './generated/Frame';
 import type { IssuesResponse } from './generated/IssuesResponse';
@@ -67,6 +68,7 @@ export type { ConnectionInfo };
 export type { ConnectionQuotaResponse };
 export type { ExecSettingsView };
 export type { FileReferenceEntry };
+export type { FileReferenceObject };
 export type { Frame };
 export type { StopMode };
 export type { TaskStopResponse };
@@ -202,6 +204,8 @@ export interface SendOptions {
   pastes?: string[];
   /** 用户拖进来的文件（已存进附件仓库）。 */
   attachments?: SendAttachmentRef[];
+  /** @ 选中的任务/报告/项目引用片。 */
+  objectRefs?: ObjectRefRef[];
   /** T015.4：画布按钮放进输入框的那一句带着画布身份（id + 标题）；自己写的不带。 */
   canvas?: { id: string; title: string };
   /** T054.2：结果卡「要求修改」带进输入框的那张卡。 */
@@ -209,6 +213,15 @@ export interface SendOptions {
   /** （N2）：一次放回多条结果卡/画布标记，按顺序发送。 */
   resultCards?: SendResultCardRef[];
   canvases?: { id: string; title: string }[];
+}
+
+/** @ 选中的一个 AIOS 对象（任务/报告/项目）；消息里画成引用片。 */
+export interface ObjectRefRef {
+  kind: string;
+  id: string;
+  title: string;
+  version?: number | null;
+  taskId?: string | null;
 }
 
 /** T054.2：随消息带进 Kind 输入框的结果卡（任务 id + 标题 + 要求版本）。 */
@@ -229,9 +242,11 @@ export async function attachmentGet(id: string): Promise<AttachmentGetResponse> 
 }
 
 /** T013.7：按打的字列 @ 文件候选（服务端 BFS + 排序）。 */
-export async function fileReferences(query: string): Promise<FileReferenceEntry[]> {
+export async function fileReferences(
+  query: string,
+): Promise<{ references: FileReferenceEntry[]; objects: FileReferenceObject[] }> {
   const response = await post({ method: 'file-references-list', query });
-  return response.references;
+  return { references: response.references ?? [], objects: response.objects ?? [] };
 }
 
 export async function sendMessage(
@@ -247,6 +262,7 @@ export async function sendMessage(
     delivery: 'follow-up',
     pastes: options.pastes ?? [],
     attachments: options.attachments ?? [],
+    objectRefs: options.objectRefs ?? [],
     // （N2）：多条放回按顺序走列表；单条旧字段不再重复发（服务端两套都收）。
     resultCards: options.resultCards ?? [],
     canvases: options.canvases ?? [],
@@ -356,7 +372,7 @@ export async function taskStop(taskId: string, mode: StopMode): Promise<TaskStop
 }
 
 /** T028.5：任务对话里的粘贴段与附件（和 Kind 对话的 SendOptions 同名同形）。 */
-export type TaskSayOptions = Pick<SendOptions, 'pastes' | 'attachments'>;
+export type TaskSayOptions = Pick<SendOptions, 'pastes' | 'attachments' | 'objectRefs'>;
 
 /**
  * T028.5：在任务对话里说一句。在跑时插进这一轮；停了/失败了就在原会话开新 Attempt。
@@ -369,12 +385,14 @@ export async function taskSay(
 ): Promise<TaskSayResponse> {
   const pastes = options.pastes ?? [];
   const attachments = options.attachments ?? [];
+  const objectRefs = options.objectRefs ?? [];
   return post({
     method: 'task-say',
     taskId,
     text,
     ...(pastes.length > 0 ? { pastes } : {}),
     ...(attachments.length > 0 ? { attachments } : {}),
+    ...(objectRefs.length > 0 ? { objectRefs } : {}),
   });
 }
 

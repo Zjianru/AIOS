@@ -28,6 +28,7 @@ import {
   AttachmentPreview,
   FileCard,
   ImageCard,
+  ObjectRefCard,
   FromCanvasChip,
   PasteCard,
   ResultCardChip,
@@ -74,6 +75,9 @@ export function UserCards({ user }: { user: TurnUserView }) {
           paste={paste}
           onOpen={() => setOpenPaste(openPaste === index ? null : index)}
         />
+      ))}
+      {user.objectRefs.map((object) => (
+        <ObjectRefCard key={'object-' + object.kind + '-' + object.id} object={object} />
       ))}
       {user.images.map((file) => (
         <ImageCard key={'image-' + file.id + '-' + file.name} file={file} />
@@ -569,7 +573,10 @@ export const TurnRow = memo(function TurnRow({
               version={view.user.resultCard.version}
             />
           ) : null}
-          {view.user.pastes.length > 0 || view.user.files.length > 0 || view.user.images.length > 0 ? (
+          {view.user.pastes.length > 0 ||
+          view.user.files.length > 0 ||
+          view.user.images.length > 0 ||
+          view.user.objectRefs.length > 0 ? (
             <UserCards user={view.user} />
           ) : null}
           {view.user.text ? (

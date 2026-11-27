@@ -5,7 +5,8 @@ use model::UserMessage;
 use crate::error::ServiceError;
 use crate::protocol::{
     AttachmentGetRequest, AttachmentGetResponse, AttachmentPutRequest, AttachmentPutResponse,
-    FileReferenceEntry, FileReferencesListRequest, FileReferencesListResponse, SendRequest,
+    FileReferenceEntry, FileReferenceObject, FileReferencesListRequest, FileReferencesListResponse,
+    SendRequest,
 };
 use crate::root_lifecycle::RootHost;
 
@@ -155,6 +156,15 @@ impl RootHost {
                 blocks.push(model::ContentBlock::paste(paste.clone()));
             }
         }
+        for object in &request.object_refs {
+            blocks.push(model::ContentBlock::ObjectRef {
+                kind: object.kind.clone(),
+                id: object.id.clone(),
+                title: object.title.clone(),
+                version: object.version,
+                task_id: object.task_id.clone(),
+            });
+        }
         for attachment in &request.attachments {
             let stored = tools::attachments::read(&self.options.data_dir, &attachment.id)
                 .map_err(attachment_error)?;
@@ -227,7 +237,67 @@ impl RootHost {
         let mut seen = std::collections::BTreeSet::new();
         references.retain(|entry| seen.insert(entry.path.clone()));
         references.truncate(tools::file_references::DEFAULT_MAX_RESULTS);
-        Ok(FileReferencesListResponse { references })
+
+        // 同一份候选接口只增对象分组；数据来自已有任务/项目事实，不加新查询协议。
+        let needle = request.query.to_lowercase();
+        let matched = |text: &str| needle.is_empty() || text.to_lowercase().contains(&needle);
+        let mut task_objects = Vec::new();
+        let mut report_objects = Vec::new();
+        let mut project_objects = Vec::new();
+        if let Some(tasks) = self
+            .task_runtime()
+            .map(|runtime| runtime.store().all_tasks())
+            .and_then(Result::ok)
+        {
+            for task in tasks {
+                if matched(task.id.as_str()) || matched(&task.title) {
+                    task_objects.push(FileReferenceObject {
+                        kind: "task".to_owned(),
+                        id: task.id.as_str().to_owned(),
+                        title: task.title.clone(),
+                        version: Some(task.requirement_version()),
+                        task_id: None,
+                        goal: None,
+                    });
+                }
+                if let Some(report) = task.latest_report()
+                    && (matched(report.id.as_str()) || matched(&task.title))
+                {
+                    report_objects.push(FileReferenceObject {
+                        kind: "report".to_owned(),
+                        id: report.id.as_str().to_owned(),
+                        title: task.title.clone(),
+                        version: Some(report.version),
+                        task_id: Some(task.id.as_str().to_owned()),
+                        goal: None,
+                    });
+                }
+            }
+        }
+        if let Some(projects) = &self.options.projects
+            && let Ok(projects) = projects.list()
+        {
+            for project in projects {
+                if matched(&project.id) || matched(&project.name) || matched(&project.goal) {
+                    project_objects.push(FileReferenceObject {
+                        kind: "project".to_owned(),
+                        id: project.id.clone(),
+                        title: project.name.clone(),
+                        version: None,
+                        task_id: None,
+                        goal: Some(project.goal.clone()),
+                    });
+                }
+            }
+        }
+        let mut objects = task_objects;
+        objects.extend(report_objects);
+        objects.extend(project_objects);
+        objects.truncate(tools::file_references::DEFAULT_MAX_RESULTS);
+        Ok(FileReferencesListResponse {
+            references,
+            objects,
+        })
     }
 
     /// 存一份文字附件（base64 → 只读副本，返回 id）。

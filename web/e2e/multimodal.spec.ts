@@ -213,3 +213,63 @@ test('目录读不到时按看不了图：peek 失败也不猜成能看', async 
     await fixture.close();
   }
 });
+
+test('@ 对象：任务/报告候选分组，选中出引用片，发送后消息里在，刷新还在', async ({ page, request }) => {
+  test.setTimeout(120_000);
+  const fixture = await startKernelFixture({ t062TaskGraphs: true });
+  try {
+    await page.goto(urlOf(fixture, '#kind'));
+    const box = page.locator('[data-kind="composer-input"]');
+    await expect(box).toBeVisible({ timeout: 30_000 });
+    await box.fill('@');
+    const menu = page.locator('[data-kind="at-menu"]');
+    await expect(menu).toBeVisible({ timeout: 10_000 });
+    await expect(menu.locator('[data-group="task"]').first()).toBeVisible();
+    await expect(menu.locator('[data-kind="mention-group"]').filter({ hasText: '任务' })).toHaveCount(1);
+    await menu.locator('[data-group="task"] [data-kind="mention-item"]').first().click();
+    const objects = page.locator('[data-kind="attachment-object"]');
+    await expect(objects).toHaveCount(1);
+    await expect(objects.first()).toHaveAttribute('data-object-type', 'task');
+    // 再选一个报告。
+    await box.fill('@');
+    await expect(menu).toBeVisible({ timeout: 10_000 });
+    await expect(menu.locator('[data-kind="mention-group"]').filter({ hasText: '报告' })).toHaveCount(1);
+    await menu.locator('[data-group="report"] [data-kind="mention-item"]').first().click();
+    await expect(objects).toHaveCount(2);
+    await page.locator('[data-kind="send"]').click();
+
+    const row = page.locator('[data-kind="user-message-row"]').last();
+    await expect(row.locator('[data-kind="attachment-object"]')).toHaveCount(2, { timeout: 20_000 });
+    await expect(row.locator('[data-object-type="report"]')).toHaveCount(1);
+    await expect(page.locator('[data-kind="assistant-answer"], [data-kind="answer"]').last()).toBeVisible({ timeout: 90_000 });
+    await page.reload();
+    const history = page.locator('[data-kind="user-message-row"]').last();
+    await expect(history.locator('[data-kind="attachment-object"]')).toHaveCount(2, { timeout: 30_000 });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('任务对话同一 Composer：@ 对象候选和引用片也在', async ({ page, request }) => {
+  test.setTimeout(120_000);
+  const fixture = await startKernelFixture({ t062TaskGraphs: true });
+  try {
+    const response = await apiPost(request, fixture, { method: 'work' });
+    const work = (await response.json()) as { tasks: { id: string; title: string }[] };
+    const task = work.tasks.find((item) => item.title === '查 A');
+    expect(task, '夹具里要有任务「查 A」').toBeTruthy();
+    await page.goto(urlOf(fixture, '#taskchat:' + task!.id));
+    const box = page.locator('[data-kind="composer-input"]');
+    await expect(box).toBeVisible({ timeout: 30_000 });
+    await box.fill('@');
+    const menu = page.locator('[data-kind="at-menu"]');
+    await expect(menu).toBeVisible({ timeout: 10_000 });
+    await expect(menu.locator('[data-group="task"]').first()).toBeVisible();
+    await menu.locator('[data-group="task"] [data-kind="mention-item"]').first().click();
+    const object = page.locator('[data-kind="composer-cards"] [data-kind="attachment-object"]');
+    await expect(object).toHaveCount(1);
+    await expect(object.first()).toHaveAttribute('data-object-type', 'task');
+  } finally {
+    await fixture.close();
+  }
+});

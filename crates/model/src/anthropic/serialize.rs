@@ -213,6 +213,7 @@ pub(super) fn request_body(
                         | ContentBlock::ToolCall { .. }
                         | ContentBlock::File { .. }
                         | ContentBlock::Image { .. }
+                        | ContentBlock::ObjectRef { .. }
                         | ContentBlock::ResultCard { .. } => {
                             return Err(unsupported("system 消息只能包含文本块"));
                         }
@@ -280,6 +281,22 @@ pub(super) fn request_body(
                                 Some(WireBlock::Text { text: text.clone() })
                             }
                             ContentBlock::Text { .. } => None,
+                            // 对象引用片投给模型时换成一行身份+版本（规则在 Kind 固定说明）。
+                            ContentBlock::ObjectRef {
+                                kind,
+                                id,
+                                title,
+                                version,
+                                task_id,
+                            } => Some(WireBlock::Text {
+                                text: ContentBlock::object_ref_text(
+                                    kind,
+                                    id,
+                                    title,
+                                    *version,
+                                    task_id.as_deref(),
+                                ),
+                            }),
                             // 文件块投给模型时换成 fileHandleText（DSH 原句照抄）。
                             ContentBlock::File {
                                 attachment_id,
@@ -356,6 +373,7 @@ pub(super) fn request_body(
                         | ContentBlock::ToolCall { .. }
                         | ContentBlock::File { .. }
                         | ContentBlock::Image { .. }
+                        | ContentBlock::ObjectRef { .. }
                         | ContentBlock::ResultCard { .. } => {
                             return Err(unsupported("tool 消息只能包含文本内容块"));
                         }

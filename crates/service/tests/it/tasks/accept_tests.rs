@@ -425,6 +425,7 @@ async fn a_root_session_without_a_task_runtime_has_no_task_policy() {
         delivery: DeliveryMode::FollowUp,
         pastes: Vec::new(),
         attachments: Vec::new(),
+        object_refs: Vec::new(),
         canvas: None,
         result_card: None,
         result_cards: Vec::new(),

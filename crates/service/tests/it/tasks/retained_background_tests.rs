@@ -436,6 +436,7 @@ async fn saying_while_retained_stops_commands_then_reopens_a_new_attempt() {
             text: "接着改".to_owned(),
             pastes: Vec::new(),
             attachments: Vec::new(),
+            object_refs: Vec::new(),
         }))
         .await
         .expect("说一句");
@@ -633,6 +634,7 @@ async fn queued_message_while_retained_stops_commands_then_reopens() {
                 text: "接着说一句".to_owned(),
                 pastes: Vec::new(),
                 attachments: Vec::new(),
+                object_refs: Vec::new(),
             },
             1_700_000_100_000,
         )
