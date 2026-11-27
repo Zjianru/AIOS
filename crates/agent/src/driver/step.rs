@@ -221,6 +221,13 @@ pub(super) async fn prepare_step(
             absolute_tool_schemas(&mut addition.additions);
         }
     }
+    let messages = {
+        let notes = inner.image_notes.lock().expect("看图旁注锁被毒化").clone();
+        match notes {
+            Some(notes) => model::project_images(&messages, false, &notes),
+            None => messages,
+        }
+    };
     let tool_request = model::ToolRequest {
         tools: tool_schemas,
         history: tool_history,

@@ -1,8 +1,8 @@
 use super::*;
 
 #[test]
-fn protocol_version_is_35() {
-    assert_eq!(PROTOCOL_VERSION, 35, "只增 PluginList/PluginSet，升到 35");
+fn protocol_version_is_36() {
+    assert_eq!(PROTOCOL_VERSION, 36, "只增看图设置/协议 36 接口面，升到 36");
 }
 
 #[test]

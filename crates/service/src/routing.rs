@@ -45,6 +45,8 @@ impl RootHost {
                         host.agent().set_supports_images(supports);
                     }
                 }
+                // 生成本会话图片的冻结旁注；Agent 投影只读这份旁注。
+                self.prepare_vision_notes(&message).await;
                 let guard = self.inner.lock().await;
                 match guard.as_ref() {
                     Some(host) => host
@@ -56,6 +58,19 @@ impl RootHost {
                     )),
                 }
             }
+            Call::VisionTest(request) => self.vision_test(request).await.map(Response::VisionTest),
+            Call::ScreenPermission(request) => self
+                .screen_permission(request)
+                .await
+                .map(Response::ScreenPermission),
+            Call::PackageStatus(request) => self
+                .package_status(request)
+                .await
+                .map(Response::PackageStatus),
+            Call::PackageUninstall(request) => self
+                .package_uninstall(request)
+                .await
+                .map(Response::PackageUninstall),
             Call::ModelSettings(_) => self.model_settings().await.map(Response::ModelSettings),
             Call::DisabledModelsSet(request) => self
                 .disabled_models_set(request)

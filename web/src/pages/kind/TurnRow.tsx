@@ -36,6 +36,8 @@ import {
   pasteStats,
 } from './composer/AttachmentCard';
 import { attachmentGet } from '@/data/service';
+import { imageSentAs, parseImageSentAs } from './visionSentAs';
+import { PresentedImages, ToolImages, presentedImageIds } from './VisionImages';
 import type { CompactionView, TurnUserView, TurnViewData } from './kindStore';
 import type { CanvasViewDoc } from './turnViews';
 import { go } from '@/app/navigate';
@@ -84,7 +86,11 @@ export function UserCards({ user }: { user: TurnUserView }) {
         <ObjectRefCard key={'object-' + object.kind + '-' + object.id} object={object} />
       ))}
       {user.images.map((file) => (
-        <ImageCard key={'image-' + file.id + '-' + file.name} file={file} />
+        <ImageCard
+          key={'image-' + file.id + '-' + file.name}
+          file={file}
+          sentAs={parseImageSentAs(file.sentAs) ?? imageSentAs(file.id)}
+        />
       ))}
       {user.files.map((file) => (
         <FileCard
@@ -687,6 +693,22 @@ export const TurnRow = memo(function TurnRow({
           {view.question && !readOnly ? <QuestionCard turnId={view.id} question={view.question} /> : null}
           {view.retry ? <RetryLine retry={view.retry} /> : null}
 
+          {(() => {
+            const imageTools = view.tools.filter((tool) => {
+              if (tool.name === 'vision_present') return false;
+              const raw = tool.meta ? (tool.meta.images ?? tool.meta.imageAttachments) : null;
+              return Array.isArray(raw) && raw.some((id) => typeof id === 'string');
+            });
+            if (imageTools.length === 0) {
+              const presented = presentedImageIds(view.tools);
+              return presented.length > 0 ? <ToolImages ids={presented} /> : null;
+            }
+            return imageTools.map((tool) => {
+              const raw = tool.meta ? (tool.meta.images ?? tool.meta.imageAttachments) : null;
+              const ids = Array.isArray(raw) ? raw.filter((id): id is string => typeof id === 'string') : [];
+              return ids.length > 0 ? <ToolImages key={tool.id} ids={ids} /> : null;
+            });
+          })()}
           <div className={cn('group/answer relative mt-1', streaming && 'min-h-[24px]')} data-kind="answer">
             <Answer view={view} />
             {view.answer ? (
@@ -695,6 +717,7 @@ export const TurnRow = memo(function TurnRow({
                 className="absolute -right-8 top-0 opacity-0 transition-opacity group-hover/answer:opacity-100"
               />
             ) : null}
+            <PresentedImages ids={presentedImageIds(view.tools)} />
           </div>
 
           {view.card && (view.answer || (view.sayParts?.length ?? 0) > 0) && !readOnly ? <ConfirmCard card={view.card} /> : null}

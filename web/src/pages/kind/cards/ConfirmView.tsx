@@ -5,11 +5,13 @@
  * 卡片不知道具体动作：按钮只有 confirm / dismiss 两个，选项 id 原样交给程序操作。
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Check, CircleCheck, CircleHelp, TriangleAlert } from 'lucide-react';
 import type { CardViewProps, ConfirmFactSlot, ConfirmOptionSlot, ConfirmSlots } from './model';
 import { cardTone } from './model';
 import { BodyText } from './BodyText';
+import { visionPackageStatus } from '@/data/service';
+import type { PackageStatusView } from '@/data/generated/PackageStatusView';
 import { cn } from '@/lib/utils';
 
 function FactRows({ facts }: { facts: ConfirmFactSlot[] }) {
@@ -85,6 +87,28 @@ function PendingCard({ envelope, slots, host }: CardViewProps<ConfirmSlots>) {
   );
   // 点了以后先置灰，等 card/decision 回执把它换成回执卡；请求失败就恢复，能再点。
   const [submitting, setSubmitting] = useState(false);
+  // 安装包：确认后轮询同一份 package-status，在卡上显示进度；不在卡片里另算一套。
+  const [install, setInstall] = useState<PackageStatusView | null>(null);
+  const selectedOption = slots.options.find((option) => option.id === selected);
+  const installId = selectedOption?.details?.id === 'pp-ocrv6-small' ? 'pp-ocrv6-small' : null;
+  useEffect(() => {
+    if (!submitting || !installId) return;
+    let alive = true;
+    const tick = async () => {
+      try {
+        const response = await visionPackageStatus();
+        if (alive) setInstall(response.packages.find((item) => item.id === installId) ?? null);
+      } catch {
+        // 读不到就保持「处理中」，不挡动作本身。
+      }
+    };
+    void tick();
+    const timer = window.setInterval(() => void tick(), 500);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [submitting, installId]);
   const submit = (action: (() => Promise<void> | void) | undefined) => {
     if (submitting || !action) return;
     setSubmitting(true);
@@ -117,6 +141,17 @@ function PendingCard({ envelope, slots, host }: CardViewProps<ConfirmSlots>) {
           />
         ))}
       </div>
+      {submitting && installId ? (
+        <div className="mt-2 rounded-btn bg-content px-2.5 py-2 text-1 leading-4 text-ink-2" data-kind="install-progress">
+          {install?.state === 'downloading'
+            ? '正在下载 ' + Math.round((install.doneBytes / Math.max(1, install.totalBytes)) * 100) + '%（' + install.doneBytes + ' / ' + install.totalBytes + ' 字节）'
+            : install?.state === 'verifying'
+              ? '下载完了，正在核对三个文件的 sha256…'
+              : install?.state === 'installed'
+                ? '装好了；回执会写三个文件 sha256 都对上'
+                : '正在开始下载…'}
+        </div>
+      ) : null}
       <div className="mt-3 flex items-center gap-2">
         <span className="text-1 text-ink-3">{selected ? '选好了' : '先选一项'}</span>
         <button

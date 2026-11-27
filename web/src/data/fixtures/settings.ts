@@ -16,6 +16,8 @@ const DEEPSEEK_MODELS: ModelRow[] = [
 ];
 
 export const modelSettingsFixture: ModelSettingsView = {
+  visionModels: [],
+  screenCapture: false,
   connections: [
     {
       id: 'deepseek',

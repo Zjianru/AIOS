@@ -114,3 +114,22 @@ fn 来源收到本次run和轮() {
         "凭证来源必须拿到本次 run/turn"
     );
 }
+
+#[test]
+fn runtime_supports_images_overrides_the_config() {
+    let mut config = config();
+    config.supports_images = false;
+    let deepseek = DeepSeek::with_credentials(
+        config,
+        Arc::new(CountingSource {
+            calls: AtomicUsize::new(0),
+            last: Mutex::new(None),
+        }),
+    )
+    .expect("构造");
+    assert!(!deepseek.supports_images(), "装配值 false");
+    deepseek.set_supports_images(true);
+    assert!(deepseek.supports_images(), "运行时覆盖 true");
+    deepseek.set_supports_images(false);
+    assert!(!deepseek.supports_images(), "运行时覆盖 false");
+}

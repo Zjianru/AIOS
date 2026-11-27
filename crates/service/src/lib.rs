@@ -79,6 +79,7 @@ mod exa;
 mod executor;
 mod file_bytes;
 mod input;
+pub mod installer;
 pub(crate) mod kind_output;
 mod ledger;
 mod plugins;
@@ -93,6 +94,8 @@ mod session_host;
 mod session_select;
 mod settings_surface;
 mod status;
+mod vision_runtime;
+mod vision_tools;
 mod web;
 pub mod work;
 mod worktree;
@@ -127,6 +130,8 @@ pub use root::{
 };
 pub use root_lifecycle::RootHost;
 pub use session_host::ServiceHost;
+#[doc(hidden)]
+pub use vision_tools::set_test_screen_permission;
 
 #[cfg(test)]
 #[path = "disabled_tests.rs"]
@@ -161,3 +166,6 @@ mod web_fetch_tests;
 #[cfg(test)]
 #[path = "web_tests.rs"]
 mod web_tests;
+
+#[doc(hidden)]
+pub use vision_runtime::{TestVisionOutcome, set_test_vision_outcomes};

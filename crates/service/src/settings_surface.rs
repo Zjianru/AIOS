@@ -10,7 +10,7 @@ use crate::protocol::{
     ConnectionSaveResponse, ConnectionUpdateRequest, ConnectionUpdateResponse, ExecSettingsView,
     FirstUseResponse, IssuesResponse, KeyringRelocateRequest, KeyringRelocateResponse,
     KeyringReopenRequest, KeyringReopenResponse, KeyringRestartResponse, ModelSettingsResponse,
-    RootState, ServiceEvent, SettingsUpdateRequest, SettingsUpdateResponse,
+    RootState, ServiceEvent, SettingsUpdateRequest, SettingsUpdateResponse, VisionModelRefView,
 };
 use crate::root_lifecycle::RootHost;
 use crate::{quota, settings};
@@ -110,12 +110,23 @@ impl RootHost {
             &view.connections,
             &disabled.models,
         );
+        let settings = settings::load(&self.options.data_dir);
         Ok(ModelSettingsResponse {
             settings: view,
             disabled_models: disabled.models,
             disabled_unknown: disabled.unknown,
             disabled_hits,
             listed,
+            vision_models: settings
+                .vision
+                .models
+                .iter()
+                .map(|row| VisionModelRefView {
+                    connection: row.connection.clone(),
+                    model: row.model.clone(),
+                })
+                .collect(),
+            screen_capture: settings.vision.screen_capture,
         })
     }
 
@@ -579,13 +590,78 @@ impl RootHost {
             )));
         }
 
+        // 看图链先校验：连接存在、模型可选、supports_images 为真（用户 input 覆盖也认）。
+        let vision_models = if let Some(rows) = request.vision_models.as_ref() {
+            let keyring = self.keyring()?;
+            let view = keyring.view();
+            let mut checked = Vec::with_capacity(rows.len());
+            for row in rows {
+                let Some(connection) = view
+                    .connections
+                    .iter()
+                    .find(|connection| connection.id == row.connection)
+                else {
+                    return Err(ServiceError::SettingsInvalid(format!(
+                        "看图模型指向的连接不存在：{}",
+                        row.connection
+                    )));
+                };
+                if !crate::models::supports_images(&self.options.data_dir, connection, &row.model) {
+                    return Err(ServiceError::SettingsInvalid(format!(
+                        "这个模型看不了图，不能填进看图链：{}/{}",
+                        row.connection, row.model
+                    )));
+                }
+                checked.push(vision::VisionModelRef {
+                    connection: row.connection.clone(),
+                    model: row.model.clone(),
+                });
+            }
+            Some(checked)
+        } else {
+            None
+        };
+        let previous_vision_models = settings::load(&self.options.data_dir).vision.models;
+        if request.vision_models.is_some() || request.screen_capture.is_some() {
+            let mut settings = settings::load_for_write(&self.options.data_dir)
+                .map_err(ServiceError::SettingsUnreadable)?;
+            if let Some(rows) = vision_models {
+                settings.vision.models = rows;
+            }
+            if let Some(screen_capture) = request.screen_capture {
+                settings.vision.screen_capture = screen_capture;
+            }
+            settings::save(&self.options.data_dir, &settings)
+                .map_err(ServiceError::SettingsInvalid)?;
+        }
+        // G1：看图链从空变成有，末尾补一条静态通知；前面的请求字节不动。
+        if request.vision_models.is_some()
+            && previous_vision_models.is_empty()
+            && !settings::load(&self.options.data_dir)
+                .vision
+                .models
+                .is_empty()
+        {
+            let guard = self.inner.lock().await;
+            if let Some(host) = guard.as_ref() {
+                drop(
+                    host.agent()
+                        .append_plugin_notice(
+                            "看图模型已填；之前看不了的图可按附件 id 用 vision_describe 看；要框图和放大图就调 vision_ground，再调 vision_present 把图发给用户。",
+                        )
+                        .await,
+                );
+            }
+        }
         // 读一次严格口径：文件坏了，读和写都拒绝，页面看到原因。
         let current = settings::load_for_write(&self.options.data_dir)
             .map_err(ServiceError::SettingsUnreadable)?;
         let changed = request.currency.is_some()
             || request.paused.is_some()
             || request.seats.is_some()
-            || request.bash.is_some();
+            || request.bash.is_some()
+            || request.vision_models.is_some()
+            || request.screen_capture.is_some();
         if let Some(currency) = request.currency {
             let mut settings = settings::load_for_write(&self.options.data_dir)
                 .map_err(ServiceError::SettingsUnreadable)?;
@@ -620,6 +696,16 @@ impl RootHost {
                     .clamp(settings::MIN_SEATS, settings::MAX_SEATS),
                 bash: settings.exec.bash,
             },
+            vision_models: settings
+                .vision
+                .models
+                .iter()
+                .map(|row| VisionModelRefView {
+                    connection: row.connection.clone(),
+                    model: row.model.clone(),
+                })
+                .collect(),
+            screen_capture: settings.vision.screen_capture,
         })
     }
 

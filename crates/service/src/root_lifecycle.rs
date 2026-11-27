@@ -14,6 +14,7 @@ use crate::protocol::{
 };
 use crate::root::{RootError, RootSessionOptions, open_root_session_with, session_model_selection};
 use crate::session_host::ServiceHost;
+use crate::vision_tools::ScreenPermissionProbe;
 
 impl RootState {
     /// 把打开根会话的错误分类成页面状态（只增：error 的 Debug/说明仍保留）。
@@ -87,6 +88,8 @@ pub struct RootHost {
     dream: Option<Arc<crate::memory::DreamRuntime>>,
     /// 测试钩子：根会话没开时也能模拟「Kind 说过这些路径」；生产走会话日志。
     local_paths: Mutex<std::collections::BTreeSet<String>>,
+    /// 会话旁注/自动描述；每个根宿主一份。
+    vision_runtime: std::sync::Arc<crate::vision_runtime::VisionRuntime>,
 }
 
 impl RootHost {
@@ -193,6 +196,10 @@ impl RootHost {
                 task_runtime.clone(),
             ))
         });
+        let vision_runtime = std::sync::Arc::new(crate::vision_runtime::VisionRuntime::new(
+            options.data_dir.clone(),
+            options.identity.clone(),
+        ));
         let host = Self {
             local_paths: Mutex::new(std::collections::BTreeSet::new()),
             inner,
@@ -212,6 +219,7 @@ impl RootHost {
             root_connection: Mutex::new(None),
             memory,
             dream,
+            vision_runtime,
         };
         // 做梦开始/结束时推 memory/changed，记忆页收到就重读（不靠轮询）。
         if let (Some(dream), Some(memory)) = (&host.dream, &host.memory) {
@@ -1160,5 +1168,153 @@ impl RootHost {
             .as_ref()
             .map(|host| host.agent().session_events_from(0))
             .unwrap_or_default()
+    }
+}
+
+impl RootHost {
+    /// 发消息前准备本会话图片的冻结旁注，交给 Agent 投影。
+    pub(crate) async fn prepare_vision_notes(&self, message: &model::UserMessage) {
+        let session_id = self.session_id.lock().expect("根会话 id 锁被毒化").clone();
+        let Some(session_id) = session_id else {
+            return;
+        };
+        let main_supports = {
+            let guard = self.inner.lock().await;
+            guard
+                .as_ref()
+                .is_some_and(|host| host.agent().supports_images())
+        };
+        let notes = if main_supports {
+            None
+        } else {
+            self.vision_runtime
+                .prepare(&session_id, message, false)
+                .await
+        };
+        let guard = self.inner.lock().await;
+        if let Some(host) = guard.as_ref() {
+            host.agent().set_image_notes(notes);
+        }
+    }
+}
+
+impl RootHost {
+    /// 设置页「测试看图」：只问指定的链内模型，不换备用，不写设置/会话。
+    pub(crate) async fn vision_test(
+        &self,
+        request: crate::protocol::VisionTestRequest,
+    ) -> Result<crate::protocol::VisionTestResponse, crate::error::ServiceError> {
+        let row = vision::VisionModelRef {
+            connection: request.connection,
+            model: request.model,
+        };
+        let bytes = vision::ops::test_image()
+            .map_err(|error| crate::error::ServiceError::SettingsInvalid(error))?;
+        let image = crate::vision_runtime::DescribeImage {
+            attachment_id: "builtin-test-image".to_owned(),
+            name: "vision-test.png".to_owned(),
+            mime: Some("image/png".to_owned()),
+            path: None,
+            bytes,
+            prompt: None,
+        };
+        match self.vision_runtime.test_backend(&row, &image).await {
+            Ok(elapsed_ms) => Ok(crate::protocol::VisionTestResponse {
+                state: "normal".to_owned(),
+                elapsed_ms: Some(elapsed_ms),
+                retry_after_ms: None,
+                error_code: None,
+                message: None,
+            }),
+            Err(crate::vision_runtime::DescribeFailure::RateLimited { retry_after_ms }) => {
+                Ok(crate::protocol::VisionTestResponse {
+                    state: "rate-limited".to_owned(),
+                    elapsed_ms: None,
+                    retry_after_ms,
+                    error_code: None,
+                    message: None,
+                })
+            }
+            Err(crate::vision_runtime::DescribeFailure::Timeout) => {
+                Ok(crate::protocol::VisionTestResponse {
+                    state: "timeout".to_owned(),
+                    elapsed_ms: None,
+                    retry_after_ms: None,
+                    error_code: None,
+                    message: None,
+                })
+            }
+            Err(crate::vision_runtime::DescribeFailure::UnsupportedContent(message)) => {
+                Ok(crate::protocol::VisionTestResponse {
+                    state: "text-only".to_owned(),
+                    elapsed_ms: None,
+                    retry_after_ms: None,
+                    error_code: None,
+                    message: Some(message),
+                })
+            }
+            Err(crate::vision_runtime::DescribeFailure::Auth) => {
+                Ok(crate::protocol::VisionTestResponse {
+                    state: "error".to_owned(),
+                    elapsed_ms: None,
+                    retry_after_ms: None,
+                    error_code: Some("VISION_AUTH_FAILED".to_owned()),
+                    message: Some("看图后端鉴权失败；检查连接和 Key。".to_owned()),
+                })
+            }
+            Err(crate::vision_runtime::DescribeFailure::Other(message)) => {
+                Ok(crate::protocol::VisionTestResponse {
+                    state: "error".to_owned(),
+                    elapsed_ms: None,
+                    retry_after_ms: None,
+                    error_code: Some("VISION_BACKEND_ERROR".to_owned()),
+                    message: Some(message),
+                })
+            }
+        }
+    }
+
+    /// 包状态：设置页/安装卡读同一份。
+    pub(crate) async fn package_status(
+        &self,
+        _request: crate::protocol::PackageStatusRequest,
+    ) -> Result<crate::protocol::PackageStatusResponse, crate::error::ServiceError> {
+        let statuses = crate::installer::Installer::new(self.options.data_dir.clone()).statuses();
+        Ok(crate::protocol::PackageStatusResponse {
+            packages: statuses.iter().map(crate::installer::status_view).collect(),
+        })
+    }
+
+    /// 卸载只删包目录；清单外 id 拒绝。
+    pub(crate) async fn package_uninstall(
+        &self,
+        request: crate::protocol::PackageUninstallRequest,
+    ) -> Result<crate::protocol::PackageUninstallResponse, crate::error::ServiceError> {
+        let removed = crate::installer::Installer::new(self.options.data_dir.clone())
+            .uninstall(&request.id)
+            .map_err(crate::error::ServiceError::SettingsInvalid)?;
+        Ok(crate::protocol::PackageUninstallResponse { removed })
+    }
+
+    /// 读/再查一次屏幕录制权限；只读，不弹系统框。
+    pub(crate) async fn screen_permission(
+        &self,
+        _request: crate::protocol::ScreenPermissionRequest,
+    ) -> Result<crate::protocol::ScreenPermissionResponse, crate::error::ServiceError> {
+        let state = match crate::vision_tools::SystemScreenPermission.check() {
+            crate::vision_tools::ScreenPermissionState::Granted => {
+                crate::protocol::ScreenPermissionState::Granted
+            }
+            crate::vision_tools::ScreenPermissionState::Denied => {
+                crate::protocol::ScreenPermissionState::Denied
+            }
+            crate::vision_tools::ScreenPermissionState::Unknown => {
+                crate::protocol::ScreenPermissionState::Unknown
+            }
+        };
+        Ok(crate::protocol::ScreenPermissionResponse {
+            state,
+            settings_url: crate::vision_tools::SCREEN_SETTINGS_URL.to_owned(),
+        })
     }
 }

@@ -463,6 +463,7 @@ export function deriveTurnViews(
           id: typed.attachmentId,
           name: typeof typed.name === 'string' ? typed.name : '',
           bytes: typeof typed.bytes === 'number' ? typed.bytes : 0,
+          sentAs: typeof (typed as { sentAs?: unknown }).sentAs === 'string' ? (typed as { sentAs: string }).sentAs : undefined,
         });
         continue;
       }

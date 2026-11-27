@@ -228,6 +228,8 @@ async fn two_appointments_due_under_one_global_pause_both_use_the_pause_reason()
         paused: Some(true),
         seats: None,
         bash: None,
+        vision_models: None,
+        screen_capture: None,
     }))
     .await
     .expect("进全局暂停");
@@ -244,6 +246,8 @@ async fn two_appointments_due_under_one_global_pause_both_use_the_pause_reason()
         paused: Some(false),
         seats: None,
         bash: None,
+        vision_models: None,
+        screen_capture: None,
     }))
     .await
     .expect("开闸");
@@ -321,6 +325,7 @@ async fn global_pause_merges_missed_occurrences_and_sends_once() {
             seats: 3,
             bash: false,
         },
+        vision: Default::default(),
     };
     service::settings::save(data, &settings).unwrap();
     let store = calendar::CalendarStore::open(data.join("calendar.sqlite")).unwrap();
@@ -339,6 +344,8 @@ async fn global_pause_merges_missed_occurrences_and_sends_once() {
         paused: Some(false),
         seats: None,
         bash: None,
+        vision_models: None,
+        screen_capture: None,
     }))
     .await
     .expect("开闸");

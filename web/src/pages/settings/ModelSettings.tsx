@@ -27,6 +27,8 @@ import { cachedQuota, loadQuota } from '@/data/quota';
 import { CURRENCIES, compactPrice, formatModelTokens } from '@/lib/numbers';
 import { formatLocalDateTime } from '@/lib/time';
 import { useSettingsState } from '@/lib/settingsState';
+import { VisionSection } from './VisionSection';
+import { SettingsPageKind } from './SettingsPageKind';
 import { PROTOCOL_LABEL } from '@/data/keyring';
 import type { ConnectionView, ModelRow, ModelSettingsView, ToolKeyView } from '@/data/keyring';
 import {
@@ -1581,6 +1583,8 @@ export function ModelSettings() {
 
       {broken ? <KeyringBroken view={view} onView={setView} /> : null}
 
+      <SettingsPageKind view={view} onChanged={() => void load()} />
+
       <CurrencySection />
 
       <section className="mt-6">
@@ -1634,6 +1638,8 @@ export function ModelSettings() {
           )}
         </div>
       </section>
+
+      <VisionSection view={view} onChanged={() => void load()} />
 
       <MaskSection view={view} onView={setView} onMask={(pattern) => setMasking(pattern)} />
 

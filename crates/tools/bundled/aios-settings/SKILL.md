@@ -42,6 +42,7 @@ To propose, call propose_action once, with one option per choice the user can ma
 - connection_delete: { "id" }; connection_revoke: { "id" } (key removed, connection kept). No key value in either.
 - keyring_action: { "action": "relocate"|"reopen"|"restart", "path": "<path>" }; relocate/reopen path must start with / or ~/ and appear verbatim in the user's message. If it is not there, ask where; do not propose. restart has no path.
 - exa_key_delete: {}; only when the user asks to delete the stored Exa key. The card says web search/web tools stop until the key is filled on the settings page.
+- install_package: details is { "id": "pp-ocrv6-small" }. Only this built-in package; it is what vision_ocr uses when the model is not installed. The card lists name/version/size/source/license/location/purpose, and only after the user clicks does AIOS download and check each file's sha256. When vision_ocr returns OCR_MODEL_MISSING, or the user asks for local OCR, load this skill and propose this card once; never download anything yourself.
 
 ## One card per turn
 

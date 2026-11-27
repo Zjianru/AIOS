@@ -202,6 +202,8 @@ export interface SendAttachmentRef {
   bytes: number;
   /** 原类型（旧页面/旧日志没有）。 */
   mime?: string | null;
+  /** 发出那一刻的转述状态（omitted / paraphrased:<model>）；历史展示用。 */
+  sentAs?: string | null;
 }
 
 export interface SendOptions {
@@ -710,4 +712,28 @@ export async function actionAct(
   details: ActionDescribeRequest['details'],
 ): Promise<ActionActResponse> {
   return (await post({ method: 'action-act', action, details } as never)) as unknown as ActionActResponse;
+}
+
+// 设置 › 看图的协议入口。
+import type { PackageStatusResponse as VisionPackageStatusResponse } from './generated/PackageStatusResponse';
+import type { PackageUninstallRequest as VisionPackageUninstallRequest } from './generated/PackageUninstallRequest';
+import type { PackageUninstallResponse as VisionPackageUninstallResponse } from './generated/PackageUninstallResponse';
+import type { ScreenPermissionResponse } from './generated/ScreenPermissionResponse';
+import type { VisionTestRequest } from './generated/VisionTestRequest';
+import type { VisionTestResponse } from './generated/VisionTestResponse';
+
+export async function visionTest(input: VisionTestRequest): Promise<VisionTestResponse> {
+  return post({ method: 'vision-test', ...input });
+}
+
+export async function screenPermission(): Promise<ScreenPermissionResponse> {
+  return post({ method: 'screen-permission' });
+}
+
+export async function visionPackageStatus(): Promise<VisionPackageStatusResponse> {
+  return post({ method: 'package-status' });
+}
+
+export async function visionPackageUninstall(input: VisionPackageUninstallRequest): Promise<VisionPackageUninstallResponse> {
+  return post({ method: 'package-uninstall', ...input });
 }

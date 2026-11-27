@@ -478,8 +478,8 @@ async fn thin_agent_handback_rule_and_tool_stay_off_kind() {
     assert!(!kind_system.contains("这超出了任务范围，要不要改任务？"));
     assert_eq!(
         service::THIN_TOOLS.len(),
-        12,
-        "ThinAgent 的工具表 12 件（含 office_read）"
+        26,
+        "ThinAgent 的工具表 26 件（12 基础 + 14 看图）"
     );
 }
 

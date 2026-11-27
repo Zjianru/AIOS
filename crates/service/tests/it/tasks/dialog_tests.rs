@@ -280,6 +280,8 @@ async fn a_task_say_attachment_is_validated_and_lands_in_the_thin_request() {
         name: "missing.txt".to_owned(),
         bytes: 1,
         mime: None,
+
+        sent_as: None,
     };
     let error = fixture
         .host
@@ -327,6 +329,8 @@ async fn a_task_say_attachment_is_validated_and_lands_in_the_thin_request() {
                 name: "notes.txt".to_owned(),
                 bytes,
                 mime: None,
+
+                sent_as: None,
             }],
             object_refs: Vec::new(),
             quotes: Vec::new(),

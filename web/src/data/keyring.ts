@@ -98,8 +98,18 @@ export interface ToolKeyView {
   check: CheckState;
 }
 
+/** 看图链一项：连接 id + 模型 id（顺序就是尝试顺序）。 */
+export interface VisionModelRefView {
+  connection: string;
+  model: string;
+}
+
 export interface ModelSettingsView {
   connections: ConnectionView[];
+  /** 看图模型链；空 = 没填。 */
+  visionModels: VisionModelRefView[];
+  /** 截桌面隐私开关；默认关。 */
+  screenCapture: boolean;
   catalog: CatalogProvider[];
   /** 服务端存下的厂商列表（按连接 id；页面小标签用它）。 */
   listed?: Record<string, { fetchedAt: string; models: ModelRow[] }>;
@@ -220,6 +230,8 @@ function mapView(
   listed: Record<string, { fetchedAt: number; models: WireRow[] }> = {},
   disabledHits: string[][] = [],
   disabledUnknown = false,
+  visionModels: VisionModelRefView[] = [],
+  screenCapture = false,
 ): ModelSettingsView {
   const mappedListed: Record<string, { fetchedAt: string; models: ModelRow[] }> = {};
   for (const [id, entry] of Object.entries(listed)) {
@@ -227,6 +239,8 @@ function mapView(
   }
   return {
     connections: view.connections.map((info) => mapConnection(info, mappedListed[info.id]?.models)),
+    visionModels,
+    screenCapture,
     catalog: CATALOG,
     listed: mappedListed,
     disabledModels,
@@ -256,6 +270,8 @@ export async function getModelSettings(): Promise<ModelSettingsView> {
     response.listed ?? {},
     response.disabledHits ?? [],
     response.disabledUnknown ?? false,
+    response.visionModels ?? [],
+    response.screenCapture ?? false,
   );
 }
 
@@ -270,6 +286,8 @@ export async function setDisabledModels(models: string[]): Promise<ModelSettings
     response.listed ?? {},
     response.disabledHits ?? [],
     response.disabledUnknown ?? false,
+    response.visionModels ?? [],
+    response.screenCapture ?? false,
   );
 }
 

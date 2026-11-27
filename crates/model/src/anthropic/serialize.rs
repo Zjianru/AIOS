@@ -130,10 +130,6 @@ pub(super) struct WireImageSource {
     data: String,
 }
 
-fn image_omitted_text() -> &'static str {
-    "(image omitted: model does not support images)"
-}
-
 fn base64(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
@@ -245,6 +241,21 @@ pub(super) fn request_body(
                         unreachable!("上面已单独处理")
                     }
                 };
+                let omitted_ids: Vec<String> = if config.supports_images {
+                    Vec::new()
+                } else {
+                    message
+                        .content
+                        .iter()
+                        .filter_map(|block| match block {
+                            ContentBlock::Image { attachment_id, .. } => {
+                                Some(attachment_id.clone())
+                            }
+                            _ => None,
+                        })
+                        .collect()
+                };
+                let omitted_text = crate::image_omitted_text(&omitted_ids);
                 let mut omitted_image = false;
                 let content: Vec<WireBlock> = message
                     .content
@@ -269,7 +280,7 @@ pub(super) fn request_body(
                                 }
                                 omitted_image = true;
                                 return Ok(Some(WireBlock::Text {
-                                    text: image_omitted_text().to_owned(),
+                                    text: omitted_text.clone(),
                                 }));
                             }
                             other => other,
@@ -1302,6 +1313,7 @@ mod image_block_serialize_tests {
             bytes: 4,
             mime: Some("image/png".to_owned()),
             path: Some(path.to_owned()),
+            sent_as: None,
         }
     }
 
@@ -1369,6 +1381,7 @@ mod image_block_serialize_tests {
                 bytes: 6,
                 mime: Some("image/svg+xml".to_owned()),
                 path: Some(path.to_str().unwrap().to_owned()),
+                sent_as: None,
             }],
         );
         let content = &value["messages"][0]["content"];
@@ -1394,7 +1407,7 @@ mod image_block_serialize_tests {
             .filter(|block| {
                 block["type"] == "text"
                     && block["text"].as_str().is_some_and(|text| {
-                        text.starts_with("(image omitted: model does not support images)")
+                        text.starts_with("(image omitted: model does not support images")
                     })
             })
             .collect();

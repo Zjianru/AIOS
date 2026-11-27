@@ -380,11 +380,17 @@ export function ImageCard({
   file,
   mime,
   imagesOk = true,
+  noVision = false,
+  paraphraseBy,
+  sentAs,
   onRemove,
 }: {
   file: SendAttachmentRef;
   mime?: string;
   imagesOk?: boolean;
+  noVision?: boolean;
+  paraphraseBy?: string;
+  sentAs?: import('../visionSentAs').ImageSentAs;
   onRemove?: () => void;
 }) {
   const [src, setSrc] = useState<string | null>(null);
@@ -416,9 +422,22 @@ export function ImageCard({
       <span className="flex min-w-0 flex-col leading-4">
         <span className="max-w-[150px] truncate text-ink">{file.name}</span>
         <span className="shrink-0 text-ink-3">{sizeLabel(file.bytes)}</span>
-        {!imagesOk ? (
+        {!imagesOk && noVision ? (
           <span data-kind="attachment-image-blind" className="text-1 text-wait">
             这个模型看不了图
+          </span>
+        ) : !imagesOk && paraphraseBy ? (
+          <span data-kind="attachment-image-paraphrase" className="text-1 text-ink-3">
+            由 {paraphraseBy} 转述
+          </span>
+        ) : null}
+        {sentAs?.kind === 'omitted' ? (
+          <span data-kind="image-omitted-note" className="text-1 text-ink-3">
+            {'(image omitted: model does not support images; attachments: ' + file.id + ')'}
+          </span>
+        ) : sentAs?.kind === 'paraphrased' ? (
+          <span data-kind="image-paraphrased-note" className="text-1 text-ink-3">
+            发出时由 {sentAs.model} 转述
           </span>
         ) : null}
       </span>

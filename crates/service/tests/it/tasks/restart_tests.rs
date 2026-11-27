@@ -268,6 +268,8 @@ async fn a_paused_restart_waits_for_the_gate_then_reports_once() {
         paused: Some(false),
         seats: None,
         bash: None,
+        vision_models: None,
+        screen_capture: None,
     }))
     .await
     .expect("开闸");

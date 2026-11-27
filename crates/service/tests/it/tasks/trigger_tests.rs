@@ -536,6 +536,8 @@ async fn global_pause_merges_without_precreating_a_trigger_task_then_builds_one_
             paused: Some(true),
             seats: None,
             bash: None,
+            vision_models: None,
+            screen_capture: None,
         }))
         .await
         .expect("进全局暂停");
@@ -555,6 +557,8 @@ async fn global_pause_merges_without_precreating_a_trigger_task_then_builds_one_
             paused: Some(false),
             seats: None,
             bash: None,
+            vision_models: None,
+            screen_capture: None,
         }))
         .await
         .expect("开闸");

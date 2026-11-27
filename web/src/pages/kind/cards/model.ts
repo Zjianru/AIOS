@@ -313,6 +313,8 @@ export interface ConfirmOptionSlot {
   label: LabelSlot;
   description?: BodySlot;
   facts: ConfirmFactSlot[];
+  /** 提议时服务端规范化后的 details；安装卡用它的 id 判断本地包。 */
+  details?: Record<string, unknown>;
 }
 
 export interface ConfirmSlots {
@@ -350,6 +352,7 @@ const confirmFactSchema = z.object({ name: z.string(), value: z.string() });
 
 const confirmOptionSchema = z.object({
   id: z.string().min(1),
+  details: z.record(z.string(), z.unknown()).optional(),
   // 标签超长截断显示；空或非字符串才是默认值（空），下面把它和空标签一起丢掉。
   label: labelSlot(''),
   description: bodySlot.optional(),

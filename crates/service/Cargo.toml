@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+vision = { path = "../vision" }
+ocr = { path = "../ocr" }
 similar.workspace = true
 calendar = { path = "../calendar" }
 chrono.workspace = true
@@ -29,6 +31,8 @@ serde.workspace = true
 serde_json.workspace = true
 shell-words.workspace = true
 thiserror.workspace = true
+ring = "0.17"
+tempfile.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]

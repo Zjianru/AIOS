@@ -215,6 +215,15 @@ impl DeepSeek {
         }
     }
 
+    /// 当前实际生效的看图能力：运行时覆盖优先，否则用装配值。
+    pub fn supports_images(&self) -> bool {
+        self.runtime_supports_images
+            .lock()
+            .ok()
+            .and_then(|current| *current)
+            .unwrap_or(self.config.supports_images)
+    }
+
     /// 换看图能力：设置页改输入模态后由服务在下一轮发送前刷新。
     pub fn set_supports_images(&self, supports: bool) {
         if let Ok(mut current) = self.runtime_supports_images.lock() {
