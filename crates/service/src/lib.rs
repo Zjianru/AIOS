@@ -165,3 +165,6 @@ mod web_fetch_tests;
 #[cfg(test)]
 #[path = "web_tests.rs"]
 mod web_tests;
+
+#[doc(hidden)]
+pub use vision_runtime::{TestVisionOutcome, set_test_vision_outcomes};

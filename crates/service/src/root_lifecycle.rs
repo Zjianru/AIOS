@@ -1223,12 +1223,16 @@ impl RootHost {
                 state: "normal".to_owned(),
                 elapsed_ms: Some(elapsed_ms),
                 retry_after_ms: None,
+                error_code: None,
+                message: None,
             }),
             Err(crate::vision_runtime::DescribeFailure::RateLimited { retry_after_ms }) => {
                 Ok(crate::protocol::VisionTestResponse {
                     state: "rate-limited".to_owned(),
                     elapsed_ms: None,
                     retry_after_ms,
+                    error_code: None,
+                    message: None,
                 })
             }
             Err(crate::vision_runtime::DescribeFailure::Timeout) => {
@@ -1236,20 +1240,35 @@ impl RootHost {
                     state: "timeout".to_owned(),
                     elapsed_ms: None,
                     retry_after_ms: None,
+                    error_code: None,
+                    message: None,
+                })
+            }
+            Err(crate::vision_runtime::DescribeFailure::UnsupportedContent(message)) => {
+                Ok(crate::protocol::VisionTestResponse {
+                    state: "text-only".to_owned(),
+                    elapsed_ms: None,
+                    retry_after_ms: None,
+                    error_code: None,
+                    message: Some(message),
                 })
             }
             Err(crate::vision_runtime::DescribeFailure::Auth) => {
                 Ok(crate::protocol::VisionTestResponse {
-                    state: "text-only".to_owned(),
+                    state: "error".to_owned(),
                     elapsed_ms: None,
                     retry_after_ms: None,
+                    error_code: Some("VISION_AUTH_FAILED".to_owned()),
+                    message: Some("看图后端鉴权失败；检查连接和 Key。".to_owned()),
                 })
             }
-            Err(crate::vision_runtime::DescribeFailure::Other(_)) => {
+            Err(crate::vision_runtime::DescribeFailure::Other(message)) => {
                 Ok(crate::protocol::VisionTestResponse {
-                    state: "text-only".to_owned(),
+                    state: "error".to_owned(),
                     elapsed_ms: None,
                     retry_after_ms: None,
+                    error_code: Some("VISION_BACKEND_ERROR".to_owned()),
+                    message: Some(message),
                 })
             }
         }

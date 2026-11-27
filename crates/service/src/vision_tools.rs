@@ -363,6 +363,10 @@ impl VisionTools {
                 "VISION_BACKEND_UNAVAILABLE_THIS_TURN",
                 "本轮看图不可用（后端超时）。",
             )),
+            Err(DescribeFailure::UnsupportedContent(_)) => Err(ToolFailure::coded(
+                "VISION_BACKEND_UNAVAILABLE_THIS_TURN",
+                "这个看图后端只认文字，不接受图片内容。",
+            )),
             Err(DescribeFailure::Other(message)) => {
                 Err(ToolFailure::plain(format!("本轮看图不可用：{message}")))
             }
@@ -543,6 +547,7 @@ impl VisionTools {
     fn html_screenshot(&self, call: &ToolCall, args: &Value) -> Result<ToolResult, ToolFailure> {
         let html = args.get("html").and_then(Value::as_str);
         let path = args.get("path").and_then(Value::as_str);
+        let url = args.get("url").and_then(Value::as_str);
         let width = args.get("width").and_then(Value::as_u64).unwrap_or(1280);
         let height = args.get("height").and_then(Value::as_u64).unwrap_or(900);
         let root = self.data_dir.join("vision").join("tmp");
@@ -551,10 +556,14 @@ impl VisionTools {
             let file = root.join(format!("{}.html", call.id));
             std::fs::write(&file, html).map_err(|error| ToolFailure::plain(error.to_string()))?;
             file
+        } else if let Some(url) = url {
+            let file = root.join(format!("{}.url", call.id));
+            std::fs::write(&file, url).map_err(|error| ToolFailure::plain(error.to_string()))?;
+            file
         } else if let Some(path) = path {
             std::path::PathBuf::from(path)
         } else {
-            return Err(ToolFailure::plain("要 html 或 path"));
+            return Err(ToolFailure::plain("要 html、path 或 url"));
         };
         let output = root.join(format!("{}.png", call.id));
         let chrome = find_chrome().ok_or_else(|| {
@@ -563,33 +572,67 @@ impl VisionTools {
                 "没找到系统 Chrome，网页截图用不了。",
             )
         })?;
-        let status = std::process::Command::new(chrome)
+        // 每次独立临时 profile，不碰用户默认 Chrome；结束就删。
+        let profile = tempfile::Builder::new()
+            .prefix("chrome-profile-")
+            .tempdir_in(&root)
+            .map_err(|error| ToolFailure::plain(error.to_string()))?;
+        let chrome_output = std::process::Command::new(chrome)
             .args([
                 "--headless=new",
                 "--disable-gpu",
                 "--no-sandbox",
                 "--hide-scrollbars",
+                "--disable-background-networking",
+                "--disable-component-update",
+                "--disable-sync",
+                "--disable-default-apps",
+                "--no-first-run",
+                "--metrics-recording-only",
+                "--disable-features=OptimizationHints,MediaRouter,Translate",
                 "--virtual-time-budget=3000",
                 "--host-resolver-rules=MAP * ~NOTFOUND",
+                // 外网统一指向一个关闭的本地代理，连接必然失败；本地 file:// 不受影响。
+                "--proxy-server=127.0.0.1:9",
             ])
+            .arg(format!("--user-data-dir={}", profile.path().display()))
             .arg(format!("--window-size={width},{height}"))
             .arg(format!("--screenshot={}", output.display()))
-            .arg(format!("file://{}", source.display()))
-            .status()
+            .arg(if url.is_some() {
+                url.unwrap_or_default().to_owned()
+            } else {
+                format!("file://{}", source.display())
+            })
+            .output()
             .map_err(|error| ToolFailure::coded("VISION_CHROME_UNAVAILABLE", error.to_string()))?;
-        if !status.success() || !output.exists() {
+        let stderr = String::from_utf8_lossy(&chrome_output.stderr);
+        let stderr_tail: String = stderr
+            .chars()
+            .rev()
+            .take(4000)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+        let profile_dir = profile.path().to_path_buf();
+        drop(profile);
+        if !chrome_output.status.success() || !output.exists() {
             return Err(ToolFailure::coded(
                 "VISION_CHROME_UNAVAILABLE",
-                "Chrome 截图失败。",
+                format!("Chrome 截图失败：{}", stderr_tail.trim()),
             ));
         }
         let bytes =
             std::fs::read(&output).map_err(|error| ToolFailure::plain(error.to_string()))?;
         let stored = self.store_png("web-screenshot.png", &bytes)?;
+        let mut meta = Self::image_meta(&[&stored]);
+        meta["offline"] = json!(true);
+        meta["chromeStderr"] = json!(stderr_tail);
+        meta["profileDirRemoved"] = json!(!profile_dir.exists());
         Ok(ToolResult::success_with_meta(
             &call.id,
-            "网页截图好了。",
-            Self::image_meta(&[&stored]),
+            "网页截图好了（Chrome 临时 profile，外网被代理挡住）。",
+            meta,
         ))
     }
 
@@ -740,7 +783,7 @@ fn description(name: &str) -> &'static str {
         "vision_long_screenshot_ocr" => "长截图本机识别文字（下一张票接）。",
         "vision_trace" => "描图（下一张票接）。",
         "vision_extract_foreground" => "抠图（下一张票接）。",
-        "vision_html_screenshot" => "用系统 Chrome 无头截本地 HTML，断网。",
+        "vision_html_screenshot" => "用系统 Chrome 无头截本地 HTML；外网地址被断网策略挡住。",
         "vision_screenshot" => "截桌面；开关默认关，没录屏权限会指系统设置。",
         "vision_present" => "把图片附件给用户看，结果带图片附件 id。",
         "vision_materialize" => "把图片附件复制到工作区文件（只写任务）。",
@@ -946,6 +989,52 @@ mod tests {
         set_test_screen_permission(None);
     }
 
+    #[tokio::test]
+    async fn html_screenshot_blocks_external_urls_with_network_log() {
+        let (dir, tools, session) = setup(ScreenPermissionState::Denied);
+        if find_chrome().is_none() {
+            return;
+        }
+        let context = tool_context(&dir, session);
+        let tool = tools
+            .readonly()
+            .into_iter()
+            .find(|tool| tool.name() == "vision_html_screenshot")
+            .unwrap();
+        let result = execute(
+            tool,
+            &context,
+            json!({"url": "https://example.com/should-not-load", "width": 320, "height": 200}),
+        )
+        .await;
+        assert!(
+            result.is_error,
+            "外网应被挡住，不能出成功报告：{}",
+            result.content
+        );
+        assert_eq!(
+            result.error_code.as_deref(),
+            Some("VISION_CHROME_UNAVAILABLE")
+        );
+        assert!(
+            result.content.contains("ERR_PROXY_CONNECTION_FAILED")
+                || result.content.contains("ERR_CONNECTION_REFUSED")
+                || result.content.contains("ERR_NAME_NOT_RESOLVED"),
+            "网络失败要有日志证据：{}",
+            result.content
+        );
+        let tmp = dir.path().join("vision").join("tmp");
+        if let Ok(entries) = std::fs::read_dir(&tmp) {
+            assert!(
+                !entries.flatten().any(|entry| entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("chrome-profile-")),
+                "临时 Chrome profile 要删掉"
+            );
+        }
+    }
+
     #[test]
     fn has_a_fake_permission_counter() {
         // 占位，确保静态检查看到测试端口确实可注入。
@@ -956,7 +1045,7 @@ mod tests {
     async fn html_screenshot_uses_system_chrome_and_reports_when_missing() {
         let (dir, tools, session) = setup(ScreenPermissionState::Denied);
         let context = tool_context(&dir, session);
-        let html = "<!doctype html><body style='background:#f00'><h1>本地页</h1></body>";
+        let html = "<!doctype html><body style='background:#f00'><h1>本地页</h1><img src='https://example.com/should-not-load.png'></body>";
         let tool = tools
             .readonly()
             .into_iter()
@@ -970,7 +1059,10 @@ mod tests {
         .await;
         if find_chrome().is_some() {
             assert!(!result.is_error, "{}", result.content);
-            assert_eq!(result.meta.unwrap()["images"].as_array().unwrap().len(), 1);
+            let meta = result.meta.unwrap();
+            assert_eq!(meta["images"].as_array().unwrap().len(), 1);
+            assert_eq!(meta["offline"], true);
+            assert_eq!(meta["profileDirRemoved"], true);
         } else {
             assert_eq!(
                 result.error_code.as_deref(),

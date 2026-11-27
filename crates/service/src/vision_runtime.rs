@@ -18,6 +18,8 @@ pub enum DescribeFailure {
     },
     Auth,
     Timeout,
+    /// 后端只认文字，不接受图片内容（不是鉴权/网络失败）。
+    UnsupportedContent(String),
     #[allow(dead_code)]
     Other(String),
 }
@@ -63,12 +65,74 @@ impl std::fmt::Debug for VisionRuntime {
     }
 }
 
+/// 协议测试用的假后端结果；只在显式测试钩子下生效。
+#[derive(Debug, Clone)]
+pub enum TestVisionOutcome {
+    Normal(String),
+    RateLimited(Option<u64>),
+    Timeout,
+    Auth,
+    TextOnly,
+    Other(String),
+}
+
+static TEST_OUTCOMES: std::sync::Mutex<Vec<TestVisionOutcome>> = std::sync::Mutex::new(Vec::new());
+
+/// 测试钩子：下一次构造的 VisionRuntime 按顺序消费这些结果。
+#[doc(hidden)]
+pub fn set_test_vision_outcomes(outcomes: Vec<TestVisionOutcome>) {
+    *TEST_OUTCOMES.lock().expect("测试看图队列锁被毒化") = outcomes;
+}
+
+struct TestDescriber;
+
+impl Describer for TestDescriber {
+    fn describe<'a>(
+        &'a self,
+        _row: &'a vision::VisionModelRef,
+        _image: &'a DescribeImage,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<String, DescribeFailure>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            let outcome = {
+                let mut queue = TEST_OUTCOMES.lock().expect("测试看图队列锁被毒化");
+                if queue.is_empty() {
+                    TestVisionOutcome::Other("测试队列空了".to_owned())
+                } else {
+                    queue.remove(0)
+                }
+            };
+            match outcome {
+                TestVisionOutcome::Normal(text) => Ok(text),
+                TestVisionOutcome::RateLimited(retry_after_ms) => {
+                    Err(DescribeFailure::RateLimited { retry_after_ms })
+                }
+                TestVisionOutcome::Timeout => Err(DescribeFailure::Timeout),
+                TestVisionOutcome::Auth => Err(DescribeFailure::Auth),
+                TestVisionOutcome::TextOnly => {
+                    Err(DescribeFailure::UnsupportedContent("只认文字".to_owned()))
+                }
+                TestVisionOutcome::Other(message) => Err(DescribeFailure::Other(message)),
+            }
+        })
+    }
+}
+
 impl VisionRuntime {
     pub fn new(data_dir: PathBuf, identity: Option<PathBuf>) -> Self {
-        let describer = Arc::new(KeyringDescriber {
-            data_dir: data_dir.clone(),
-            identity: identity.clone(),
-        });
+        let describer: Arc<dyn Describer> = if TEST_OUTCOMES
+            .lock()
+            .expect("测试看图队列锁被毒化")
+            .is_empty()
+        {
+            Arc::new(KeyringDescriber {
+                data_dir: data_dir.clone(),
+                identity: identity.clone(),
+            })
+        } else {
+            Arc::new(TestDescriber)
+        };
         Self {
             data_dir,
             describer,
@@ -114,7 +178,9 @@ impl VisionRuntime {
         let extra = match failure {
             DescribeFailure::RateLimited { retry_after_ms } => retry_after_ms.unwrap_or(60_000),
             DescribeFailure::Auth => 10 * 60_000,
-            DescribeFailure::Timeout | DescribeFailure::Other(_) => 0,
+            DescribeFailure::Timeout
+            | DescribeFailure::UnsupportedContent(_)
+            | DescribeFailure::Other(_) => 0,
         };
         if extra == 0 {
             return;
@@ -367,6 +433,18 @@ fn classify_model_error(error: model::ModelError) -> DescribeFailure {
         },
         model::ErrorCode::Quota | model::ErrorCode::Auth => DescribeFailure::Auth,
         model::ErrorCode::Timeout | model::ErrorCode::Transport => DescribeFailure::Timeout,
+        model::ErrorCode::InvalidRequest => {
+            let lower = error.message.to_lowercase();
+            if lower.contains("image")
+                || lower.contains("content")
+                || lower.contains("unsupported")
+                || lower.contains("不支持")
+            {
+                DescribeFailure::UnsupportedContent(error.message)
+            } else {
+                DescribeFailure::Other(error.message)
+            }
+        }
         _ => DescribeFailure::Other(error.message),
     }
 }

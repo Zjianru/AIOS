@@ -5,6 +5,10 @@
  */
 export type VisionTestResponse = {
 /**
- * normal | text-only | rate-limited | timeout
+ * normal | text-only | rate-limited | timeout | error
  */
-state: string, elapsedMs?: number | null, retryAfterMs?: number | null, };
+state: string, elapsedMs?: number | null, retryAfterMs?: number | null,
+/**
+ * 失败态稳定码：VISION_AUTH_FAILED | VISION_BACKEND_ERROR。
+ */
+errorCode?: string | null, message?: string | null, };

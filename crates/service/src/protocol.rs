@@ -1181,7 +1181,7 @@ pub struct VisionTestRequest {
 /// 测试看图结果：正常（带秒数）/只认文字/限流/超时；不写设置、不写会话。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct VisionTestResponse {
-    /// normal | text-only | rate-limited | timeout
+    /// normal | text-only | rate-limited | timeout | error
     pub state: String,
     #[serde(rename = "elapsedMs", default, skip_serializing_if = "Option::is_none")]
     pub elapsed_ms: Option<u64>,
@@ -1191,6 +1191,11 @@ pub struct VisionTestResponse {
         skip_serializing_if = "Option::is_none"
     )]
     pub retry_after_ms: Option<u64>,
+    /// 失败态稳定码：VISION_AUTH_FAILED | VISION_BACKEND_ERROR。
+    #[serde(rename = "errorCode", default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 /// 录屏权限状态（协议 36 只读；打开开关时的请求走同一形状）。
