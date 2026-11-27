@@ -20,8 +20,8 @@ async function askScreenshot(page: any, text: string) {
   return turns.last();
 }
 
-test.skip(process.env.AIOS_TEST_SCREEN_PERMISSION !== 'denied', '需要假权限端口 denied');
 test('#9 截桌面关/没权限各自指设置', async ({ page, request }) => {
+  process.env.AIOS_TEST_SCREEN_PERMISSION = 'denied';
   const fixture = await startD78KernelFixture();
   try {
     const settingsResponse = await apiPost(request, fixture, { method: 'model-settings' });
@@ -52,6 +52,7 @@ test('#9 截桌面关/没权限各自指设置', async ({ page, request }) => {
     const second = await askScreenshot(page, '再用 vision_screenshot 截一下桌面。');
     await expect(second).toContainText(/屏幕录制|录屏|系统设置|权限/);
   } finally {
+    delete process.env.AIOS_TEST_SCREEN_PERMISSION;
     await fixture.close();
   }
 });
