@@ -30,6 +30,10 @@ async fn waiting_fixture() -> (Fixture, Task, tasks::Store) {
             .is_some_and(|attempt| attempt.end == Some(AttemptEnd::Deferred))
     })
     .await;
+    // Deferred 与席位释放是两步：末轮结果落库后泵还要回收起跑席。并行跑全量时
+    // 这里抢占的是 runtime 的起跑席（不是测试目录/端口）；等它归零再接着做。
+    let runtime = fixture.host.task_runtime().expect("runtime");
+    wait_until("等待时释放席位", || runtime.used_seats() == 0).await;
     (fixture, task, store)
 }
 
@@ -80,6 +84,10 @@ async fn long_429_enters_usage_wait_and_resumes_at_due() {
             .is_some_and(|attempt| attempt.end == Some(AttemptEnd::Deferred))
     })
     .await;
+
+    // 席位释放比 Deferred 落库晚一步；等它归零再断言，避免并行跑全量时抢在泵前面。
+    let runtime = fixture.host.task_runtime().expect("runtime");
+    wait_until("等待时释放席位", || runtime.used_seats() == 0).await;
 
     let stored = store.task(&task.id).unwrap().unwrap();
     assert_eq!(stored.reports.len(), 1, "保留一条 waiting 报告");

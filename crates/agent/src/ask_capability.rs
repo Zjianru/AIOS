@@ -1,6 +1,6 @@
 //! ask 能力（T006.1d2 / T006.13）：ask_user_question 的拦截、提问、等待、答案 tool/result。
 //!
-//! 本票照 DSH 改回：答案形状 answers[{id, selected[], custom?}]（K14，
+//! 答案形状照 DSH：answers[{id, selected[], custom?}]（K14，
 //! tool-ask-user/src/index.ts:111-116）；回答方接缝（Agent::answer /
 //! Agent::cancel_question，宿主方法在 T006.16a）；问题/答案落 durable 事件
 //! （question/asked 带 callId、question/answered、question/cancelled），待答问题跨重启保留

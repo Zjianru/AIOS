@@ -535,7 +535,7 @@ fn acceptances_keep_history_after_a_requirement_change() {
     let first_acceptance = store.accept(&task.id, &first_report, T0 + 3).unwrap();
     assert_eq!(store.stage(&task.id).unwrap(), Stage::Closed);
 
-    // 要求改过（本票只有写集版本；文本回填在 T054.2）：旧接受只是历史，阶段重新派生。
+    // 要求改过（这里只有写集版本；文本回填另票）：旧接受只是历史，阶段重新派生。
     store
         .end_attempt(&task.id, first_attempt, T0 + 4, AttemptEnd::Reported)
         .unwrap();

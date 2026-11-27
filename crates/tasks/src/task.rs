@@ -237,7 +237,7 @@ pub enum CancellationSource {
     Kind,
 }
 
-/// T052：总任务上的安排记录：图版本与本票唯一一次确认。
+/// 总任务上的安排记录：用图版本固定用户确认的是哪一版，避免后续图变化后误认。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Arrangement {
     pub version: u32,

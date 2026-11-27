@@ -418,9 +418,9 @@ fn bundled_aios_tasks_requires_a_concrete_path_before_dispatching_a_write_task()
     )
     .expect("加载自带 aios-tasks");
     for needle in [
-        "named the file or directory",
-        "ask the user first",
-        "one concrete path",
+        "no path appears",
+        "ask what to write",
+        "one concrete / or ~/ path",
         "is not the write scope",
         "task_update",
     ] {

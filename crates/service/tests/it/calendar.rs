@@ -342,8 +342,9 @@ async fn global_pause_merges_missed_occurrences_and_sends_once() {
     }))
     .await
     .expect("开闸");
-    wait_until("合并后送一次", || {
-        run_result(&store, &due.id).as_deref() == Some("sent")
+    wait_until("合并后只留一次运行", || {
+        let runs = store.runs(&due.id).unwrap_or_default();
+        runs.len() == 1 && runs[0].result == calendar::RunResult::Sent
     })
     .await;
     let runs = store.runs(&due.id).unwrap();
