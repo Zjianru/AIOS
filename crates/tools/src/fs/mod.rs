@@ -31,6 +31,11 @@ impl Target {
 
 /// D3：存在路径 canonicalize；缺失路径用最近存在祖先 canonicalize + 缺失后缀。
 /// 符号链接环、权限等 canonicalize 失败按 FS 错误返回，不静默退回绝对路径。
+/// 公开的只读路径解析：给服务里的其它只读工具（office_read）复用同一套 cwd/绝对路径规则。
+pub fn resolve_read_path(context: &ToolContext, requested: &str) -> Result<PathBuf, ToolFailure> {
+    Ok(resolve(context, requested)?.key)
+}
+
 pub(crate) fn resolve(context: &ToolContext, requested: &str) -> Result<Target, ToolFailure> {
     let path = Path::new(requested);
     let absolute = if path.is_absolute() {

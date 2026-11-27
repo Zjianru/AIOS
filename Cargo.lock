@@ -2080,8 +2080,10 @@ dependencies = [
  "quick-xml 0.42.0",
  "rust_xlsxwriter",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "tools",
  "zip 9.8.2",
 ]
 
@@ -2959,6 +2961,7 @@ dependencies = [
  "htmd",
  "memory",
  "model",
+ "office",
  "reqwest",
  "serde",
  "serde_json",

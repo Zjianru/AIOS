@@ -72,9 +72,9 @@ pub(crate) fn full_tool_names(
         .names()
         .into_iter()
         .filter(|name| {
-            tools
-                .get(name)
-                .is_some_and(|tool| tool.condition().satisfied_by_keys(tool_keys))
+            tools.get(name).is_some_and(|tool| {
+                tools.plugin_enabled(tool) && tool.condition().satisfied_by_keys(tool_keys)
+            })
         })
         .map(str::to_owned)
         .collect()
@@ -151,20 +151,60 @@ fn skill_name_of(arguments: &str) -> Option<String> {
 #[derive(Debug, Default)]
 pub(crate) struct ToolRegistryState {
     recorded: BTreeSet<String>,
+    /// 最后一次压缩之后才有「已关」记录时，插件工具才从表里拿掉（q 2.3；两件都从日志读）。
+    drop_closed_plugin_tools: bool,
 }
 
+const PLUGIN_CLOSED_PREFIX: &str = "【插件】Office 已关闭";
+
 impl ToolRegistryState {
-    /// 从会话日志重建（续接时）：把每条 `tool/registry` 的 additions 收进来。
+    /// 从会话日志重建（续接时）：只收最后一次压缩之后的 `tool/registry` additions。
+    ///
+    /// q 2.3：插件关着、并且最后一次压缩晚于「已关」那条记录，才把插件工具从表里拿掉；
+    /// 否则日志里已经声明过的工具继续算（执行入口仍会回 PLUGIN_CLOSED）。
     pub(crate) fn rehydrate(events: &[Event]) -> Self {
+        let last_compaction = events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event.kind,
+                    EventKind::CompactionSummary { .. } | EventKind::CompactionEnd { .. }
+                )
+            })
+            .map(|event| event.seq)
+            .last();
+        let last_close = events
+            .iter()
+            .filter(|event| {
+                let EventKind::SystemMessage { message, .. } = &event.kind else {
+                    return false;
+                };
+                message
+                    .content
+                    .iter()
+                    .filter_map(model::ContentBlock::as_text)
+                    .any(|text| text.starts_with(PLUGIN_CLOSED_PREFIX))
+            })
+            .map(|event| event.seq)
+            .last();
         let mut recorded = BTreeSet::new();
         for event in events {
+            if last_compaction.is_some_and(|seq| event.seq <= seq) {
+                continue;
+            }
             if let EventKind::ToolRegistry { additions, .. } = &event.kind {
                 for tool in additions {
                     recorded.insert(tool.name.clone());
                 }
             }
         }
-        Self { recorded }
+        Self {
+            recorded,
+            drop_closed_plugin_tools: match (last_compaction, last_close) {
+                (Some(compaction), Some(close)) => compaction > close,
+                _ => false,
+            },
+        }
     }
 
     /// 本步的工具表：条件满足的，加上已经记过的（只加不减；工具集里没有的名字忽略）。
@@ -176,9 +216,16 @@ impl ToolRegistryState {
     ) -> BTreeSet<String> {
         let mut enabled = tools.enabled(loaded_skills, tool_keys);
         for name in &self.recorded {
-            if tools.get(name).is_some() {
-                enabled.insert(name.clone());
+            let Some(tool) = tools.get(name) else {
+                continue;
+            };
+            if tool.plugin().is_some()
+                && self.drop_closed_plugin_tools
+                && !tools.plugin_enabled(tool)
+            {
+                continue;
             }
+            enabled.insert(name.clone());
         }
         enabled
     }
@@ -485,6 +532,162 @@ mod key_condition_tests {
             full_tool_names(&set, &with_key),
             BTreeSet::from(["skill".to_owned(), "web_search".to_owned()]),
             "有 key 时两件都进全量表"
+        );
+    }
+}
+
+/// T094：插件开关 + q 2.3 rehydrate 的定向单测。
+#[cfg(test)]
+mod plugin_switch_tests {
+    use std::collections::BTreeSet;
+    use std::sync::LazyLock;
+
+    use model::{Message, ToolSchema};
+    use serde_json::json;
+    use tools::{
+        PluginId, PluginSwitches, Tool, ToolCall, ToolContext, ToolFuture, ToolResult, ToolSet,
+    };
+
+    use super::*;
+
+    struct OfficeRead;
+
+    impl Tool for OfficeRead {
+        fn name(&self) -> &str {
+            "office_read"
+        }
+        fn description(&self) -> &str {
+            "读 Office"
+        }
+        fn parameters(&self) -> &serde_json::Value {
+            static PARAMS: LazyLock<serde_json::Value> =
+                LazyLock::new(|| json!({"type": "object"}));
+            &PARAMS
+        }
+        fn plugin(&self) -> Option<PluginId> {
+            Some(PluginId::Office)
+        }
+        fn execute<'a>(
+            &'a self,
+            call: ToolCall,
+            _context: &'a ToolContext,
+        ) -> ToolFuture<'a, ToolResult> {
+            Box::pin(async move { ToolResult::success(call.id, "ok") })
+        }
+    }
+
+    fn office_toolset(switches: &PluginSwitches) -> ToolSet {
+        let mut tools = ToolSet::new(vec![Box::new(OfficeRead)]);
+        tools.set_plugin_switches(switches.clone());
+        tools
+    }
+
+    fn schema(name: &str) -> ToolSchema {
+        ToolSchema {
+            name: name.to_owned(),
+            description: String::new(),
+            parameters: json!({"type": "object"}),
+            defer_loading: false,
+        }
+    }
+
+    fn registry(seq: u64, additions: Vec<ToolSchema>) -> Event {
+        Event::new(
+            seq,
+            0,
+            EventKind::ToolRegistry {
+                turn: 1,
+                step: 1,
+                additions,
+            },
+        )
+    }
+
+    fn close(seq: u64) -> Event {
+        Event::new(
+            seq,
+            0,
+            EventKind::SystemMessage {
+                turn: 1,
+                step: 1,
+                message: Message::system_prompt(PLUGIN_CLOSED_PREFIX),
+            },
+        )
+    }
+
+    fn compaction_end(seq: u64) -> Event {
+        Event::new(
+            seq,
+            0,
+            EventKind::CompactionEnd {
+                compaction_id: "c1".to_owned(),
+                source_command_id: None,
+                turn: None,
+                error: None,
+            },
+        )
+    }
+
+    #[test]
+    fn closed_plugin_drops_after_compaction_that_follows_the_close_notice() {
+        // 注册 → 关掉 → 压缩：两件都成立，续接时不再把 office_read 算进工具表。
+        let events = vec![
+            registry(1, vec![schema("office_read")]),
+            close(2),
+            compaction_end(3),
+        ];
+        let state = ToolRegistryState::rehydrate(&events);
+        assert!(state.drop_closed_plugin_tools);
+        let switches = PluginSwitches::new();
+        let tools = office_toolset(&switches);
+        let enabled = state.enabled(&tools, &BTreeSet::new(), &BTreeSet::new());
+        assert!(!enabled.contains("office_read"));
+    }
+
+    #[test]
+    fn closed_plugin_without_later_compaction_keeps_declared_tool_but_execution_would_be_closed() {
+        // 压缩 → 关掉：last compaction 早于 close，工具保持声明（执行入口回 PLUGIN_CLOSED）。
+        let events = vec![
+            compaction_end(1),
+            registry(2, vec![schema("office_read")]),
+            close(3),
+        ];
+        let state = ToolRegistryState::rehydrate(&events);
+        assert!(!state.drop_closed_plugin_tools);
+        let switches = PluginSwitches::new();
+        let tools = office_toolset(&switches);
+        let enabled = state.enabled(&tools, &BTreeSet::new(), &BTreeSet::new());
+        assert!(enabled.contains("office_read"));
+    }
+
+    #[test]
+    fn open_plugin_next_tool_table_has_office_read_and_close_removes_it() {
+        let switches = PluginSwitches::new();
+        let tools = ToolSet::builtin();
+        let office_tools = office_toolset(&switches);
+        // 把 office 工具并进 builtin 不现实；这里直接验证过滤面。
+        assert!(
+            !office_tools
+                .enabled(&BTreeSet::new(), &BTreeSet::new())
+                .contains("office_read")
+        );
+        switches.enable(PluginId::Office);
+        assert!(
+            office_tools
+                .enabled(&BTreeSet::new(), &BTreeSet::new())
+                .contains("office_read")
+        );
+        switches.disable(PluginId::Office);
+        assert!(
+            !office_tools
+                .enabled(&BTreeSet::new(), &BTreeSet::new())
+                .contains("office_read")
+        );
+        // 非插件工具不受影响。
+        assert!(
+            tools
+                .enabled(&BTreeSet::new(), &BTreeSet::new())
+                .contains("read")
         );
     }
 }

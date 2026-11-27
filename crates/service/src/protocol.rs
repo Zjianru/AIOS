@@ -135,6 +135,12 @@ pub enum Call {
     CalendarRead(CalendarReadRequest),
     /// 日历动作。
     CalendarAction(CalendarActionRequest),
+    /// T094：插件开关列表（官方 Office）。
+    #[serde(rename = "plugin_list")]
+    PluginList(PluginListRequest),
+    /// T094：打开/关掉一个插件（只增，协议 35）。
+    #[serde(rename = "plugin_set")]
+    PluginSet(PluginSetRequest),
 }
 
 /// 调用的结果（与 Call 一一对应）。
@@ -221,6 +227,12 @@ pub enum Response {
     CalendarRead(CalendarReadResponse),
     /// 日历动作：暂停/恢复/立即跑一次/取消。
     CalendarAction(CalendarActionResponse),
+    /// T094：插件开关列表。
+    #[serde(rename = "plugin_list")]
+    PluginList(PluginListResponse),
+    /// T094：打开/关掉插件后的同一份视图。
+    #[serde(rename = "plugin_set")]
+    PluginSet(PluginListResponse),
 }
 
 /// 发消息（DSH session-controller 的 prompt）。requestId 是幂等键：同一 id 只进一次。
@@ -1961,7 +1973,7 @@ pub struct ActionActResponse {
 ///
 /// 连接上的旧价格乘数后来整条删掉，不升版本：两个请求里的这个字段本来就可省略，旧页再发
 /// 由 serde 当未知字段忽略；响应里少了它，旧页读到 undefined 也不会拿去定价。
-pub const PROTOCOL_VERSION: u64 = 34;
+pub const PROTOCOL_VERSION: u64 = 35;
 
 /// 日历读取：不带 appointmentId 读全部；带 week 时额外给那周的计划点。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -2453,4 +2465,37 @@ pub struct MonitorTaskResponse {
     pub todo: Vec<MonitorTodo>,
     #[serde(default)]
     pub events: Vec<ServiceEvent>,
+}
+
+/// T094：插件列表请求（无参数）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct PluginListRequest {}
+
+/// T094：打开/关掉一个插件；id 只认 office。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct PluginSetRequest {
+    pub id: String,
+    pub enabled: bool,
+}
+
+/// T094：插件页的一张卡（只有官方 Office）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct PluginView {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    /// 插件开着/关着。
+    pub enabled: bool,
+    /// Skill 摘要（进目录的那份说明）。
+    pub skill_summary: String,
+    /// 官方插件的数据目录（绝对路径；生成物在 library）。
+    pub data_dir: String,
+}
+
+/// T094：插件列表；内容包第一刀没有实现，空表由页面写空态。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct PluginListResponse {
+    pub plugins: Vec<PluginView>,
+    #[serde(default)]
+    pub content_packs: Vec<String>,
 }

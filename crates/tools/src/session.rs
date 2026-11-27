@@ -74,6 +74,8 @@ pub struct ToolSessionState {
     bundled_skills: Mutex<Vec<crate::skills::BundledSkill>>,
     /// 现在已存的工具凭证（AgentConfig::tool_keys）；自带 skill 缺凭证时不进目录。
     tool_keys: Mutex<crate::ToolKeySource>,
+    /// 插件开关（共享 Arc）：自带 skill 按插件开关进/出目录。
+    plugin_switches: Mutex<crate::PluginSwitches>,
     /// 工具刚写入的 todo 列表快照（T005.7；driver 追加 todo/write 事件后取走）。
     todos: Mutex<Option<Vec<TodoItem>>>,
     /// 画布状态（T015.2）：建/续接会话时从日志折叠，canvas 工具每出一版更新。
@@ -96,6 +98,7 @@ impl ToolSessionState {
             skill_roots: Mutex::new(Vec::new()),
             bundled_skills: Mutex::new(Vec::new()),
             tool_keys: Mutex::new(crate::ToolKeySource::none()),
+            plugin_switches: Mutex::new(crate::PluginSwitches::new()),
             todos: Mutex::new(None),
             canvases: Mutex::new(Vec::new()),
             absolute_paths_only: AtomicBool::new(false),
@@ -186,7 +189,12 @@ impl ToolSessionState {
         *self.tool_keys.lock().expect("工具凭证锁被毒化") = source;
     }
 
-    /// 现在能加载的程序自带 skill（凭证没存的那些不进目录，skill 工具也不认得）。
+    /// 装配层写入共享插件开关；工具表与 skill 目录用同一份（运行期随开关变）。
+    pub fn set_plugin_switches(&self, switches: crate::PluginSwitches) {
+        *self.plugin_switches.lock().expect("插件开关锁被毒化") = switches;
+    }
+
+    /// 现在能加载的程序自带 skill（凭证没存/插件关的那些不进目录，skill 工具也不认得）。
     pub(crate) fn bundled_skills(&self) -> Vec<crate::skills::BundledSkill> {
         let keys = self.tool_keys.lock().expect("工具凭证锁被毒化").present();
         self.bundled_skills
@@ -194,7 +202,16 @@ impl ToolSessionState {
             .expect("自带 skill 锁被毒化")
             .iter()
             .copied()
-            .filter(|skill| skill.available(&keys))
+            .filter(|skill| {
+                skill.available(
+                    &keys,
+                    &self
+                        .plugin_switches
+                        .lock()
+                        .expect("插件开关锁被毒化")
+                        .clone(),
+                )
+            })
             .collect()
     }
 

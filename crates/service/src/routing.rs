@@ -137,6 +137,8 @@ impl RootHost {
                 .settings_update(request)
                 .await
                 .map(Response::SettingsUpdate),
+            Call::PluginList(_) => self.plugin_list().await.map(Response::PluginList),
+            Call::PluginSet(request) => self.plugin_set(request).await.map(Response::PluginSet),
             // task-read：任务对话的只读快照（任务库在任务执行者手里）。
             Call::TaskRead(request) => match self.task_runtime() {
                 Some(runtime) => runtime.task_read(request).await.map(Response::TaskRead),

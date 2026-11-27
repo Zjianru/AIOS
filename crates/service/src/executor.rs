@@ -71,10 +71,11 @@ mod usage_wait_tests;
 pub const TASKS_DB_FILE: &str = "tasks.sqlite";
 
 /// ThinAgent 的只读工具名单（构造期 only 过滤；顺序就是名单顺序）。
-pub const THIN_TOOLS: [&str; 11] = [
+pub const THIN_TOOLS: [&str; 12] = [
     "read",
     "glob",
     "grep",
+    "office_read",
     "skill",
     "todo_write",
     "web_search",
@@ -86,10 +87,12 @@ pub const THIN_TOOLS: [&str; 11] = [
 ];
 
 /// 写任务的 ThinAgent 工具名单：只读 9 件加 write、edit（D85）。
-pub const THIN_WRITE_TOOLS: [&str; 13] = [
+pub const THIN_WRITE_TOOLS: [&str; 15] = [
     "read",
     "glob",
     "grep",
+    "office_read",
+    "office_create",
     "write",
     "edit",
     "skill",
@@ -103,10 +106,12 @@ pub const THIN_WRITE_TOOLS: [&str; 13] = [
 ];
 
 /// 开了 bash 的写任务：写任务 11 件再加 bash 和后台任务三件（D85）。
-pub const THIN_WRITE_BASH_TOOLS: [&str; 17] = [
+pub const THIN_WRITE_BASH_TOOLS: [&str; 19] = [
     "read",
     "glob",
     "grep",
+    "office_read",
+    "office_create",
     "write",
     "edit",
     "bash",
@@ -3379,6 +3384,8 @@ impl TaskRuntime {
         resume: Option<SessionId>,
     ) -> Result<ServiceHost, String> {
         let mut extra_tools = crate::root::web_extra_tools(&self.options);
+        extra_tools.push(std::sync::Arc::new(office::OfficeReadTool));
+        extra_tools.push(std::sync::Arc::new(office::OfficeCreateTool));
         extra_tools.push(Arc::new(TaskReportTool::new(
             Arc::clone(self),
             task.id.clone(),

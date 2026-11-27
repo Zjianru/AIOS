@@ -2,7 +2,7 @@
 
 use super::*;
 
-/// 写任务：写入范围落库、工具名单正好 11 件（+write/edit）；task_accept 的 schema
+/// 写任务：写入范围落库、工具名单正好 15 件（+write/edit/office）；task_accept 的 schema
 /// 有 write_scope/worktree，没有 bash 字段（bash 开关归另一张票）。
 #[tokio::test]
 async fn a_write_task_freezes_the_scope_and_eleven_tools() {
@@ -26,6 +26,8 @@ async fn a_write_task_freezes_the_scope_and_eleven_tools() {
         "edit",
         "glob",
         "grep",
+        "office_create",
+        "office_read",
         "read",
         "skill",
         "task_handback",
@@ -38,7 +40,7 @@ async fn a_write_task_freezes_the_scope_and_eleven_tools() {
         "write",
     ];
     expected.sort();
-    assert_eq!(tools, expected, "写任务冻结 13 件工具");
+    assert_eq!(tools, expected, "写任务冻结 15 件工具");
 
     let kind_body = fixture.router.bodies(false).remove(0);
     let request: Value = serde_json::from_str(&kind_body).unwrap();
@@ -186,7 +188,7 @@ async fn an_out_of_scope_write_is_refused_unchanged_and_hands_back() {
     );
 }
 
-/// bash 关着：写任务还是 11 件、没有 bash 和后台任务，结果卡数据里也没有 bash 说明。
+/// bash 关着：写任务还是 15 件、没有 bash 和后台任务，结果卡数据里也没有 bash 说明。
 #[tokio::test]
 async fn a_write_task_without_bash_gets_eleven_tools_and_no_bash_note() {
     let fixture = Fixture::new().await;
@@ -213,7 +215,7 @@ async fn a_write_task_without_bash_gets_eleven_tools_and_no_bash_note() {
     assert_eq!(
         sorted(task.tools.clone()),
         sorted(WRITE_TOOLS),
-        "写任务 13 件"
+        "写任务 15 件"
     );
 
     fixture
@@ -235,8 +237,23 @@ async fn a_write_task_without_bash_gets_eleven_tools_and_no_bash_note() {
         "关着 bash 不写说明：{body}"
     );
 
-    let names = sorted(tool_names(&loaded_request(&fixture.router)));
-    assert_eq!(names, sorted(WRITE_TOOLS), "ThinAgent 的工具表正好 13 件");
+    // 插件默认关：冻结名单里有 office_*，实际请求工具表按开关过滤掉。
+    let names = sorted(
+        tool_names(&loaded_request(&fixture.router))
+            .into_iter()
+            .filter(|name| !name.starts_with("office_"))
+            .collect::<Vec<_>>(),
+    );
+    assert_eq!(
+        names,
+        sorted(
+            WRITE_TOOLS
+                .iter()
+                .copied()
+                .filter(|name| !name.starts_with("office_"))
+        ),
+        "ThinAgent 的工具表 13 件（插件关）"
+    );
 
     let bodies = fixture.router.bodies(true);
     assert!(
@@ -282,7 +299,7 @@ async fn the_bash_switch_on_freezes_fifteen_tools_into_the_write_task() {
     assert_eq!(
         sorted(task.tools.clone()),
         sorted(WRITE_BASH_TOOLS),
-        "开了 bash 的写任务冻结 17 件"
+        "开了 bash 的写任务冻结 19 件"
     );
     for name in BASH_JOB_TOOLS {
         assert!(
@@ -311,11 +328,21 @@ async fn the_bash_switch_on_freezes_fifteen_tools_into_the_write_task() {
     })
     .await;
 
-    let names = sorted(tool_names(&loaded_request(&fixture.router)));
+    let names = sorted(
+        tool_names(&loaded_request(&fixture.router))
+            .into_iter()
+            .filter(|name| !name.starts_with("office_"))
+            .collect::<Vec<_>>(),
+    );
     assert_eq!(
         names,
-        sorted(WRITE_BASH_TOOLS),
-        "ThinAgent 的工具表正好 15 件"
+        sorted(
+            WRITE_BASH_TOOLS
+                .iter()
+                .copied()
+                .filter(|name| !name.starts_with("office_"))
+        ),
+        "ThinAgent 的工具表 17 件（插件关）"
     );
 
     let bodies = fixture.router.bodies(true);
@@ -398,7 +425,7 @@ async fn a_read_only_task_never_gets_bash_even_when_the_switch_is_on() {
     assert_eq!(
         sorted(task.tools.clone()),
         sorted(READ_ONLY_TOOLS),
-        "只读任务还是 11 件"
+        "只读任务还是 12 件"
     );
 
     fixture
@@ -412,11 +439,21 @@ async fn a_read_only_task_never_gets_bash_even_when_the_switch_is_on() {
             .any(|(_, body)| body["state"] == "ready")
     })
     .await;
-    let names = sorted(tool_names(&loaded_request(&fixture.router)));
+    let names = sorted(
+        tool_names(&loaded_request(&fixture.router))
+            .into_iter()
+            .filter(|name| !name.starts_with("office_"))
+            .collect::<Vec<_>>(),
+    );
     assert_eq!(
         names,
-        sorted(READ_ONLY_TOOLS),
-        "只读任务给 ThinAgent 的工具表正好 11 件"
+        sorted(
+            READ_ONLY_TOOLS
+                .iter()
+                .copied()
+                .filter(|name| !name.starts_with("office_"))
+        ),
+        "只读任务给 ThinAgent 的工具表 11 件（插件关）"
     );
     for name in BASH_JOB_TOOLS {
         assert!(

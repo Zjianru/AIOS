@@ -25,6 +25,7 @@ mod manual_compact_no_injection;
 mod max_tokens;
 mod memory_context;
 mod model_selection;
+mod plugin_tools;
 mod pre_step_phase_order;
 mod pure_text_turn;
 mod resume_repair;

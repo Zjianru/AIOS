@@ -183,6 +183,8 @@ impl ServiceHost {
             | Call::ExaKeyCheck(_)
             | Call::ExaKeyDelete(_)
             | Call::SettingsUpdate(_)
+            | Call::PluginList(_)
+            | Call::PluginSet(_)
             | Call::AttachmentPut(_)
             | Call::AttachmentGet(_)
             | Call::FileReferencesList(_)

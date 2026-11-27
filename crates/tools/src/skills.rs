@@ -76,6 +76,8 @@ pub struct BundledSkill {
     /// 正文提到的工具；这些工具不在装配出来的工具集里时，skill 不进目录。
     /// 自带 skill 不能指向一个不存在的工具（CLI 没有服务独有的查询/联网工具）。
     pub tools: &'static [&'static str],
+    /// 归属的官方插件；Some 时插件关着整份 skill 不进目录（隐含 tools 里的插件工具）。
+    pub plugin: Option<crate::PluginId>,
     /// 只给只读工具表的 skill（没有 write/edit/bash/后台任务）。
     pub read_only: bool,
     /// 凭证没存时目录里写给模型的一句话：说明它现在不可用、让用户去哪填。
@@ -84,9 +86,14 @@ pub struct BundledSkill {
 }
 
 impl BundledSkill {
-    /// 这一次求值里这份自带 skill 能不能进目录（凭证已存或不需要凭证）。
-    pub fn available(&self, keys: &std::collections::BTreeSet<crate::ToolKey>) -> bool {
+    /// 这一次求值里这份自带 skill 能不能进目录（凭证已存、插件已开或不需要条件）。
+    pub fn available(
+        &self,
+        keys: &std::collections::BTreeSet<crate::ToolKey>,
+        plugins: &crate::PluginSwitches,
+    ) -> bool {
         self.requires.is_none_or(|key| keys.contains(&key))
+            && self.plugin.is_none_or(|plugin| plugins.is_on(plugin))
     }
 }
 
@@ -100,6 +107,7 @@ pub fn bundled_skills() -> &'static [BundledSkill] {
             tools: &["aios_query", "propose_action"],
             read_only: false,
             unavailable_hint: "",
+            plugin: None,
         },
         BundledSkill {
             name: "aios-tasks",
@@ -108,6 +116,7 @@ pub fn bundled_skills() -> &'static [BundledSkill] {
             tools: &["task_accept", "task_stop", "task_update", "propose_action"],
             read_only: false,
             unavailable_hint: "",
+            plugin: None,
         },
         BundledSkill {
             name: "aios-calendar",
@@ -116,6 +125,7 @@ pub fn bundled_skills() -> &'static [BundledSkill] {
             tools: &["aios_query", "propose_action", "appointment_cancel"],
             read_only: false,
             unavailable_hint: "",
+            plugin: None,
         },
         BundledSkill {
             name: "aios-memory",
@@ -133,6 +143,7 @@ pub fn bundled_skills() -> &'static [BundledSkill] {
             ],
             read_only: false,
             unavailable_hint: "",
+            plugin: None,
         },
         BundledSkill {
             name: "investigator",
@@ -141,6 +152,16 @@ pub fn bundled_skills() -> &'static [BundledSkill] {
             tools: &["task_report"],
             read_only: true,
             unavailable_hint: "",
+            plugin: None,
+        },
+        BundledSkill {
+            name: "aios-office",
+            raw: include_str!("../bundled/office/SKILL.md"),
+            requires: None,
+            tools: &["office_read"],
+            read_only: true,
+            unavailable_hint: "",
+            plugin: Some(crate::PluginId::Office),
         },
         BundledSkill {
             name: "aios-guide",
@@ -149,6 +170,7 @@ pub fn bundled_skills() -> &'static [BundledSkill] {
             tools: &["aios_query"],
             read_only: false,
             unavailable_hint: "",
+            plugin: None,
         },
         BundledSkill {
             name: "web",
@@ -157,6 +179,7 @@ pub fn bundled_skills() -> &'static [BundledSkill] {
             tools: &["web_search", "web_fetch"],
             read_only: false,
             unavailable_hint: "Web search and page reading are unavailable: no Exa API key is saved. If the user asks you to search the web or read a link, say you cannot yet and tell them to save an Exa API key in the settings page (设置 › 模型与连接 › 联网搜索), then ask them to try again.",
+            plugin: None,
         },
     ];
     BUNDLED

@@ -353,6 +353,8 @@ impl Inner {
             .and_then(Path::parent)
             .map_or_else(|| cwd.clone(), Path::to_path_buf);
         let tool_session = Arc::new(ToolSessionState::new(&data_dir, id.as_str()));
+        let plugin_switches = tools.plugin_switches();
+        tool_session.set_plugin_switches(plugin_switches.clone());
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         let (session_events, _) = broadcast::channel(SESSION_EVENT_CHANNEL_CAPACITY);
         let instruction_roots = config.instruction_roots.clone();
@@ -386,11 +388,12 @@ impl Inner {
                 config.memory_delivery.clone(),
             );
         let bundled_skills = config.bundled_skills.clone();
-        let (skill_catalog, skill_roots, bundled_skills) =
+        let (skill_catalog, skill_roots, bundled_skills, plugin_switches) =
             crate::skill_capability::SkillCapability::load(
                 &store,
                 skill_roots,
                 bundled_skills.clone(),
+                plugin_switches,
             );
         let fixed_block_state = config.fixed_block.clone().map(|block| {
             crate::fixed_block::FixedBlockState::load(&store, block.text, block.now_message)
@@ -529,6 +532,7 @@ impl Inner {
                 skill_roots,
                 bundled_skills,
                 workspace_context,
+                plugin_switches,
                 fixed_block: fixed_block_state,
                 dynamic_block: dynamic_block_state,
                 spill_max_inline_tokens,

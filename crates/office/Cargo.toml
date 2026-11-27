@@ -10,7 +10,9 @@ docx-rs.workspace = true
 quick-xml.workspace = true
 rust_xlsxwriter.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
+tools = { path = "../tools" }
 zip.workspace = true
 
 [dev-dependencies]

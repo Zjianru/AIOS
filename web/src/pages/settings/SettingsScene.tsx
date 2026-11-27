@@ -12,9 +12,10 @@ import { useRouteStore } from '@/app/routeStore';
 import { cn } from '@/lib/utils';
 import { ModelSettings } from './ModelSettings';
 import { ExecSettings } from './ExecSettings';
+import { PluginsPane } from './PluginsPane';
 
 /** 已经做出来的分组；其余仍是第 3 期。 */
-const BUILT = new Set(['model', 'exec']);
+const BUILT = new Set(['model', 'exec', 'plugins']);
 const GROUPS = SETTINGS_GROUPS.map((group) => ({ ...group, built: BUILT.has(group.id) }));
 
 export function SettingsScene() {
@@ -51,6 +52,8 @@ export function SettingsScene() {
             <ModelSettings />
           ) : current.id === 'exec' ? (
             <ExecSettings />
+          ) : current.id === 'plugins' ? (
+            <PluginsPane />
           ) : (
             <p className="mt-3 text-3 leading-6 text-ink-2">
               这一组排在第 3 期，样子见 v13 原型的「设置 › {current.name}」。

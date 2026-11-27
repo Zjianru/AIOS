@@ -1,8 +1,11 @@
 use super::*;
 
 #[test]
-fn protocol_version_is_34() {
-    assert_eq!(PROTOCOL_VERSION, 34, "输入多模态/附件只增字段，升到 34");
+fn protocol_version_is_35() {
+    assert_eq!(
+        PROTOCOL_VERSION, 35,
+        "T094：只增 PluginList/PluginSet，升到 35"
+    );
 }
 
 #[test]

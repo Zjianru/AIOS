@@ -37,12 +37,20 @@ fn aborted_result(call: &ToolCall) -> ToolResult {
 struct Planned<'a> {
     call: &'a ToolCall,
     tool: Option<&'a dyn Tool>,
+    /// 工具有插件归属但插件现在是关的：执行前回 PLUGIN_CLOSED，不落效果。
+    plugin_closed: bool,
 }
 
 /// 并行池里的一个 future：调用下标 + 未完成的执行。
 type PendingFuture<'a, T> = (usize, Pin<Box<dyn Future<Output = T> + Send + 'a>>);
 
 async fn invoke<'a>(plan: &'a Planned<'_>, context: &'a ToolContext) -> ToolResult {
+    if plan.plugin_closed {
+        return ToolResult::error(
+            plan.call.id.clone(),
+            crate::ToolFailure::coded("PLUGIN_CLOSED", "Office 插件已关，去插件页打开"),
+        );
+    }
     match plan.tool {
         Some(tool) => {
             // T005.9：工具自己声明了单次调用时间上限时，超时返回 TOOL_TIMEOUT 错误结果
@@ -150,11 +158,16 @@ pub async fn execute_batch(
     // 没开出的工具和不存在的工具一样处理：都报「未知工具」，模型看不出差别。
     let plans: Vec<Planned<'_>> = calls
         .iter()
-        .map(|call| Planned {
-            call,
-            tool: tools
-                .get(&call.name)
-                .filter(|_tool| context.allows(&call.name)),
+        .map(|call| {
+            let found = tools.get(&call.name);
+            let plugin_closed = found
+                .and_then(|tool| tool.plugin())
+                .is_some_and(|plugin| !tools.plugin_switches().is_on(plugin));
+            Planned {
+                call,
+                tool: found.filter(|_tool| !plugin_closed && context.allows(&call.name)),
+                plugin_closed,
+            }
         })
         .collect();
     let mut results: Vec<Option<ToolResult>> = plans.iter().map(|_| None).collect();

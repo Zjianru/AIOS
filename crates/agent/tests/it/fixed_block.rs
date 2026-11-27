@@ -130,6 +130,7 @@ async fn old_session_gets_a_new_bundled_skill_directory_at_tail() {
         tools: &["read"],
         read_only: false,
         unavailable_hint: "",
+        plugin: None,
     };
     let mut config = isolated_config(data.path());
     config.bundled_skills = vec![skill];

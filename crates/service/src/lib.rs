@@ -80,6 +80,7 @@ mod executor;
 mod input;
 pub(crate) mod kind_output;
 mod ledger;
+mod plugins;
 mod projects;
 mod propose;
 mod protocol;

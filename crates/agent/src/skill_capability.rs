@@ -26,6 +26,8 @@ pub(crate) struct SkillCapability {
     bundled: Vec<tools::BundledSkill>,
     /// Kind 无工作目录：不扫项目 .agents/skills。
     workspace_context: bool,
+    /// 插件开关：Office skill 插件关着时整份不进目录。
+    plugin_switches: tools::PluginSwitches,
 }
 
 /// 装载带回来的两样：目录状态 + 用户根；自带的来源由调用方另存（能力不重复持有）。
@@ -33,6 +35,7 @@ type Loaded = (
     Arc<Mutex<SkillCatalogState>>,
     Vec<std::path::PathBuf>,
     Vec<tools::BundledSkill>,
+    tools::PluginSwitches,
 );
 
 impl SkillCapability {
@@ -41,18 +44,23 @@ impl SkillCapability {
         store: &session::SessionStore,
         roots: Vec<std::path::PathBuf>,
         bundled: Vec<tools::BundledSkill>,
+        plugin_switches: tools::PluginSwitches,
     ) -> Loaded {
         let mut state = SkillCatalogState::default();
         state.rehydrate(&store.derive_messages());
-        (Arc::new(Mutex::new(state)), roots, bundled)
+        (Arc::new(Mutex::new(state)), roots, bundled, plugin_switches)
     }
 
-    pub(crate) fn new((state, roots, bundled): Loaded, workspace_context: bool) -> Self {
+    pub(crate) fn new(
+        (state, roots, bundled, plugin_switches): Loaded,
+        workspace_context: bool,
+    ) -> Self {
         Self {
             state,
             roots,
             bundled,
             workspace_context,
+            plugin_switches,
         }
     }
 }
@@ -93,6 +101,7 @@ impl Capability for SkillCapability {
                         &self.roots,
                         &self.bundled,
                         &tool_keys,
+                        &self.plugin_switches,
                         self.workspace_context,
                     );
                 if let Some(message) = catalog {
@@ -115,7 +124,7 @@ impl Capability for SkillCapability {
                 .bundled
                 .iter()
                 .copied()
-                .filter(|skill| skill.available(&tool_keys))
+                .filter(|skill| skill.available(&tool_keys, &self.plugin_switches))
                 .collect();
             let mut injected: Vec<String> = Vec::new();
             for message in messages.iter() {

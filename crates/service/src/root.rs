@@ -168,10 +168,11 @@ impl RootSession {
 ///
 /// 写、改、跑命令和三件后台任务不在里面；这些活派给 ThinAgent。任务工具看
 /// `task_runtime` 有没有装配，由 `kind_tool_policy` 追加。
-pub(crate) const KIND_TOOLS: [&str; 23] = [
+pub(crate) const KIND_TOOLS: [&str; 24] = [
     "read",
     "glob",
     "grep",
+    "office_read",
     "skill",
     "todo_write",
     "ask_user_question",
@@ -314,6 +315,8 @@ pub async fn open_root_session_with(
             options.projects.clone(),
             options.task_runtime.clone(),
         )) as std::sync::Arc<dyn tools::Tool>,
+        // T094：Kind 只有 office_read；插件关着时 ToolSet 过滤掉，执行入口回 PLUGIN_CLOSED。
+        std::sync::Arc::new(office::OfficeReadTool) as std::sync::Arc<dyn tools::Tool>,
     ];
     extra_tools.extend(web_extra_tools(&options));
     if let Some(runtime) = &options.task_runtime {

@@ -13,6 +13,7 @@ ts-rs.workspace = true
 agent = { path = "../agent" }
 credentials = { path = "../credentials" }
 model = { path = "../model" }
+office = { path = "../office" }
 session = { path = "../session" }
 # T024.3：任务聚合、效果表和执行者要读的任务事实。
 tasks = { path = "../tasks" }

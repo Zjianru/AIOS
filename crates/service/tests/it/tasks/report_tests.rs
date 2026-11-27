@@ -476,7 +476,11 @@ async fn thin_agent_handback_rule_and_tool_stay_off_kind() {
     let kind_system = kind["system"].as_str().expect("Kind 系统提示");
     assert!(!kind_system.contains("task_handback"), "{kind_system}");
     assert!(!kind_system.contains("这超出了任务范围，要不要改任务？"));
-    assert_eq!(service::THIN_TOOLS.len(), 11, "ThinAgent 的工具表 11 件");
+    assert_eq!(
+        service::THIN_TOOLS.len(),
+        12,
+        "ThinAgent 的工具表 12 件（含 office_read）"
+    );
 }
 
 #[tokio::test]

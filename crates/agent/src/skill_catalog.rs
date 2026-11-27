@@ -63,12 +63,13 @@ impl SkillCatalogState {
         skill_roots: &[PathBuf],
         bundled: &[BundledSkill],
         tool_keys: &BTreeSet<ToolKey>,
+        plugin_switches: &tools::PluginSwitches,
         workspace_context: bool,
     ) -> Option<Message> {
         let available: Vec<BundledSkill> = bundled
             .iter()
             .copied()
-            .filter(|skill| skill.available(tool_keys))
+            .filter(|skill| skill.available(tool_keys, plugin_switches))
             .collect();
         let discovery = if workspace_context {
             discover_skill_catalog(cwd, data_dir, skill_roots, &available)
@@ -105,7 +106,7 @@ impl SkillCatalogState {
         let unavailable: Vec<BundledSkill> = bundled
             .iter()
             .copied()
-            .filter(|skill| !skill.available(tool_keys))
+            .filter(|skill| !skill.available(tool_keys, plugin_switches))
             .filter(|skill| !entries.iter().any(|entry| entry.name == skill.name))
             .collect();
         // 提示不进 digest：它跟着 entries 变——某个自带 skill 缺凭证时它一定不在 entries 里，
@@ -303,6 +304,7 @@ mod tests {
                 std::slice::from_ref(&roots),
                 &[],
                 &BTreeSet::new(),
+                &tools::PluginSwitches::new(),
                 true,
             )
             .expect("首次发布");
@@ -329,6 +331,7 @@ mod tests {
                 &[roots],
                 &[],
                 &BTreeSet::new(),
+                &tools::PluginSwitches::new(),
                 true,
             )
             .expect("目录更新");

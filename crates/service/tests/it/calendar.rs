@@ -312,6 +312,7 @@ async fn global_pause_merges_missed_occurrences_and_sends_once() {
     let directory = tempfile::tempdir().unwrap();
     let data = directory.path();
     let mut settings = service::settings::Settings {
+        plugins: service::settings::PluginsSettings::default(),
         last_selection: None,
         currency: "usd".to_owned(),
         disabled_models: Vec::new(),

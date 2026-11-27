@@ -718,6 +718,7 @@ async fn compaction_fixed_blocks_after(
             tools: &[],
             read_only: false,
             unavailable_hint: "",
+            plugin: None,
         }],
         compaction_fixed_block: Some(std::sync::Arc::new(|| {
             Some(agent::CompactionFixedBlock {

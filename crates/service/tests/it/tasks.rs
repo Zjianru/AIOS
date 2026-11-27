@@ -185,10 +185,11 @@ const RECOVERY_NOTE: &str = "AIOS 在这个任务进行中重启了。先看当�
 const BASH_JOB_TOOLS: [&str; 4] = ["bash", "job_output", "job_list", "job_kill"];
 
 /// 只读 9 件：开关打开也不能给只读任务加。
-const READ_ONLY_TOOLS: [&str; 11] = [
+const READ_ONLY_TOOLS: [&str; 12] = [
     "read",
     "glob",
     "grep",
+    "office_read",
     "skill",
     "todo_write",
     "web_search",
@@ -199,11 +200,13 @@ const READ_ONLY_TOOLS: [&str; 11] = [
     "task_ledger_history",
 ];
 
-/// 写任务 13 件（关着 bash）。
-const WRITE_TOOLS: [&str; 13] = [
+/// 写任务 15 件（关着 bash；含 office_read/office_create）。
+const WRITE_TOOLS: [&str; 15] = [
     "read",
     "glob",
     "grep",
+    "office_read",
+    "office_create",
     "write",
     "edit",
     "skill",
@@ -216,11 +219,13 @@ const WRITE_TOOLS: [&str; 13] = [
     "task_ledger_history",
 ];
 
-/// 写任务 17 件（开着 bash：13 件加 bash 和后台任务三件）。
-const WRITE_BASH_TOOLS: [&str; 17] = [
+/// 写任务 19 件（开着 bash：15 件加 bash 和后台任务三件）。
+const WRITE_BASH_TOOLS: [&str; 19] = [
     "read",
     "glob",
     "grep",
+    "office_read",
+    "office_create",
     "write",
     "edit",
     "bash",

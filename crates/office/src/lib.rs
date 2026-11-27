@@ -13,6 +13,9 @@ use std::path::Path;
 use calamine::Reader as _;
 use serde::{Deserialize, Serialize};
 
+mod office_tools;
+pub use office_tools::{OfficeCreateTool, OfficeReadTool};
+
 pub const DEFAULT_WINDOW: usize = 300;
 const MAX_TEXT_CHARS: usize = 200_000;
 

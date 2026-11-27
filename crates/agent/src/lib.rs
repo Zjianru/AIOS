@@ -698,6 +698,17 @@ impl Agent {
         self.inner.append(&[kind]).await
     }
 
+    /// T094：插件关掉的固定通知（SystemMessage；打开时不发）。只落日志/广播，等下一条请求带上。
+    pub async fn append_plugin_notice(&self, text: impl Into<String>) -> Result<(), AgentError> {
+        let turn = self.inner.current_or_last_turn().max(1);
+        self.append_event(session::EventKind::SystemMessage {
+            turn,
+            step: 1,
+            message: Message::system_prompt(text),
+        })
+        .await
+    }
+
     /// 重启后领取 pending inbox（有排队输入就开一轮）；返回是否领取了东西。
     /// 只由重启路径显式调用（2a 的 resume 只恢复、不唤醒）。
     pub fn claim_pending(&self) -> bool {
