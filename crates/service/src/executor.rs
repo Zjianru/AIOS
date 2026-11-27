@@ -4069,7 +4069,7 @@ impl TaskRuntime {
 
     /// Kind 的 task_update：换写入范围、追加要求版本，然后在原会话开新 Attempt。
     ///
-    /// 只在用户于 Kind 对话里同意扩大范围后用；本票只改写入范围（D83）。
+    /// 只在用户于 Kind 对话里同意扩大范围后用；这里只改写入范围（D83）。
     async fn update_scope(
         self: &Arc<Self>,
         task_id: &str,

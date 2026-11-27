@@ -1,7 +1,7 @@
 //! T012.2/T012.3：厂商之间的差别集中在这个文件。
 //!
 //! 只有一套 Anthropic Messages 实现；厂商差异按地址/模型名匹配后写在这里。
-//! 本票新增：按地址/模型给档位、thinking 预算和 output_config.effort（R1–R3）。
+//! 档位、thinking 预算和 output_config.effort 随地址/模型不同，写死在协议层会串厂商，所以集中在这里按地址/模型匹配。
 
 use crate::{Effort, budget_of, fit_effort, output_effort_at};
 

@@ -30,10 +30,12 @@ async fn status_carries_session_cwd() {
     let Response::Status(status) = response else {
         panic!("status 必须回 StatusResponse");
     };
-    let expected = fs::canonicalize(&data).expect("数据目录");
+    // 产品路径保持传入时的写法（不替用户 canonicalize/建目录）；这里只核
+    // status 带回的确实就是根会话的 cwd，工具侧自己按同一路径解析。
+    let expected = data.to_str().expect("数据目录是 UTF-8");
     assert_eq!(
         status.cwd.as_deref(),
-        Some(expected.to_str().expect("数据目录是 UTF-8")),
-        "页面要用与工具解析同一份工作目录来相对化路径"
+        Some(expected),
+        "status 要带回根会话的工作目录（不替产品改写路径）"
     );
 }

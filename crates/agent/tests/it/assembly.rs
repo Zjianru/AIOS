@@ -3,7 +3,7 @@
 //! DSH 对应物：packages/bundle/base/cordis.patch.yml:516-517 的 agent-loop 组合、
 //! packages/core/agent-loop/src/index.ts 的 create/resume 装配（:557/:668/:717/:754）与初始化
 //! 失败不唤醒（:601-647）。行为不变部分是 characterization；「配置非法要先于会话物化失败」是
-//! 本票的可观测行为改动（DSH docs/user/develop/basic/config.md 的「Fail loudly on invalid
+//! 可观测行为改动：配置错误要在会话物化前失败，和 DSH docs/user/develop/basic/config.md 的「Fail loudly on invalid
 //! configuration」是同一个失败时机口径）。
 
 use crate::common::{

@@ -56,7 +56,7 @@ impl CostGroup {
     }
 }
 
-/// 监控消耗：按用户时区口径现算全部任务；Kind 对话不在任务库里，本票先不混入。
+/// 监控消耗：按用户时区口径现算全部任务；Kind 对话不在任务库里，暂不混入。
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn snapshot(
     store: &Store,
