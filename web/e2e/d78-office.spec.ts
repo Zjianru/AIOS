@@ -57,8 +57,10 @@ async function waitFinished(page: Page) {
   });
 }
 
-async function answerText(page: Page): Promise<string> {
-  return (await page.locator('[data-kind="assistant-answer"], [data-kind="answer"]').last().innerText()).trim();
+async function answerText(page: Page, timeout = 2_000): Promise<string> {
+  const answers = page.locator('[data-kind="assistant-answer"], [data-kind="answer"]');
+  if ((await answers.count()) === 0) return '';
+  return (await answers.last().innerText({ timeout })).trim();
 }
 
 async function waitNewAnswer(page: Page, before: string) {
