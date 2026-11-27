@@ -124,7 +124,7 @@ fn read(arguments: &str, context: &ToolContext) -> Result<String, ToolFailure> {
     if bytes[..bytes.len().min(8192)].contains(&0) {
         return Err(ToolFailure::coded(
             "FS_NOT_TEXT",
-            format!("cannot read \"{display}\": binary file"),
+            format!("cannot read \"{display}\": 不是文字文件，不能当文字读"),
         ));
     }
     let content = String::from_utf8(bytes).map_err(|_| {

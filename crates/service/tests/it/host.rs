@@ -91,6 +91,7 @@ async fn resume(server: &MockServer, data_dir: &std::path::Path, id: &SessionId)
             context_window: model::DEFAULT_CONTEXT_WINDOW,
             effort: Effort::new("high"),
             tool_update: None,
+            supports_images: false,
         },
         crate::common::test_credential(data_dir),
     )
@@ -127,6 +128,7 @@ async fn setup(server: &MockServer) -> (Agent, tempfile::TempDir, SessionId) {
             context_window: model::DEFAULT_CONTEXT_WINDOW,
             effort: Effort::new("high"),
             tool_update: None,
+            supports_images: false,
         },
         crate::common::test_credential(data_dir.path()),
     )
@@ -169,6 +171,8 @@ fn send_request(request_id: &str, text: &str) -> SendRequest {
         delivery: DeliveryMode::FollowUp,
         pastes: Vec::new(),
         attachments: Vec::new(),
+        object_refs: Vec::new(),
+        quotes: Vec::new(),
         canvas: None,
         result_card: None,
         result_cards: Vec::new(),

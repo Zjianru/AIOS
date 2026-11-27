@@ -23,6 +23,7 @@ fn open_runtime(data_dir: &std::path::Path) -> Arc<TaskRuntime> {
             context_window: DEFAULT_CONTEXT_WINDOW,
             effort: Effort::new("high"),
             tool_update: None,
+            supports_images: false,
         },
         config: agent::AgentConfig::default(),
         credentials: None,

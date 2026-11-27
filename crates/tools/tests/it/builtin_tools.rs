@@ -137,7 +137,10 @@ async fn read_tool_limits_and_errors() {
     assert_eq!(result.error_code.as_deref(), Some("FS_NOT_TEXT"));
     assert_eq!(
         result.content,
-        format!("Error: cannot read \"{}\": binary file", canonical(&binary))
+        format!(
+            "Error: cannot read \"{}\": 不是文字文件，不能当文字读",
+            canonical(&binary)
+        )
     );
 
     // 错误码：非法 UTF-8 → FS_NOT_TEXT（不是 FS_IO_ERROR）

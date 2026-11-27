@@ -32,6 +32,8 @@ pub struct DeepSeekConfig {
     /// 这条路由声明支持的对话中途工具更新模式（模型信息里的 `tool_update`）；
     /// None = 没声明，按 T014.2 的全量表发。运行时换模型时按目录再查一次。
     pub tool_update: Option<ToolUpdate>,
+    /// 当前模型能不能看图（用户覆盖 > 目录；装配时解析后传入）。
+    pub supports_images: bool,
 }
 
 impl Default for DeepSeekConfig {
@@ -44,6 +46,7 @@ impl Default for DeepSeekConfig {
             context_window: DEFAULT_CONTEXT_WINDOW,
             effort: Effort::new("high"),
             tool_update: None,
+            supports_images: false,
         }
     }
 }

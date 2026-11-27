@@ -173,6 +173,18 @@ impl CanvasSource {
     }
 }
 
+/// 引用块的来源（身份+版本；和 @ 对象片同形；阅读页文件 kind=file）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuoteSource {
+    pub kind: String,
+    pub id: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u32>,
+    #[serde(default, rename = "taskId", skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+}
+
 /// 消息内容块。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
@@ -185,6 +197,38 @@ pub enum ContentBlock {
         /// T015.4：画布放进来的那一句带画布身份；普通文字块没有（只增可选字段，旧日志原样读）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         canvas: Option<CanvasSource>,
+    },
+    /// 用户消息里的图片块（附件仓库里的原图；投给模型时按当前模型输入模态转 image 或占位行）。
+    Image {
+        #[serde(rename = "attachmentId")]
+        attachment_id: String,
+        name: String,
+        bytes: u64,
+        /// 原类型（旧日志没有；按扩展名兜底）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mime: Option<String>,
+        /// 只读副本的绝对路径（序列化图片请求时读它拿原始字节）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+    },
+    /// 用户引用了一个 AIOS 对象（任务/报告/项目）；投给模型时换成一行身份+版本。
+    ObjectRef {
+        /// task / report / project。
+        kind: String,
+        id: String,
+        title: String,
+        /// 任务/报告的要求版本；项目没有。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<u32>,
+        /// 报告所属任务；任务/项目没有。
+        #[serde(default, rename = "taskId", skip_serializing_if = "Option::is_none")]
+        task_id: Option<String>,
+    },
+    /// 用户选中一段文字引用进对话；source 是来源对象（任务/报告/阅读页文件）。
+    Quote {
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<QuoteSource>,
     },
     /// T013.4：用户消息里的一个文件块（投给模型时换成 fileHandleText）。
     File {
@@ -267,6 +311,59 @@ impl ContentBlock {
         )
     }
 
+    /// 对象引用块投给模型的一行身份/版本（规则只在 Kind 固定说明一处）。
+    pub fn object_ref_text(
+        kind: &str,
+        id: &str,
+        title: &str,
+        version: Option<u32>,
+        task_id: Option<&str>,
+    ) -> String {
+        match kind {
+            "task" => format!(
+                "[引用任务：{title}（{id}，第 {} 版要求）]",
+                version.unwrap_or(1)
+            ),
+            "report" => format!(
+                "[引用报告：{title}（报告 {id}，任务 {}，第 {} 版要求的结果）]",
+                task_id.unwrap_or(""),
+                version.unwrap_or(1)
+            ),
+            "project" => format!("[引用项目：{title}（{id}）]"),
+            "file" => format!(
+                "[引用阅读页文件：{title}（{id}，版本 {}）]",
+                version.unwrap_or(1)
+            ),
+            _ => format!("[引用了 {kind}：{title}（{id}）]"),
+        }
+    }
+
+    /// 引用块投给模型的内容：来源行 + 原文；没有来源就只给原文。
+    pub fn quote_text(text: &str, source: Option<&QuoteSource>) -> String {
+        let quoted = text
+            .lines()
+            .map(|line| format!("> {line}"))
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            );
+        match source {
+            Some(source) => format!(
+                "{}
+{quoted}",
+                ContentBlock::object_ref_text(
+                    &source.kind,
+                    &source.id,
+                    &source.title,
+                    source.version,
+                    source.task_id.as_deref(),
+                )
+            ),
+            None => quoted,
+        }
+    }
+
     /// 文本块的内容；非文本块返回 None。
     pub fn as_text(&self) -> Option<&str> {
         match self {
@@ -274,6 +371,9 @@ impl ContentBlock {
             Self::Reasoning { .. }
             | Self::ToolCall { .. }
             | Self::File { .. }
+            | Self::Image { .. }
+            | Self::Quote { .. }
+            | Self::ObjectRef { .. }
             | Self::ResultCard { .. } => None,
         }
     }
@@ -289,6 +389,9 @@ impl ContentBlock {
             Self::Text { .. }
             | Self::Reasoning { .. }
             | Self::File { .. }
+            | Self::Image { .. }
+            | Self::Quote { .. }
+            | Self::ObjectRef { .. }
             | Self::ResultCard { .. } => None,
         }
     }

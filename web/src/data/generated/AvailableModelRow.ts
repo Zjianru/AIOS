@@ -18,4 +18,8 @@ priceCacheRead?: number | null, priceCacheWrite?: number | null, thinks: boolean
  * 这个模型声明支持的对话中途工具更新模式；只认 `addition-only`（其他值读成 None）。
  * 只增可选字段：旧设置文件/旧 live 列表原样读。
  */
-toolUpdate?: ToolUpdate | null, };
+toolUpdate?: ToolUpdate | null,
+/**
+ * input modalities (models.dev modalities.input; empty = not declared).
+ */
+input?: Array<string>, };

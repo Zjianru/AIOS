@@ -117,6 +117,63 @@ enum WireBlock {
     /// 历史里的一次工具加载：把带 `defer_loading` 的声明激活（DSH 的 tool_addition 块）。
     #[serde(rename = "tool_addition")]
     ToolAddition { tool: WireToolReference },
+    /// user image (base64); omitted when the model cannot see images.
+    #[serde(rename = "image")]
+    Image { source: WireImageSource },
+}
+
+#[derive(Serialize)]
+pub(super) struct WireImageSource {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    media_type: String,
+    data: String,
+}
+
+fn image_omitted_text() -> &'static str {
+    "(image omitted: model does not support images)"
+}
+
+fn base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        out.push(TABLE[(n >> 18) as usize & 63] as char);
+        out.push(TABLE[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 {
+            TABLE[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+fn image_source(mime: Option<&str>, path: Option<&str>) -> Option<WireImageSource> {
+    let mime = mime?;
+    if !matches!(
+        mime,
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+    ) {
+        return None;
+    }
+    let bytes = std::fs::read(path?).ok()?;
+    Some(WireImageSource {
+        kind: "base64",
+        media_type: mime.to_owned(),
+        data: base64(&bytes),
+    })
 }
 
 /// 序列化一次请求。
@@ -155,6 +212,9 @@ pub(super) fn request_body(
                         ContentBlock::Reasoning { .. }
                         | ContentBlock::ToolCall { .. }
                         | ContentBlock::File { .. }
+                        | ContentBlock::Image { .. }
+                        | ContentBlock::ObjectRef { .. }
+                        | ContentBlock::Quote { .. }
                         | ContentBlock::ResultCard { .. } => {
                             return Err(unsupported("system 消息只能包含文本块"));
                         }
@@ -185,15 +245,63 @@ pub(super) fn request_body(
                         unreachable!("上面已单独处理")
                     }
                 };
+                let mut omitted_image = false;
                 let content: Vec<WireBlock> = message
                     .content
                     .iter()
                     .map(|block| -> Result<Option<WireBlock>, ModelError> {
+                        let mut reset_image = true;
+                        let block = match block {
+                            ContentBlock::Image { mime, path, .. }
+                                if message.role == Role::User =>
+                            {
+                                reset_image = false;
+                                if config.supports_images {
+                                    if let Some(source) =
+                                        image_source(mime.as_deref(), path.as_deref())
+                                    {
+                                        omitted_image = false;
+                                        return Ok(Some(WireBlock::Image { source }));
+                                    }
+                                }
+                                if omitted_image {
+                                    return Ok(None);
+                                }
+                                omitted_image = true;
+                                return Ok(Some(WireBlock::Text {
+                                    text: image_omitted_text().to_owned(),
+                                }));
+                            }
+                            other => other,
+                        };
+                        if reset_image {
+                            omitted_image = false;
+                        }
                         Ok(match block {
                             ContentBlock::Text { text, .. } if !text.is_empty() => {
                                 Some(WireBlock::Text { text: text.clone() })
                             }
                             ContentBlock::Text { .. } => None,
+                            // 选中引用投给模型：来源行 + 每行加引用前缀的原文。
+                            ContentBlock::Quote { text, source } => Some(WireBlock::Text {
+                                text: ContentBlock::quote_text(text, source.as_ref()),
+                            }),
+                            // 对象引用片投给模型时换成一行身份+版本（规则在 Kind 固定说明）。
+                            ContentBlock::ObjectRef {
+                                kind,
+                                id,
+                                title,
+                                version,
+                                task_id,
+                            } => Some(WireBlock::Text {
+                                text: ContentBlock::object_ref_text(
+                                    kind,
+                                    id,
+                                    title,
+                                    *version,
+                                    task_id.as_deref(),
+                                ),
+                            }),
                             // 文件块投给模型时换成 fileHandleText（DSH 原句照抄）。
                             ContentBlock::File {
                                 attachment_id,
@@ -210,6 +318,7 @@ pub(super) fn request_body(
                                 ),
                             }),
                             ContentBlock::File { .. } => None,
+                            ContentBlock::Image { .. } => None,
                             // T054.2：结果卡块换成一行文字（排在用户文字前面）。
                             ContentBlock::ResultCard {
                                 task_id,
@@ -268,6 +377,9 @@ pub(super) fn request_body(
                         ContentBlock::Reasoning { .. }
                         | ContentBlock::ToolCall { .. }
                         | ContentBlock::File { .. }
+                        | ContentBlock::Image { .. }
+                        | ContentBlock::ObjectRef { .. }
+                        | ContentBlock::Quote { .. }
                         | ContentBlock::ResultCard { .. } => {
                             return Err(unsupported("tool 消息只能包含文本内容块"));
                         }
@@ -558,6 +670,7 @@ mod serialize_defense_tests {
             context_window: 1_000_000,
             effort: crate::Effort::new("low"),
             tool_update: None,
+            supports_images: false,
         };
         let messages = vec![Message::assistant(
             vec![ContentBlock::ToolCall {
@@ -616,6 +729,7 @@ mod effort_wire_tests {
             context_window: 1_000_000,
             effort: Effort::new(effort),
             tool_update: None,
+            supports_images: false,
         };
         let prepared = request_body(
             &config,
@@ -819,6 +933,7 @@ mod file_block_serialize_tests {
             context_window: 128_000,
             effort: crate::Effort::new("high"),
             tool_update: None,
+            supports_images: false,
         };
         let message = Message::user_with_request_id(
             vec![
@@ -880,6 +995,7 @@ mod cache_safe_system_tests {
             context_window: 1_000_000,
             effort: crate::Effort::new("low"),
             tool_update: Some(ToolUpdate::AdditionOnly),
+            supports_images: false,
         }
     }
 
@@ -1041,6 +1157,7 @@ mod mid_system_receipt_tests {
             context_window: 1_000_000,
             effort: Effort::new("high"),
             tool_update: None,
+            supports_images: false,
         }
     }
 
@@ -1157,5 +1274,132 @@ mod mid_system_receipt_tests {
             .map(|block| block["text"].as_str().unwrap_or_default())
             .collect();
         assert_eq!(texts, vec!["第一张回执", "第二张回执"], "文本相对顺序不变");
+    }
+}
+
+#[cfg(test)]
+mod image_block_serialize_tests {
+    use super::*;
+
+    fn config(supports_images: bool) -> DeepSeekConfig {
+        DeepSeekConfig {
+            provider: "deepseek".to_owned(),
+            base_url: "http://127.0.0.1:1".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            max_tokens: 2048,
+            context_window: 128_000,
+            effort: crate::Effort::new("high"),
+            tool_update: None,
+            supports_images,
+        }
+    }
+
+    fn image(path: &str) -> ContentBlock {
+        ContentBlock::Image {
+            attachment_id: "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567"
+                .to_owned(),
+            name: "shot.png".to_owned(),
+            bytes: 4,
+            mime: Some("image/png".to_owned()),
+            path: Some(path.to_owned()),
+        }
+    }
+
+    fn body(config: &DeepSeekConfig, blocks: Vec<ContentBlock>) -> Value {
+        let prepared = request_body(
+            config,
+            &[Message::user_with_request_id(blocks, "req-1".to_owned())],
+            &crate::ToolRequest::default(),
+            None,
+            None,
+            false,
+        )
+        .expect("序列化");
+        serde_json::from_slice(&prepared.body).expect("JSON")
+    }
+
+    #[test]
+    fn image_capable_model_sends_base64_image() {
+        let path = std::env::temp_dir().join("aios-image.png");
+        std::fs::write(&path, [0x89, b'P', b'N', b'G']).unwrap();
+        let value = body(&config(true), vec![image(path.to_str().unwrap())]);
+        let content = &value["messages"][0]["content"];
+        assert_eq!(content[0]["type"], "image");
+        assert_eq!(content[0]["source"]["type"], "base64");
+        assert_eq!(content[0]["source"]["media_type"], "image/png");
+        assert_eq!(content[0]["source"]["data"], "iVBORw==");
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn file_quote_model_line_keeps_version() {
+        let value = body(
+            &config(false),
+            vec![ContentBlock::Quote {
+                text: "第一行\n第二行".to_owned(),
+                source: Some(crate::ir::QuoteSource {
+                    kind: "file".to_owned(),
+                    id: "评测记录.md".to_owned(),
+                    title: "评测记录.md".to_owned(),
+                    version: Some(3),
+                    task_id: None,
+                }),
+            }],
+        );
+        let content = &value["messages"][0]["content"][0];
+        let text = content["text"].as_str().unwrap_or_default();
+        assert!(text.contains("引用阅读页文件"), "来源行：{text}");
+        assert!(text.contains("评测记录.md"), "身份：{text}");
+        assert!(text.contains("版本 3"), "版本：{text}");
+        assert!(text.contains("> 第一行"), "原文第一行：{text}");
+        assert!(text.contains("> 第二行"), "原文第二行：{text}");
+    }
+
+    #[test]
+    fn svg_is_not_sent_as_an_image_block() {
+        let path = std::env::temp_dir().join("aios-image-svg.svg");
+        std::fs::write(&path, b"<svg/>").unwrap();
+        let value = body(
+            &config(true),
+            vec![ContentBlock::Image {
+                attachment_id:
+                    "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567"
+                        .to_owned(),
+                name: "pic.svg".to_owned(),
+                bytes: 6,
+                mime: Some("image/svg+xml".to_owned()),
+                path: Some(path.to_str().unwrap().to_owned()),
+            }],
+        );
+        let content = &value["messages"][0]["content"];
+        assert_eq!(content[0]["type"], "text", "svg 不进图片块：{content:?}");
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn image_blind_model_gets_one_placeholder_for_consecutive_images() {
+        let path = std::env::temp_dir().join("aios-image-blind.png");
+        std::fs::write(&path, [0x89, b'P', b'N', b'G']).unwrap();
+        let value = body(
+            &config(false),
+            vec![
+                image(path.to_str().unwrap()),
+                image(path.to_str().unwrap()),
+                ContentBlock::text("看看"),
+            ],
+        );
+        let content = value["messages"][0]["content"].as_array().unwrap();
+        let placeholders: Vec<&Value> = content
+            .iter()
+            .filter(|block| {
+                block["type"] == "text"
+                    && block["text"].as_str().is_some_and(|text| {
+                        text.starts_with("(image omitted: model does not support images)")
+                    })
+            })
+            .collect();
+        assert_eq!(placeholders.len(), 1, "连续多张只留一条占位：{content:?}");
+        assert!(content.iter().all(|block| block["type"] != "image"));
+        std::fs::remove_file(path).ok();
     }
 }

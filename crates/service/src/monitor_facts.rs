@@ -2094,6 +2094,7 @@ mod t075_usage_tests {
                     price_output: Some(2.0),
                     price_cache_read: Some(0.0),
                     price_cache_write: Some(0.0),
+                    input: None,
                 }]),
                 auth_header: None,
             })
@@ -2158,6 +2159,7 @@ mod t075_price_tests {
                 price_output: None,
                 price_cache_read: None,
                 price_cache_write: None,
+                input: None,
             }]),
             auth_header: None,
         }

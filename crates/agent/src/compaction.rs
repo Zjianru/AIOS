@@ -138,6 +138,19 @@ pub(crate) fn estimate_message(message: &Message) -> u64 {
                     .as_deref()
                     .map_or(0, |path| tools::estimate_text_tokens(path) as u64);
             }
+            ContentBlock::ObjectRef { kind, title, .. } => {
+                total += tools::estimate_text_tokens(kind) as u64;
+                total += tools::estimate_text_tokens(title) as u64;
+            }
+            ContentBlock::Quote { text, .. } => {
+                total += tools::estimate_text_tokens(text) as u64;
+            }
+            ContentBlock::Image { name, path, .. } => {
+                total += tools::estimate_text_tokens(name) as u64;
+                total += path
+                    .as_deref()
+                    .map_or(0, |path| tools::estimate_text_tokens(path) as u64);
+            }
         }
     }
     total
@@ -1080,6 +1093,7 @@ mod tests {
                 context_window: 1000,
                 effort: model::Effort::new("high"),
                 tool_update: None,
+                supports_images: false,
             },
             test_credential(),
         )

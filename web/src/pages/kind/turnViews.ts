@@ -375,6 +375,9 @@ export function deriveTurnViews(
     const text: string[] = [];
     const pastes: string[] = [];
     const files: SendAttachmentRef[] = [];
+    const images: SendAttachmentRef[] = [];
+    const objectRefs: TurnUserView['objectRefs'] = [];
+    const quotes: TurnUserView['quotes'] = [];
     let canvas: { id: string; title: string } | null = null;
     let resultCard: { taskId: string; title: string; version: number } | null = null;
     for (const block of content) {
@@ -384,12 +387,15 @@ export function deriveTurnViews(
         text?: unknown;
         paste?: unknown;
         canvas?: unknown;
+        id?: unknown;
         attachmentId?: unknown;
         name?: unknown;
         bytes?: unknown;
         taskId?: unknown;
         version?: unknown;
         title?: unknown;
+        kind?: unknown;
+        source?: unknown;
       };
       // T054.2：结果卡块（用户点「要求修改」带进输入框的那张卡）。
       if (
@@ -417,6 +423,49 @@ export function deriveTurnViews(
         else text.push(value);
         continue;
       }
+      if (typed.type === 'quote' && typeof typed.text === 'string') {
+        const source = typed.source as
+          | {
+              kind?: unknown;
+              id?: unknown;
+              title?: unknown;
+              version?: unknown;
+              taskId?: unknown;
+            }
+          | undefined;
+        quotes.push({
+          text: typed.text,
+          source:
+            source && typeof source.id === 'string'
+              ? {
+                  kind: typeof source.kind === 'string' ? source.kind : 'task',
+                  id: source.id,
+                  title: typeof source.title === 'string' ? source.title : '',
+                  version: typeof source.version === 'number' ? source.version : undefined,
+                  taskId: typeof source.taskId === 'string' ? source.taskId : undefined,
+                }
+              : null,
+        });
+        continue;
+      }
+      if (typed.type === 'object-ref' && typeof typed.id === 'string') {
+        objectRefs.push({
+          kind: typeof typed.kind === 'string' ? typed.kind : 'task',
+          id: typed.id,
+          title: typeof typed.title === 'string' ? typed.title : '',
+          version: typeof typed.version === 'number' ? typed.version : undefined,
+          taskId: typeof typed.taskId === 'string' ? typed.taskId : undefined,
+        });
+        continue;
+      }
+      if (typed.type === 'image' && typeof typed.attachmentId === 'string') {
+        images.push({
+          id: typed.attachmentId,
+          name: typeof typed.name === 'string' ? typed.name : '',
+          bytes: typeof typed.bytes === 'number' ? typed.bytes : 0,
+        });
+        continue;
+      }
       if (typed.type === 'file' && typeof typed.attachmentId === 'string') {
         files.push({
           id: typed.attachmentId,
@@ -426,8 +475,18 @@ export function deriveTurnViews(
       }
     }
     const body = text.join('');
-    if (!body && pastes.length === 0 && files.length === 0 && !canvas && !resultCard) return null;
-    return { text: body, elements: [], pastes, files, canvas, resultCard, rpcId };
+    if (
+      !body &&
+      pastes.length === 0 &&
+      files.length === 0 &&
+      images.length === 0 &&
+      objectRefs.length === 0 &&
+      quotes.length === 0 &&
+      !canvas &&
+      !resultCard
+    )
+      return null;
+    return { text: body, elements: [], pastes, files, images, objectRefs, quotes, canvas, resultCard, rpcId };
   };
 
   const textOfToolResult = (message: unknown): string => {

@@ -46,6 +46,8 @@ export interface ModelRow {
   priceOutput?: number;
   priceCacheRead?: number;
   priceCacheWrite?: number;
+  /** 输入模态覆盖（空=跟目录；['text'] 文字；['text','image'] 文字+图片）。 */
+  input?: string[];
 }
 
 export type Protocol = 'anthropic-messages' | 'openai-chat' | 'openai-responses';
@@ -169,6 +171,7 @@ type WireRow = {
   priceOutput?: number | null;
   priceCacheRead?: number | null;
   priceCacheWrite?: number | null;
+  input?: string[] | null;
 };
 
 /** 线上可空字段（null）收成页面类型的可选字段（undefined）。 */
@@ -182,6 +185,7 @@ function mapRow(row: WireRow): ModelRow {
     priceOutput: row.priceOutput ?? undefined,
     priceCacheRead: row.priceCacheRead ?? undefined,
     priceCacheWrite: row.priceCacheWrite ?? undefined,
+    input: row.input ?? undefined,
   };
 }
 
@@ -305,6 +309,7 @@ export async function updateConnection(
       priceOutput?: number;
       priceCacheRead?: number;
       priceCacheWrite?: number;
+      input?: string[];
     }[];
     key: string;
   },
@@ -322,6 +327,7 @@ export async function updateConnection(
       priceOutput: row.priceOutput,
       priceCacheRead: row.priceCacheRead,
       priceCacheWrite: row.priceCacheWrite,
+      input: row.input,
     }));
   if (patch.key.trim()) {
     await saveConnection({
@@ -372,6 +378,7 @@ export async function discoverModels(connectionId: string): Promise<
     priceOutput: row.priceOutput ?? undefined,
     priceCacheRead: row.priceCacheRead ?? undefined,
     priceCacheWrite: row.priceCacheWrite ?? undefined,
+    input: row.input,
   }));
 }
 

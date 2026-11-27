@@ -224,6 +224,8 @@ impl ActionKind for TaskSayAction {
                 text: task_text(details)?,
                 pastes: Vec::new(),
                 attachments: Vec::new(),
+                object_refs: Vec::new(),
+                quotes: Vec::new(),
             };
             let response = runtime
                 .say_task(request)

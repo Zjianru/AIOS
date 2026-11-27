@@ -361,6 +361,8 @@ async fn task_chat_while_waiting_deletes_the_usage_effect_before_a_new_attempt()
             text: "提前接着做".to_owned(),
             pastes: Vec::new(),
             attachments: Vec::new(),
+            object_refs: Vec::new(),
+            quotes: Vec::new(),
         }))
         .await
         .expect("任务对话说话");

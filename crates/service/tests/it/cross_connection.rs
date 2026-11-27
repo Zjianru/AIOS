@@ -132,6 +132,7 @@ fn seed_connections(data_dir: &Path, identity: &Path, endpoint: &str) {
                 price_output: None,
                 price_cache_read: None,
                 price_cache_write: None,
+                input: None,
             }]),
             auth_header: None,
         })
@@ -176,6 +177,7 @@ fn factory(data_dir: PathBuf, identity: PathBuf) -> ModelFactory {
                 context_window: DEFAULT_CONTEXT_WINDOW,
                 effort: Effort::new(effort),
                 tool_update: None,
+                supports_images: false,
             },
             Some(Arc::new(TestCredential) as Arc<dyn model::CredentialSource>),
         ))
@@ -202,6 +204,8 @@ async fn send(host: &RootHost, text: &str, serial: u32) {
         delivery: service::DeliveryMode::FollowUp,
         pastes: Vec::new(),
         attachments: Vec::new(),
+        object_refs: Vec::new(),
+        quotes: Vec::new(),
         canvas: None,
         result_card: None,
         result_cards: Vec::new(),

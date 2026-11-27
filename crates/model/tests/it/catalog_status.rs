@@ -101,3 +101,29 @@ fn merge_live_drops_catalog_deprecated_and_keeps_unknown_ids() {
         .expect("vendor-future");
     assert_eq!(future.price_input, None, "目录没有的模型没有标价");
 }
+
+/// 目录快照保留 models.dev 的输入模态；MiniMax-M3.1-Flash 声明能看图。
+#[test]
+fn snapshot_keeps_models_dev_input_modalities() {
+    let snapshot = deserialize_snapshot(snapshot_json());
+    let flash = snapshot
+        .models_for("minimax")
+        .into_iter()
+        .find(|model| model.id == "MiniMax-M3.1-Flash")
+        .expect("目录里有 MiniMax-M3.1-Flash");
+    assert!(
+        flash.input.iter().any(|item| item == "image"),
+        "输入模态要保留 image：{:?}",
+        flash.input
+    );
+    let text_only = snapshot
+        .models_for("deepseek")
+        .into_iter()
+        .find(|model| model.id == "deepseek-v4-pro")
+        .expect("目录里有 deepseek-v4-pro");
+    assert!(
+        !text_only.input.iter().any(|item| item == "image"),
+        "没声明图片的模型不能凭空有 image：{:?}",
+        text_only.input
+    );
+}

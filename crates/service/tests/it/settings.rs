@@ -339,6 +339,7 @@ async fn 获取可用模型合并目录与厂商列表且用户字段不动() {
                     price_output: None,
                     price_cache_read: None,
                     price_cache_write: None,
+                    input: None,
                 },
                 credentials::ModelRow {
                     id: "my-only-model".to_owned(),
@@ -349,6 +350,7 @@ async fn 获取可用模型合并目录与厂商列表且用户字段不动() {
                     price_output: None,
                     price_cache_read: None,
                     price_cache_write: None,
+                    input: None,
                 },
             ]),
             ..Default::default()
@@ -1487,6 +1489,8 @@ async fn 空闲时跨连接切换重建根agent并走新连接() {
         delivery: service::DeliveryMode::FollowUp,
         pastes: Vec::new(),
         attachments: Vec::new(),
+        object_refs: Vec::new(),
+        quotes: Vec::new(),
         canvas: None,
         result_card: None,
         result_cards: Vec::new(),
@@ -1545,6 +1549,8 @@ async fn 空闲时跨连接切换重建根agent并走新连接() {
         delivery: service::DeliveryMode::FollowUp,
         pastes: Vec::new(),
         attachments: Vec::new(),
+        object_refs: Vec::new(),
+        quotes: Vec::new(),
         canvas: None,
         result_card: None,
         result_cards: Vec::new(),
@@ -1640,6 +1646,8 @@ async fn 同连接换模型窗口跟新模型() {
         delivery: service::DeliveryMode::FollowUp,
         pastes: Vec::new(),
         attachments: Vec::new(),
+        object_refs: Vec::new(),
+        quotes: Vec::new(),
         canvas: None,
         result_card: None,
         result_cards: Vec::new(),
@@ -1674,6 +1682,8 @@ async fn 同连接换模型窗口跟新模型() {
         delivery: service::DeliveryMode::FollowUp,
         pastes: Vec::new(),
         attachments: Vec::new(),
+        object_refs: Vec::new(),
+        quotes: Vec::new(),
         canvas: None,
         result_card: None,
         result_cards: Vec::new(),
@@ -1820,6 +1830,8 @@ async fn 重开后续轮按新窗口先压缩() {
         delivery: service::DeliveryMode::FollowUp,
         pastes: Vec::new(),
         attachments: Vec::new(),
+        object_refs: Vec::new(),
+        quotes: Vec::new(),
         canvas: None,
         result_card: None,
         result_cards: Vec::new(),
@@ -1851,6 +1863,8 @@ async fn 重开后续轮按新窗口先压缩() {
             delivery: service::DeliveryMode::FollowUp,
             pastes: Vec::new(),
             attachments: Vec::new(),
+            object_refs: Vec::new(),
+            quotes: Vec::new(),
             canvas: None,
             result_card: None,
             result_cards: Vec::new(),
@@ -1894,6 +1908,7 @@ fn model_row(id: &str, context_window: u64) -> credentials::ModelRow {
         price_output: None,
         price_cache_read: None,
         price_cache_write: None,
+        input: None,
     }
 }
 
@@ -2426,6 +2441,7 @@ async fn assistant_message_provider(connection_id: &str, preset: &str, model_id:
                     context_window: 111_000,
                     effort: Effort::new(effort),
                     tool_update: None,
+                    supports_images: false,
                 },
                 Some(crate::common::test_credential(&data)),
             ))
@@ -2439,6 +2455,8 @@ async fn assistant_message_provider(connection_id: &str, preset: &str, model_id:
         delivery: service::DeliveryMode::FollowUp,
         pastes: Vec::new(),
         attachments: Vec::new(),
+        object_refs: Vec::new(),
+        quotes: Vec::new(),
         canvas: None,
         result_card: None,
         result_cards: Vec::new(),
@@ -2988,6 +3006,7 @@ async fn 显式模型行里的下线模型不过滤() {
             price_output: None,
             price_cache_read: None,
             price_cache_write: None,
+            input: None,
         }]),
         ..Default::default()
     }))

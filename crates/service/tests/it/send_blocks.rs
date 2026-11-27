@@ -4,7 +4,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use service::{
-    AttachmentPutRequest, Call, RootHost, SendAttachment, SendCanvas, SendRequest, SendResultCard,
+    AttachmentPutRequest, Call, RootHost, SendAttachment, SendCanvas, SendObjectRef, SendQuote,
+    SendRequest, SendResultCard,
 };
 use tempfile::tempdir;
 
@@ -14,6 +15,32 @@ async fn host(dir: &Path, cwd: &Path) -> RootHost {
     crate::common::open(options).await
 }
 
+fn base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        out.push(TABLE[(n >> 18) as usize & 63] as char);
+        out.push(TABLE[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 {
+            TABLE[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
 fn request(content: &str) -> SendRequest {
     SendRequest {
         request_id: "req-t013-4".to_owned(),
@@ -21,6 +48,8 @@ fn request(content: &str) -> SendRequest {
         delivery: service::DeliveryMode::FollowUp,
         pastes: Vec::new(),
         attachments: Vec::new(),
+        object_refs: Vec::new(),
+        quotes: Vec::new(),
         canvas: None,
         result_card: None,
         result_cards: Vec::new(),
@@ -359,14 +388,195 @@ async fn send_appends_multi_markers_in_order_and_keeps_attachment_mime() {
     }
     assert_eq!(blocks[4].as_text(), Some("带标记"));
     match &blocks[5] {
-        model::ContentBlock::File { mime, name, .. } => {
+        model::ContentBlock::Image {
+            mime, name, path, ..
+        } => {
             assert_eq!(name, "pic.png");
-            assert_eq!(
-                mime.as_deref(),
-                Some("image/png"),
-                "附件原 MIME 要写进文件块"
+            assert_eq!(mime.as_deref(), Some("image/png"), "图片 MIME 要写进图片块");
+            assert!(
+                path.as_deref()
+                    .is_some_and(|path| path.contains("attachments/v1/files")),
+                "图片块带只读副本路径：{path:?}"
             );
         }
-        other => panic!("最后一块应是文件：{other:?}"),
+        other => panic!("最后一块应是图片：{other:?}"),
+    }
+}
+#[tokio::test]
+async fn send_svg_attachment_stays_a_file_block_in_the_log() {
+    let data = tempdir().unwrap();
+    let cwd = tempdir().unwrap();
+    let host = host(data.path(), cwd.path()).await;
+    let bytes = b"<svg xmlns='http://www.w3.org/2000/svg'/>";
+    let put = host
+        .dispatch(Call::AttachmentPut(AttachmentPutRequest {
+            name: "pic.svg".to_owned(),
+            data: base64(bytes),
+        }))
+        .await
+        .expect("put");
+    let id = serde_json::to_value(&put).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut send = request("看这个图");
+    send.attachments = vec![SendAttachment {
+        id: id.clone(),
+        name: "pic.svg".to_owned(),
+        bytes: bytes.len() as u64,
+        mime: None,
+    }];
+    host.dispatch(Call::Send(send)).await.expect("send");
+    let blocks = wait_user_blocks(&host, data.path()).await;
+    match &blocks[1] {
+        model::ContentBlock::File {
+            attachment_id,
+            name,
+            mime,
+            ..
+        } => {
+            assert_eq!(attachment_id, &id);
+            assert_eq!(name, "pic.svg");
+            assert_eq!(mime.as_deref(), Some("image/svg+xml"), "svg 仍是文字附件");
+        }
+        other => panic!("svg 不能写成 Image 块：{other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn send_image_attachment_becomes_an_image_block_in_the_log() {
+    let data = tempdir().unwrap();
+    let cwd = tempdir().unwrap();
+    let host = host(data.path(), cwd.path()).await;
+    let bytes = b"\x89PNG\r\n\x1a\n";
+    let put = host
+        .dispatch(Call::AttachmentPut(AttachmentPutRequest {
+            name: "shot.png".to_owned(),
+            data: base64(bytes),
+        }))
+        .await
+        .expect("put");
+    let id = serde_json::to_value(&put).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut send = request("看图");
+    send.attachments = vec![SendAttachment {
+        id: id.clone(),
+        name: "shot.png".to_owned(),
+        bytes: bytes.len() as u64,
+        mime: None,
+    }];
+    host.dispatch(Call::Send(send)).await.expect("send");
+    let blocks = wait_user_blocks(&host, data.path()).await;
+    match &blocks[1] {
+        model::ContentBlock::Image {
+            attachment_id,
+            mime,
+            bytes,
+            ..
+        } => {
+            assert_eq!(attachment_id, &id);
+            assert_eq!(mime.as_deref(), Some("image/png"), "按扩展名兜底 mime");
+            assert_eq!(*bytes, 8);
+        }
+        other => panic!("图片附件要写成 Image 块：{other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn send_object_refs_become_object_ref_blocks_in_the_log() {
+    let data = tempdir().unwrap();
+    let cwd = tempdir().unwrap();
+    let host = host(data.path(), cwd.path()).await;
+    let mut send = request("看看这些");
+    send.object_refs = vec![
+        SendObjectRef {
+            kind: "task".to_owned(),
+            id: "task-1".to_owned(),
+            title: "查重复链接".to_owned(),
+            version: Some(2),
+            task_id: None,
+        },
+        SendObjectRef {
+            kind: "report".to_owned(),
+            id: "report-1".to_owned(),
+            title: "查重复链接".to_owned(),
+            version: Some(2),
+            task_id: Some("task-1".to_owned()),
+        },
+        SendObjectRef {
+            kind: "project".to_owned(),
+            id: "project-1".to_owned(),
+            title: "新闻归档".to_owned(),
+            version: None,
+            task_id: None,
+        },
+    ];
+    host.dispatch(Call::Send(send)).await.expect("send");
+    let blocks = wait_user_blocks(&host, data.path()).await;
+    match &blocks[1] {
+        model::ContentBlock::ObjectRef {
+            kind,
+            id,
+            title,
+            version,
+            task_id,
+        } => {
+            assert_eq!(kind, "task");
+            assert_eq!(id, "task-1");
+            assert_eq!(title, "查重复链接");
+            assert_eq!(*version, Some(2));
+            assert_eq!(task_id, &None);
+        }
+        other => panic!("第一个对象引用要写成 ObjectRef 块：{other:?}"),
+    }
+    match &blocks[2] {
+        model::ContentBlock::ObjectRef {
+            kind,
+            id,
+            version,
+            task_id,
+            ..
+        } => {
+            assert_eq!(kind, "report");
+            assert_eq!(id, "report-1");
+            assert_eq!(*version, Some(2));
+            assert_eq!(task_id.as_deref(), Some("task-1"));
+        }
+        other => panic!("第二个对象引用要写成 ObjectRef 块：{other:?}"),
+    }
+    assert!(matches!(&blocks[3], model::ContentBlock::ObjectRef { kind, .. } if kind == "project"));
+}
+
+#[tokio::test]
+async fn send_quoted_selection_becomes_a_quote_block_in_the_log() {
+    let data = tempdir().unwrap();
+    let cwd = tempdir().unwrap();
+    let host = host(data.path(), cwd.path()).await;
+    let mut send = request("引用一下");
+    send.quotes = vec![SendQuote {
+        text: "判重用的是原始链接".to_owned(),
+        source: Some(SendObjectRef {
+            kind: "report".to_owned(),
+            id: "report-1".to_owned(),
+            title: "查重复链接".to_owned(),
+            version: Some(2),
+            task_id: Some("task-1".to_owned()),
+        }),
+    }];
+    host.dispatch(Call::Send(send)).await.expect("send");
+    let blocks = wait_user_blocks(&host, data.path()).await;
+    match &blocks[1] {
+        model::ContentBlock::Quote { text, source } => {
+            assert_eq!(text, "判重用的是原始链接");
+            let source = source.as_ref().expect("引用要带来源");
+            assert_eq!(source.kind, "report");
+            assert_eq!(source.id, "report-1");
+            assert_eq!(source.title, "查重复链接");
+            assert_eq!(source.version, Some(2));
+            assert_eq!(source.task_id.as_deref(), Some("task-1"));
+        }
+        other => panic!("引用要写成 Quote 块：{other:?}"),
     }
 }

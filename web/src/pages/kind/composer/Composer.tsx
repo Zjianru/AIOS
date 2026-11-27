@@ -6,33 +6,36 @@
  *   长按 Enter（repeat）不连发；
  * - 自动变高，最高 240px，超过后内部滚动；
  * - 粘贴超过 1000 个字符折成卡片（不进 textarea），发送时作为 pastes 的一项；
- * - 拖文件/粘贴文件出附件卡片（只收文字文件，二进制提示）；
+ * - 拖文件/粘贴文件出附件卡片（图片/文字/其他非文字文件都收，文件夹不收）；
  * - @ 菜单（打 @ 后按打的字列候选，选中插 @路径；带空格的路径加引号）；
  * - 选中文字浮出「引用」，点了变成输入框上方的引用卡；发送时才按行变成 > 行。
  */
 
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { FileText, MapPin, Quote, X } from 'lucide-react';
+import { FileText, MapPin, Paperclip, Quote, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { useKindStore } from '../kindStore';
 import { fileMentions } from '../atGrammar';
 import type { QueueRestore } from '../inbox';
 import { mimeFromFileName } from '../fileMime.ts';
 import { canRecallCleared } from '../rewind.ts';
-import { takePendingDraft } from '@/lib/pendingDraft';
+import { takePendingDraft, takePendingQuote } from '@/lib/pendingDraft';
 import type { RewindSource } from '../rewind.ts';
-import { attachmentGet, attachmentPut, fileReferences } from '@/data/service';
-import type { FileReferenceEntry, SendAttachmentRef } from '@/data/service';
+import { attachmentGet, attachmentPut, fileReferences, peekAvailableModels } from '@/data/service';
+import type { FileReferenceEntry, FileReferenceObject, SendAttachmentRef } from '@/data/service';
 import { cn } from '@/lib/utils';
 import {
   AttachmentPreview,
   FileCard,
+  ImageCard,
+  imageMimeSupported,
   FromCanvasChip,
   PasteCard,
   QuoteCard,
   ResultCardChip,
   pasteStats,
+  ObjectRefCard,
 } from './AttachmentCard';
 
 const LARGE_PASTE_CHAR_THRESHOLD = 1000;
@@ -41,6 +44,10 @@ const MAX_HEIGHT = 240;
 export interface ComposerSendOptions {
   pastes: string[];
   attachments: SendAttachmentRef[];
+  /** @ 选中的任务/报告/项目引用片。 */
+  objectRefs?: FileReferenceObject[];
+  /** 选中文字引用（带来源的走服务端 Quote 块；不带来源的仍拼进正文）。 */
+  quotes?: ComposerQuote[];
   /** T015.4：画布放进来的那一句带着画布身份；没有就是自己写的。 */
   canvas?: { id: string; title: string };
   /** T054.2：结果卡「要求修改」带进来的那张卡。 */
@@ -64,11 +71,13 @@ export interface ComposerHandle {
   recallCleared: () => boolean;
   /** 恢复对话时把原文（字/粘贴/附件/结果卡/画布标记）放回输入框。 */
   putBack: (source: RewindSource) => void;
+  /** 任务对话/报告里选中的一段话放进输入框（带来源）。 */
+  putQuote: (quote: ComposerQuote) => void;
 }
 
 interface ClearedDraft {
   text: string;
-  quotes: string[];
+  quotes: ComposerQuote[];
   pastes: string[];
   attachments: { id: string; name: string; bytes: number; mime: string }[];
   fromCanvas: { id: string; title: string } | null;
@@ -95,6 +104,20 @@ interface ComposerProps {
   queueRestores?: QueueRestore[];
   /** 输入框里的页面位置标签（Kind 传「现在」；任务对话不传）。 */
   pageTag?: string;
+  /** 当前模型能不能看图；看不了时图片卡照实写，仍允许发送。 */
+  imagesOk?: boolean;
+}
+
+/** 输入框里的一段引用（source 为空=Kind 里普通选段，仍拼进正文）。 */
+export interface ComposerQuote {
+  text: string;
+  source?: {
+    kind: string;
+    id: string;
+    title: string;
+    version?: number | null;
+    taskId?: string | null;
+  } | null;
 }
 
 /** 本地记录文件的 MIME（发送时只带 id/name/bytes；预览用）。 */
@@ -102,10 +125,14 @@ interface ComposerAttachment extends SendAttachmentRef {
   mime: string;
 }
 
+type AtMenuItem =
+  | { group: 'file'; entry: FileReferenceEntry }
+  | { group: 'task' | 'report' | 'project'; object: FileReferenceObject };
+
 interface AtMenuState {
   start: number;
   query: string;
-  items: FileReferenceEntry[];
+  items: AtMenuItem[];
   index: number;
 }
 
@@ -148,15 +175,34 @@ function quotedLines(quote: string): string {
 }
 
 export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer(
-  { offline, onSend, onCanSendChange, children, draftKey, placeholder, queueRestores = [], pageTag },
+  { offline, onSend, onCanSendChange, children, draftKey, placeholder, queueRestores = [], pageTag, imagesOk },
   ref,
 ) {
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const composingRef = useRef(false);
   const [text, setText] = useState('');
-  const [quotes, setQuotes] = useState<string[]>([]);
+  const [quotes, setQuotes] = useState<ComposerQuote[]>([]);
   const [pastes, setPastes] = useState<string[]>([]);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
+  const [objectRefs, setObjectRefs] = useState<FileReferenceObject[]>([]);
+  const kindModel = useKindStore((state) => state.model);
+  // 查不到/读不到都按看不了图（不猜）；加载完成前也不显示缩略图。
+  const [modelSeesImages, setModelSeesImages] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    void peekAvailableModels(kindModel.connectionId)
+      .then((result) => {
+        const info = result.models.find((model) => model.id === kindModel.modelId);
+        if (alive) setModelSeesImages(Boolean(info?.input?.includes('image')));
+      })
+      .catch(() => {
+        if (alive) setModelSeesImages(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [kindModel.connectionId, kindModel.modelId]);
   /** T015.4：这句话是画布放进来的（发出去时带标记，气泡上留着）。 */
   const [fromCanvas, setFromCanvas] = useState<{ id: string; title: string } | null>(null);
   // （N2）：一次放回多条画布标记/结果卡；第一条走上面的单值状态（兼容旧 UI），其余放这里。
@@ -194,7 +240,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   // 每条放回用 seq+index 唯一标识（N2 逐条放回；同一 splice 可能有多条消息）。
   const restoredKeysRef = useRef<string[]>([]);
 
-  const canSend = text.trim().length > 0 || quotes.length > 0 || pastes.length > 0 || attachments.length > 0;
+  const canSend =
+    text.trim().length > 0 ||
+    quotes.length > 0 ||
+    pastes.length > 0 ||
+    attachments.length > 0 ||
+    objectRefs.length > 0;
   const [pageTagDismissed, setPageTagDismissed] = useState(false);
 
   useEffect(() => {
@@ -295,7 +346,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     }
     touchedRef.current = true;
     changedDuringSendRef.current = true;
-    setQuotes((previous) => [...previous, selected]);
+    setQuotes((previous) => [...previous, { text: selected }]);
     setPageQuote(null);
     window.getSelection()?.removeAllRanges();
     requestAnimationFrame(() => inputRef.current?.focus());
@@ -323,8 +374,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     try {
       const raw = localStorage.getItem('aios.kind.draft.' + draftScope);
       const pendingText = takePendingDraft();
+      const pendingQuote = takePendingQuote();
       if (!raw) {
         if (pendingText !== null) setText(pendingText);
+        if (pendingQuote) setQuotes([{ text: pendingQuote.text, source: pendingQuote.source }]);
         return;
       }
       const draft = JSON.parse(raw) as {
@@ -370,7 +423,17 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         }
       }
       if (Array.isArray(draft.quotes)) {
-        setQuotes(draft.quotes.filter((item): item is string => typeof item === 'string'));
+        const restored: ComposerQuote[] = [];
+        for (const item of draft.quotes) {
+          if (typeof item === 'string') restored.push({ text: item });
+          else if (item && typeof item === 'object' && typeof (item as { text?: unknown }).text === 'string') {
+            restored.push(item as ComposerQuote);
+          }
+        }
+        if (pendingQuote) restored.push({ text: pendingQuote.text, source: pendingQuote.source });
+        setQuotes(restored);
+      } else if (pendingQuote) {
+        setQuotes([{ text: pendingQuote.text, source: pendingQuote.source }]);
       }
       if (Array.isArray(draft.pastes)) {
         setPastes(draft.pastes.filter((item): item is string => typeof item === 'string'));
@@ -515,7 +578,11 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     let cancelled = false;
     const timer = setTimeout(() => {
       void fileReferences(atMenu.query)
-        .then((items) => {
+        .then((result) => {
+          const items: AtMenuItem[] = [
+            ...result.references.map((entry): AtMenuItem => ({ group: 'file', entry })),
+            ...result.objects.map((object): AtMenuItem => ({ group: object.kind as 'task' | 'report' | 'project', object })),
+          ];
           if (!cancelled) setAtMenu((previous) => (previous ? { ...previous, items, index: 0 } : previous));
         })
         .catch(() => undefined);
@@ -527,26 +594,55 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   }, [atMenu?.query]);
 
   const pickReference = useCallback(
-    (entry: FileReferenceEntry) => {
+    (item: AtMenuItem) => {
       const element = inputRef.current;
       if (!element || !atMenu) return;
       // 用 DOM 里的真实值（state 闭包可能比输入慢一拍）。
       const value = element.value;
       const caret = element.selectionStart;
-      const inserted = insertReference(entry.path);
       touchedRef.current = true;
       changedDuringSendRef.current = true;
-      const next = value.slice(0, atMenu.start) + inserted + value.slice(caret);
+      if (item.group === 'file') {
+        const inserted = insertReference(item.entry.path);
+        const next = value.slice(0, atMenu.start) + inserted + value.slice(caret);
+        setText(next);
+        setAtMenu(null);
+        requestAnimationFrame(() => {
+          element.focus();
+          const position = atMenu.start + inserted.length;
+          element.setSelectionRange(position, position);
+        });
+        return;
+      }
+      // 对象引用片不进正文：把打出来的 @query 去掉，卡片挂到附件那一排。
+      const next = value.slice(0, atMenu.start) + value.slice(caret);
       setText(next);
+      setObjectRefs((previous) =>
+        previous.some((object) => object.kind === item.object.kind && object.id === item.object.id)
+          ? previous
+          : previous.concat(item.object),
+      );
       setAtMenu(null);
       requestAnimationFrame(() => {
         element.focus();
-        const position = atMenu.start + inserted.length;
+        const position = atMenu.start;
         element.setSelectionRange(position, position);
       });
     },
     [atMenu],
   );
+
+  useEffect(() => {
+    const onQuote = (event: Event) => {
+      const detail = (event as CustomEvent<ComposerQuote>).detail;
+      if (!detail || typeof detail.text !== 'string') return;
+      touchedRef.current = true;
+      changedDuringSendRef.current = true;
+      setQuotes((previous) => previous.concat(detail));
+    };
+    window.addEventListener('aios:quote', onQuote);
+    return () => window.removeEventListener('aios:quote', onQuote);
+  }, []);
 
   const intakeFiles = useCallback(async (files: File[]) => {
     touchedRef.current = true;
@@ -557,10 +653,15 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         const stored = await attachmentPut(file.name, data);
         setAttachments((previous) => [
           ...previous,
-          { id: stored.id, name: stored.name, bytes: stored.bytes, mime: file.type || 'text/plain' },
+          {
+            id: stored.id,
+            name: stored.name,
+            bytes: stored.bytes,
+            mime: file.type || mimeFromFileName(file.name) || 'application/octet-stream',
+          },
         ]);
       } catch {
-        toast('只能放文字文件', { description: file.name + ' 不是能读的文字文件' });
+        toast('附件没存上', { description: file.name + ' 没有被存进只读副本' });
       }
     }
     requestAnimationFrame(() => {
@@ -576,18 +677,31 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       return;
     }
     // G3：引用卡在发送时才按行变成 `> `，排在打的字前面（气泡里画成引用块）。
-    const quoted = quotes.map(quotedLines).join(String.fromCharCode(10) + String.fromCharCode(10));
+    // G3：普通引用卡在发送时按行加引用前缀拼进正文；带来源的走 quotes 字段（服务端 Quote 块）。
+    const plainQuotes = quotes.filter((item) => !item.source).map((item) => item.text);
+    const sourcedQuotes = quotes
+      .filter((item) => item.source)
+      .map((item) => ({ text: item.text, source: item.source! }));
+    const quoted = plainQuotes.map(quotedLines).join(String.fromCharCode(10) + String.fromCharCode(10));
     const value = [quoted, text.trim()]
       .filter((part) => part.length > 0)
       .join(String.fromCharCode(10));
-    if (!value && pastes.length === 0 && attachments.length === 0) return;
+    if (
+      !value &&
+      pastes.length === 0 &&
+      attachments.length === 0 &&
+      objectRefs.length === 0 &&
+      sourcedQuotes.length === 0
+    )
+      return;
     // T013.8：发送时先清空（马上能继续打），受理失败再把内容放回来（草稿不清）。
-    const snapshot = { text, quotes, pastes, attachments, quote, fromCanvas, resultCard, extraCanvases, extraResultCards };
+    const snapshot = { text, quotes, pastes, attachments, objectRefs, quote, fromCanvas, resultCard, extraCanvases, extraResultCards };
     changedDuringSendRef.current = false;
     setText('');
     setQuotes([]);
     setPastes([]);
     setAttachments([]);
+    setObjectRefs([]);
     setAtMenu(null);
     setQuote('');
     setPageQuote(null);
@@ -602,6 +716,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     const accepted = await onSend(value, {
       pastes,
       attachments: attachments.map(({ id, name, bytes, mime }) => ({ id, name, bytes, mime: mime ?? null })),
+      objectRefs,
+      quotes: sourcedQuotes,
       canvases: [...(fromCanvas ? [fromCanvas] : []), ...extraCanvases],
       resultCards: [...(resultCard ? [resultCard] : []), ...extraResultCards],
     });
@@ -612,6 +728,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       setQuotes(snapshot.quotes);
       setPastes(snapshot.pastes);
       setAttachments(snapshot.attachments);
+      setObjectRefs(snapshot.objectRefs);
       setQuote(snapshot.quote);
       setFromCanvas(snapshot.fromCanvas);
       setResultCard(snapshot.resultCard);
@@ -624,7 +741,22 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     } catch {
       // 忽略。
     }
-  }, [attachments, draftScope, extraCanvases, extraResultCards, fromCanvas, offline, onSend, pastes, quote, quotes, resize, resultCard, text]);
+  }, [
+    attachments,
+    draftScope,
+    extraCanvases,
+    extraResultCards,
+    fromCanvas,
+    objectRefs,
+    offline,
+    onSend,
+    pastes,
+    quote,
+    quotes,
+    resize,
+    resultCard,
+    text,
+  ]);
 
 
   const hasDraftContent = useCallback(
@@ -634,12 +766,23 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           quotes.length > 0 ||
           pastes.length > 0 ||
           attachments.length > 0 ||
+          objectRefs.length > 0 ||
           fromCanvas ||
           resultCard ||
           extraCanvases.length > 0 ||
           extraResultCards.length > 0,
       ),
-    [attachments.length, extraCanvases.length, extraResultCards.length, fromCanvas, pastes.length, quotes.length, resultCard, text],
+    [
+      attachments.length,
+      extraCanvases.length,
+      extraResultCards.length,
+      fromCanvas,
+      objectRefs.length,
+      pastes.length,
+      quotes.length,
+      resultCard,
+      text,
+    ],
   );
 
   /** 两下 Esc 清空输入框；清掉的东西压进 cleared，↑ 能取回。 */
@@ -769,6 +912,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       clearToHistory,
       recallCleared,
       putBack,
+      putQuote: (quote) => {
+        touchedRef.current = true;
+        changedDuringSendRef.current = true;
+        setQuotes((previous) => previous.concat(quote));
+        requestAnimationFrame(() => inputRef.current?.focus());
+      },
     }),
     [clearToHistory, hasDraftContent, putBack, recallCleared, resize, submit],
   );
@@ -824,8 +973,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     // @ 菜单打开且有候选：Enter 选高亮项。
     if (atMenu && atMenu.items.length > 0) {
       event.preventDefault();
-      const entry = atMenu.items[Math.min(atMenu.index, atMenu.items.length - 1)];
-      if (entry) pickReference(entry);
+      const item = atMenu.items[Math.min(atMenu.index, atMenu.items.length - 1)];
+      if (item) pickReference(item);
       return;
     }
     event.preventDefault();
@@ -912,12 +1061,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             />
           </span>
         ))}
-        {quotes.length > 0 || pastes.length > 0 || attachments.length > 0 ? (
+        {quotes.length > 0 || pastes.length > 0 || attachments.length > 0 || objectRefs.length > 0 ? (
           <div ref={cardsRef} className="mb-1.5 flex gap-1.5 overflow-x-auto pb-1" data-kind="composer-cards">
             {quotes.map((item, index) => (
               <QuoteCard
                 key={'quote-' + index}
-                quote={item}
+                quote={item.text}
+                source={item.source}
                 onRemove={() => setQuotes((previous) => previous.filter((_, position) => position !== index))}
               />
             ))}
@@ -929,19 +1079,40 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
                 onRemove={() => setPastes((previous) => previous.filter((_, item) => item !== index))}
               />
             ))}
-            {attachments.map((file) => (
-              <FileCard
-                key={file.id + '-' + file.name}
-                file={file}
-                mime={file.mime}
-                onOpen={() => {
-                  void attachmentGet(file.id)
-                    .then((result) => setFilePreview({ id: file.id, text: result.text ?? '（这个文件没有可显示的文字）' }))
-                    .catch(() => toast('读不回这个文件', { description: file.name }));
-                }}
-                onRemove={() => setAttachments((previous) => previous.filter((item) => item.id !== file.id))}
+            {objectRefs.map((object) => (
+              <ObjectRefCard
+                key={'object-' + object.kind + '-' + object.id}
+                object={object}
+                onRemove={() =>
+                  setObjectRefs((previous) =>
+                    previous.filter((item) => !(item.kind === object.kind && item.id === object.id)),
+                  )
+                }
               />
             ))}
+            {attachments.map((file) =>
+              imageMimeSupported(file.mime) ? (
+                <ImageCard
+                  key={file.id + '-' + file.name}
+                  file={file}
+                  mime={file.mime}
+                  imagesOk={imagesOk ?? modelSeesImages}
+                  onRemove={() => setAttachments((previous) => previous.filter((item) => item.id !== file.id))}
+                />
+              ) : (
+                <FileCard
+                  key={file.id + '-' + file.name}
+                  file={file}
+                  mime={file.mime}
+                  onOpen={() => {
+                    void attachmentGet(file.id)
+                      .then((result) => setFilePreview({ id: file.id, text: result.text ?? '（这个文件没有可显示的文字）' }))
+                      .catch(() => toast('读不回这个文件', { description: file.name }));
+                  }}
+                  onRemove={() => setAttachments((previous) => previous.filter((item) => item.id !== file.id))}
+                />
+              ),
+            )}
           </div>
         ) : null}
         <div className="flex items-end gap-2">
@@ -1037,6 +1208,28 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               </span>
             </div>
           ) : null}
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            hidden
+            data-kind="composer-file-input"
+            onChange={(event) => {
+              const files = Array.from(event.target.files ?? []);
+              if (files.length > 0) void intakeFiles(files);
+              event.target.value = '';
+            }}
+          />
+          <button
+            type="button"
+            data-kind="composer-attach"
+            aria-label="添加图片或文件"
+            title="添加图片或其他文件（也能粘贴/拖进来）"
+            onClick={() => fileInputRef.current?.click()}
+            className="grid size-7 shrink-0 place-items-center rounded-btn text-ink-3 hover:bg-hover hover:text-ink"
+          >
+            <Paperclip className="size-3.5" />
+          </button>
           {children}
         </div>
       </div>
@@ -1049,7 +1242,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             if (!selected) return;
             touchedRef.current = true;
             changedDuringSendRef.current = true;
-            setQuotes((previous) => [...previous, selected]);
+            setQuotes((previous) => [...previous, { text: selected }]);
             setQuote('');
             inputRef.current?.focus();
           }}
@@ -1099,23 +1292,46 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           data-kind="at-menu"
           className="absolute bottom-full left-3 mb-1 max-h-[240px] w-80 overflow-y-auto rounded-card border border-line-2 bg-raised p-1 shadow-[var(--shadow-pop)]"
         >
-          {atMenu.items.map((item, index) => (
-            <button
-              key={item.path}
-              type="button"
-              onMouseDown={(event) => {
-                event.preventDefault();
-                pickReference(item);
-              }}
-              className={cn(
-                'flex w-full items-center gap-2 rounded-btn px-2 py-1 text-left text-2',
-                index === atMenu.index ? 'bg-active text-ink' : 'text-ink-2 hover:bg-hover hover:text-ink',
-              )}
-            >
-              <FileText className="size-3 shrink-0" />
-              <span className="min-w-0 flex-1 truncate font-mono">{item.path}</span>
-            </button>
-          ))}
+          {atMenu.items.map((item, index) => {
+            const group = item.group;
+            const previousGroup = index > 0 ? atMenu.items[index - 1].group : null;
+            const header =
+              group === previousGroup
+                ? null
+                : group === 'file'
+                  ? '文件'
+                  : group === 'task'
+                    ? '任务'
+                    : group === 'report'
+                      ? '报告'
+                      : '项目';
+            const label = group === 'file' ? item.entry.path : item.object.title;
+            const key = group === 'file' ? item.entry.path : group + '-' + item.object.id;
+            return (
+              <div key={key} data-group={group}>
+                {header ? (
+                  <div data-kind="mention-group" className="px-2 pb-0.5 pt-1 text-1 text-ink-3">
+                    {header}
+                  </div>
+                ) : null}
+                <button
+                  type="button"
+                  data-kind="mention-item"
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    pickReference(item);
+                  }}
+                  className={cn(
+                    'flex w-full items-center gap-2 rounded-btn px-2 py-1 text-left text-2',
+                    index === atMenu.index ? 'bg-active text-ink' : 'text-ink-2 hover:bg-hover hover:text-ink',
+                  )}
+                >
+                  <FileText className="size-3 shrink-0" />
+                  <span className={cn('min-w-0 flex-1 truncate', group === 'file' && 'font-mono')}>{label}</span>
+                </button>
+              </div>
+            );
+          })}
         </div>
       ) : null}
     </div>

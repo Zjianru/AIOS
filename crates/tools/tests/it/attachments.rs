@@ -103,14 +103,13 @@ fn object_file_is_read_only() {
 }
 
 #[test]
-fn binary_is_rejected_as_not_text() {
+fn binary_is_stored_as_read_only_copy() {
     let dir = root();
-    let error = store(dir.path(), "bin.dat", b"abc\0def").expect_err("二进制要拒收");
-    assert!(
-        matches!(error, AttachmentError::NotText),
-        "错误码 not-text：{error}"
-    );
-    assert_eq!(object_count(dir.path()), 0, "拒收不落盘");
+    let stored = store(dir.path(), "bin.dat", b"abc\0def").expect("二进制也要收下");
+    assert_eq!(stored.bytes, 7);
+    assert_eq!(object_count(dir.path()), 1, "二进制落一份内容对象");
+    let mode = fs::metadata(&stored.path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o444, "副本只读：{mode:o}");
 }
 
 #[test]

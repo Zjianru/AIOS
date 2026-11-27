@@ -2,6 +2,8 @@
 import type { DeliveryMode } from "./DeliveryMode";
 import type { SendAttachment } from "./SendAttachment";
 import type { SendCanvas } from "./SendCanvas";
+import type { SendObjectRef } from "./SendObjectRef";
+import type { SendQuote } from "./SendQuote";
 import type { SendResultCard } from "./SendResultCard";
 
 /**
@@ -16,6 +18,14 @@ pastes?: Array<string>,
  * 用户拖进来的文件（已经存进附件仓库）。
  */
 attachments?: Array<SendAttachment>,
+/**
+ * @ 选中的任务/报告/项目引用片（只增字段）。
+ */
+objectRefs?: Array<SendObjectRef>,
+/**
+ * 选中的文字引用（带来源/选区；旧纯文本引用仍在 content 里）。
+ */
+quotes?: Array<SendQuote>,
 /**
  * 画布按钮放进输入框的那一句带着画布身份（id + 标题）；用户自己写的不带。
  */

@@ -611,6 +611,7 @@ mod attachment_http_tests {
                 context_window: DEFAULT_CONTEXT_WINDOW,
                 effort: Effort::new("high"),
                 tool_update: None,
+                supports_images: false,
             },
             config: AgentConfig::default(),
             credentials: Some(std::sync::Arc::new(TestCredential)),
@@ -797,7 +798,7 @@ mod attachment_http_tests {
     }
 
     #[tokio::test]
-    async fn attachment_put_over_http_rejects_binary() {
+    async fn attachment_put_over_http_accepts_binary() {
         let dir = tempfile::tempdir().unwrap();
         let (status, json) = call_api(
             host(dir.path()).await,
@@ -808,8 +809,13 @@ mod attachment_http_tests {
             }),
         )
         .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
-        assert_eq!(json["code"], "attachment/not-text");
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert!(
+            json["id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("sha256:"))
+        );
+        assert_eq!(json["bytes"], 1);
     }
 
     #[tokio::test]
@@ -929,6 +935,7 @@ mod ops_endpoint_tests {
             context_window: model::DEFAULT_CONTEXT_WINDOW,
             effort: model::Effort::new("high"),
             tool_update: None,
+            supports_images: false,
         }
     }
 
@@ -1247,6 +1254,7 @@ mod local_file_tests {
             context_window: model::DEFAULT_CONTEXT_WINDOW,
             effort: model::Effort::new("high"),
             tool_update: None,
+            supports_images: false,
         }
     }
 

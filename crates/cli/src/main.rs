@@ -248,6 +248,7 @@ fn config_from_args(
         context_window,
         effort,
         tool_update: None,
+        supports_images: false,
     };
     Ok((config, agent))
 }
@@ -457,6 +458,8 @@ fn model_with_keyring(
     // 路由能力跟着模型信息走（厂商声明优先，其次目录写死的 deepseek-flash）。
     deepseek_config.tool_update =
         service::models::tool_update_for(data_dir, &connection, &deepseek_config.model);
+    deepseek_config.supports_images =
+        service::models::supports_images(data_dir, &connection, &deepseek_config.model);
     let source = KeyringCredentialSource {
         keyring,
         connection: connection.id.clone(),
@@ -1476,6 +1479,7 @@ mod tests {
                 price_output: None,
                 price_cache_read: None,
                 price_cache_write: None,
+                input: None,
             }]),
             auth_header: None,
         }

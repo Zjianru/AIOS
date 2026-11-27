@@ -38,8 +38,8 @@ pub use task::{
     Attempt, AttemptEnd, AttemptStop, AttemptTrigger, CANCELLED_MESSAGE, Cancellation,
     CancellationReason, CancellationSource, Confirmation, ContinueCause, GateCandidate, GateCheck,
     GateCheckOutcome, GateCommand, GateConclusion, GateVerdict, Handoff, Input, InputAttachment,
-    InputSource, MilestoneGate, MissingItem, ModelChoice, Need, NewGraph, NewInput, NewReport,
-    NewSubtask, NewTask, ProgramGateOutcome, QuoteSource, Report, ReportOrigin, ReportState,
-    RequirementVersion, RoundEnd, Run, SayOutcome, Task, TaskCancellation, TaskPolicy,
-    VerdictSource, VersionSource, Worktree, validate_gate_commands,
+    InputObjectRef, InputQuote, InputSource, MilestoneGate, MissingItem, ModelChoice, Need,
+    NewGraph, NewInput, NewReport, NewSubtask, NewTask, ProgramGateOutcome, QuoteSource, Report,
+    ReportOrigin, ReportState, RequirementVersion, RoundEnd, Run, SayOutcome, Task,
+    TaskCancellation, TaskPolicy, VerdictSource, VersionSource, Worktree, validate_gate_commands,
 };

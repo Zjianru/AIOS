@@ -5,9 +5,18 @@
  * 删除按钮只有输入框要（气泡上的卡是发出去的消息，不能删）。
  */
 
+import { useEffect, useState } from 'react';
 import { AppWindow, FileText, Quote, X } from 'lucide-react';
+import { attachmentGet } from '@/data/service';
 import type { SendAttachmentRef } from '@/data/service';
 import { cn } from '@/lib/utils';
+
+/** 只有这四种 mime 走图片卡/图片块（svg 等按文字附件）。 */
+export function imageMimeSupported(mime?: string | null): boolean {
+  return (
+    mime === 'image/png' || mime === 'image/jpeg' || mime === 'image/gif' || mime === 'image/webp'
+  );
+}
 
 /** 文件类型的人话（故事 7：卡片上有类型与大小）。 */
 export function typeLabel(mime: string): string {
@@ -15,6 +24,9 @@ export function typeLabel(mime: string): string {
   if (mime === 'application/json') return 'JSON';
   if (mime === 'text/markdown') return 'Markdown';
   if (mime === 'text/csv') return 'CSV';
+  if (mime === 'application/pdf') return 'PDF';
+  if (mime === 'application/zip') return '压缩包';
+  if (mime === 'application/octet-stream') return '文件';
   if (mime.startsWith('text/')) return mime.slice(5) || '文字';
   return mime || '文字';
 }
@@ -41,6 +53,7 @@ const EXTENSION_TYPES: Record<string, string> = {
   jsx: 'JavaScript',
   ts: 'TypeScript',
   tsx: 'TypeScript',
+  svg: 'SVG',
   rs: 'Rust',
   py: 'Python',
   sh: 'Shell',
@@ -112,27 +125,57 @@ export function PasteCard({ paste, onOpen, onRemove }: PasteCardProps) {
   );
 }
 
-interface QuoteCardProps {
-  quote: string;
-  onRemove: () => void;
+export interface QuoteSourceLike {
+  kind: string;
+  id: string;
+  title: string;
+  version?: number | null;
+  taskId?: string | null;
 }
 
-/** 输入框上方的引用卡（G3）：前 80 字 + 行数，和粘贴/文件卡同一套卡片外观。 */
-export function QuoteCard({ quote, onRemove }: QuoteCardProps) {
+/** 引用来源一句话：任务对话 / 报告 / 阅读页；输入框和消息上同一句。 */
+export function quoteSourceLabel(source: QuoteSourceLike): string {
+  const version = source.version ?? 1;
+  if (source.kind === 'task') return '任务对话 · ' + source.title + ' · 第 ' + version + ' 版要求';
+  if (source.kind === 'report') return '报告 · ' + source.title + ' · 第 ' + version + ' 次结果';
+  if (source.kind === 'file') return '阅读页 · ' + source.title + ' · 版本 ' + version;
+  if (source.kind === 'project') return '项目 · ' + source.title;
+  return source.title;
+}
+
+interface QuoteCardProps {
+  quote: string;
+  source?: QuoteSourceLike | null;
+  onRemove?: () => void;
+}
+
+/** 输入框上方的引用卡（G3）：来源一行 + 前 80 字 + 行数。 */
+export function QuoteCard({ quote, source, onRemove }: QuoteCardProps) {
   const lines = quote.split(String.fromCharCode(10)).length;
   return (
     <span
       data-kind="quote-card"
       className="flex shrink-0 items-center gap-1 rounded-btn border border-line-2 bg-pane px-2 py-1 text-2 text-ink-2"
     >
-      <Quote className="size-3" />
+      <Quote className="size-3 shrink-0" />
+      {source ? (
+        <span
+          data-kind="quote-source"
+          className="max-w-[150px] shrink-0 truncate text-1 text-ink-3"
+          title={quoteSourceLabel(source)}
+        >
+          {quoteSourceLabel(source)}
+        </span>
+      ) : null}
       <span className="max-w-[160px] truncate" title={quote}>
         {quote.replace(/\s+/g, ' ').slice(0, 80)}
       </span>
       <span className="shrink-0 text-ink-3">{lines} 行</span>
-      <button type="button" aria-label="移除引用" onClick={onRemove} className="text-ink-3 hover:text-ink">
-        <X className="size-3" />
-      </button>
+      {onRemove ? (
+        <button type="button" aria-label="移除引用" onClick={onRemove} className="text-ink-3 hover:text-ink">
+          <X className="size-3" />
+        </button>
+      ) : null}
     </span>
   );
 }
@@ -147,9 +190,13 @@ interface FileCardProps {
 
 export function FileCard({ file, mime, onOpen, onRemove }: FileCardProps) {
   const type = fileTypeLabel(file.name, mime);
+  const text =
+    !mime ||
+    mime.startsWith('text/') ||
+    ['application/json', 'application/xml', 'image/svg+xml'].includes(mime);
   return (
     <span
-      data-kind="file-card"
+      data-kind={text ? 'file-card' : 'attachment-binary'}
       className="flex shrink-0 items-center gap-1 rounded-btn border border-line-2 bg-pane px-2 py-1 text-2 text-ink-2"
     >
       <FileText className="size-3" />
@@ -283,5 +330,104 @@ export function AttachmentPreview({ kind, title, text, onClose, className }: Pre
       </div>
       <pre className="whitespace-pre-wrap break-words font-mono text-2 leading-5 text-ink-2">{text}</pre>
     </div>
+  );
+}
+
+/** 图片卡（缩略图 + 名字 + 大小）；当前模型看不了图时照实写。 */
+export function ImageCard({
+  file,
+  mime,
+  imagesOk = true,
+  onRemove,
+}: {
+  file: SendAttachmentRef;
+  mime?: string;
+  imagesOk?: boolean;
+  onRemove?: () => void;
+}) {
+  const [src, setSrc] = useState<string | null>(null);
+  useEffect(() => {
+    if (mime && !mime.startsWith('image/')) return;
+    let alive = true;
+    void attachmentGet(file.id)
+      .then((result) => {
+        if (!alive) return;
+        if (result.mime && result.data) {
+          setSrc('data:' + result.mime + ';base64,' + result.data);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [file.id, mime]);
+  return (
+    <span
+      data-kind="attachment-image"
+      className="flex max-w-[260px] shrink-0 items-center gap-1.5 rounded-btn border border-line-2 bg-pane px-1.5 py-1 text-2 text-ink-2"
+    >
+      {src ? (
+        <img src={src} alt={file.name} className="size-9 shrink-0 rounded-[4px] object-cover" />
+      ) : (
+        <span className="grid size-9 shrink-0 place-items-center rounded-[4px] bg-active text-1 text-ink-3">图</span>
+      )}
+      <span className="flex min-w-0 flex-col leading-4">
+        <span className="max-w-[150px] truncate text-ink">{file.name}</span>
+        <span className="shrink-0 text-ink-3">{sizeLabel(file.bytes)}</span>
+        {!imagesOk ? (
+          <span data-kind="attachment-image-blind" className="text-1 text-wait">
+            这个模型看不了图
+          </span>
+        ) : null}
+      </span>
+      {onRemove ? (
+        <button type="button" aria-label="移除图片" onClick={onRemove} className="text-ink-3 hover:text-ink">
+          <X className="size-3" />
+        </button>
+      ) : null}
+    </span>
+  );
+}
+
+export interface ObjectRefLike {
+  kind: 'task' | 'report' | 'project' | string;
+  id: string;
+  title: string;
+  version?: number | null;
+  taskId?: string | null;
+}
+
+const OBJECT_KIND_LABEL: Record<string, string> = {
+  task: '任务',
+  report: '报告',
+  project: '项目',
+};
+
+/** @ 选中的任务/报告/项目引用片（输入框和消息上同一张卡）。 */
+export function ObjectRefCard({
+  object,
+  onRemove,
+}: {
+  object: ObjectRefLike;
+  onRemove?: () => void;
+}) {
+  const kind = OBJECT_KIND_LABEL[object.kind] ?? object.kind;
+  const version = object.kind === 'task' || object.kind === 'report' ? ' · 第 ' + (object.version ?? 1) + ' 版' : '';
+  return (
+    <span
+      data-kind="attachment-object"
+      data-object-type={object.kind}
+      title={object.id}
+      className="flex max-w-[260px] shrink-0 items-center gap-1 rounded-btn border border-line-2 bg-pane px-2 py-1 text-2 text-ink-2"
+    >
+      <span className="shrink-0 rounded-[3px] bg-active px-1 text-1 text-ink-2">{kind}</span>
+      <span className="min-w-0 truncate text-ink">{object.title}</span>
+      <span className="shrink-0 text-1 text-ink-3">{version}</span>
+      {onRemove ? (
+        <button type="button" aria-label="移除引用" onClick={onRemove} className="text-ink-3 hover:text-ink">
+          <X className="size-3" />
+        </button>
+      ) : null}
+    </span>
   );
 }

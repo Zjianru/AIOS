@@ -65,7 +65,7 @@ test('问模型和花费：先加载 skill，再查 AIOS，回答下面没有卡
     await expect(page.locator('[data-kind="card"]')).toHaveCount(0);
 
     const log = await sessionLog(fixture);
-    expect(log.header.version, '会话日志升到 20（只升一次）').toBe(20);
+    expect(log.header.version, '会话日志升到 21（只升一次）').toBe(21);
     const registry = log.rows.filter((row) => row.type === 'tool/registry');
     expect(registry.length, '加载记录只在新增时记一条').toBe(2);
     const added = (registry[1].data as { additions: { name: string }[] }).additions.map(

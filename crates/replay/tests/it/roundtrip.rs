@@ -58,6 +58,7 @@ async fn setup_agent(base_url: &str) -> TestAgent {
         context_window: model::DEFAULT_CONTEXT_WINDOW,
         effort: model::Effort::new("high"),
         tool_update: None,
+        supports_images: false,
     };
     let agent = Agent::create(
         config,

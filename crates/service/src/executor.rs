@@ -480,6 +480,31 @@ impl TaskRuntime {
                     text: request.text,
                     pastes: request.pastes,
                     attachments,
+                    object_refs: request
+                        .object_refs
+                        .into_iter()
+                        .map(|object| tasks::InputObjectRef {
+                            kind: object.kind,
+                            id: object.id,
+                            title: object.title,
+                            version: object.version,
+                            task_id: object.task_id,
+                        })
+                        .collect(),
+                    quotes: request
+                        .quotes
+                        .into_iter()
+                        .map(|quote| tasks::InputQuote {
+                            text: quote.text,
+                            source: quote.source.map(|source| tasks::InputObjectRef {
+                                kind: source.kind,
+                                id: source.id,
+                                title: source.title,
+                                version: source.version,
+                                task_id: source.task_id,
+                            }),
+                        })
+                        .collect(),
                 },
                 Self::now(),
             )
@@ -1102,6 +1127,27 @@ impl TaskRuntime {
                 graph_root: task.is_graph_root(),
                 graph_member: task.is_graph_root() || task.parent.is_some(),
                 model: task.model.model.clone(),
+                sees_images: {
+                    let connection = credentials::Keyring::open_read_only(
+                        self.data_dir.clone(),
+                        self.options.identity.as_deref(),
+                    )
+                    .ok()
+                    .and_then(|keyring| {
+                        keyring
+                            .view()
+                            .connections
+                            .into_iter()
+                            .find(|connection| connection.id == task.model.connection)
+                    });
+                    connection.is_some_and(|connection| {
+                        crate::models::supports_images(
+                            &self.data_dir,
+                            &connection,
+                            &task.model.model,
+                        )
+                    })
+                },
                 tools: task.tools.clone(),
                 attempts: task.runs.iter().map(|run| run.attempts.len() as u64).sum(),
                 running,
@@ -2235,6 +2281,27 @@ impl TaskRuntime {
             if !paste.is_empty() {
                 blocks.push(model::ContentBlock::paste(paste.clone()));
             }
+        }
+        for quote in &input.quotes {
+            blocks.push(model::ContentBlock::Quote {
+                text: quote.text.clone(),
+                source: quote.source.as_ref().map(|source| model::QuoteSource {
+                    kind: source.kind.clone(),
+                    id: source.id.clone(),
+                    title: source.title.clone(),
+                    version: source.version,
+                    task_id: source.task_id.clone(),
+                }),
+            });
+        }
+        for object in &input.object_refs {
+            blocks.push(model::ContentBlock::ObjectRef {
+                kind: object.kind.clone(),
+                id: object.id.clone(),
+                title: object.title.clone(),
+                version: object.version,
+                task_id: object.task_id.clone(),
+            });
         }
         for attachment in &input.attachments {
             let stored = tools::attachments::read(&self.data_dir, &attachment.id)
@@ -4710,6 +4777,7 @@ mod trigger_tool_tests {
                 context_window: DEFAULT_CONTEXT_WINDOW,
                 effort: Effort::new("high"),
                 tool_update: None,
+                supports_images: false,
             },
             config: agent::AgentConfig::default(),
             credentials: None,

@@ -5,9 +5,18 @@ use model::UserMessage;
 use crate::error::ServiceError;
 use crate::protocol::{
     AttachmentGetRequest, AttachmentGetResponse, AttachmentPutRequest, AttachmentPutResponse,
-    FileReferenceEntry, FileReferencesListRequest, FileReferencesListResponse, SendRequest,
+    FileReferenceEntry, FileReferenceObject, FileReferencesListRequest, FileReferencesListResponse,
+    SendRequest,
 };
 use crate::root_lifecycle::RootHost;
+
+/// 只有这四种图片进 Image 块（Anthropic 支持的格式；svg 等按文字附件走）。
+pub(crate) fn image_format_supported(mime: &str) -> bool {
+    matches!(
+        mime,
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+    )
+}
 
 /// 把附件错误映射成服务错误码。
 pub(crate) fn attachment_error(error: tools::attachments::AttachmentError) -> ServiceError {
@@ -25,6 +34,33 @@ pub(crate) fn attachment_error(error: tools::attachments::AttachmentError) -> Se
 ///
 /// 只收规范形式：长度是 4 的倍数、`=` 只允许在末尾（最多两个）、`=` 后不能有数据、
 /// 尾部填充位的低位必须为 0（`AA==` 收，`AB==` 拒）。
+/// 规范 base64 编码（不引新依赖；给图片二进制用）。
+fn encode_base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        out.push(TABLE[(n >> 18) as usize & 63] as char);
+        out.push(TABLE[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 {
+            TABLE[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
 fn decode_base64(input: &str) -> Option<Vec<u8>> {
     let bytes = input.as_bytes();
     if !bytes.len().is_multiple_of(4) {
@@ -120,17 +156,50 @@ impl RootHost {
                 blocks.push(model::ContentBlock::paste(paste.clone()));
             }
         }
+        for quote in &request.quotes {
+            blocks.push(model::ContentBlock::Quote {
+                text: quote.text.clone(),
+                source: quote.source.as_ref().map(|source| model::QuoteSource {
+                    kind: source.kind.clone(),
+                    id: source.id.clone(),
+                    title: source.title.clone(),
+                    version: source.version,
+                    task_id: source.task_id.clone(),
+                }),
+            });
+        }
+        for object in &request.object_refs {
+            blocks.push(model::ContentBlock::ObjectRef {
+                kind: object.kind.clone(),
+                id: object.id.clone(),
+                title: object.title.clone(),
+                version: object.version,
+                task_id: object.task_id.clone(),
+            });
+        }
         for attachment in &request.attachments {
             let stored = tools::attachments::read(&self.options.data_dir, &attachment.id)
                 .map_err(attachment_error)?;
             // 名字/字节数用请求里的值：同内容不同名时，卡片上要显示用户拖进来的那个名字。
-            blocks.push(model::ContentBlock::File {
-                attachment_id: attachment.id.clone(),
-                name: attachment.name.clone(),
-                bytes: attachment.bytes,
-                path: Some(stored.path.to_string_lossy().into_owned()),
-                mime: attachment.mime.clone(),
-            });
+            let mime = attachment.mime.clone().or_else(|| stored.mime.clone());
+            let path = Some(stored.path.to_string_lossy().into_owned());
+            if mime.as_deref().is_some_and(image_format_supported) {
+                blocks.push(model::ContentBlock::Image {
+                    attachment_id: attachment.id.clone(),
+                    name: attachment.name.clone(),
+                    bytes: attachment.bytes,
+                    mime,
+                    path,
+                });
+            } else {
+                blocks.push(model::ContentBlock::File {
+                    attachment_id: attachment.id.clone(),
+                    name: attachment.name.clone(),
+                    bytes: attachment.bytes,
+                    path,
+                    mime,
+                });
+            }
         }
         if blocks.is_empty() {
             return Err(ServiceError::MessageEmpty);
@@ -139,6 +208,17 @@ impl RootHost {
             blocks,
             request.request_id.clone(),
         ))
+    }
+
+    /// 候选整表预算 20：先文件后对象，文件占满就不再给对象。
+    fn trim_candidates(
+        references: &mut Vec<FileReferenceEntry>,
+        objects: &mut Vec<FileReferenceObject>,
+    ) {
+        references.truncate(tools::file_references::DEFAULT_MAX_RESULTS);
+        let remaining =
+            tools::file_references::DEFAULT_MAX_RESULTS.saturating_sub(references.len());
+        objects.truncate(remaining);
     }
 
     /// 列 @ 文件候选：项目默认目录 + 资料库的文字文件，返回绝对路径。
@@ -179,8 +259,67 @@ impl RootHost {
         // 保留每个根自己的排序（同名/前缀/子序列），跨项目只按项目顺序拼接。
         let mut seen = std::collections::BTreeSet::new();
         references.retain(|entry| seen.insert(entry.path.clone()));
-        references.truncate(tools::file_references::DEFAULT_MAX_RESULTS);
-        Ok(FileReferencesListResponse { references })
+
+        // 同一份候选接口只增对象分组；数据来自已有任务/项目事实，不加新查询协议。
+        let needle = request.query.to_lowercase();
+        let matched = |text: &str| needle.is_empty() || text.to_lowercase().contains(&needle);
+        let mut task_objects = Vec::new();
+        let mut report_objects = Vec::new();
+        let mut project_objects = Vec::new();
+        if let Some(tasks) = self
+            .task_runtime()
+            .map(|runtime| runtime.store().all_tasks())
+            .and_then(Result::ok)
+        {
+            for task in tasks {
+                if matched(task.id.as_str()) || matched(&task.title) {
+                    task_objects.push(FileReferenceObject {
+                        kind: "task".to_owned(),
+                        id: task.id.as_str().to_owned(),
+                        title: task.title.clone(),
+                        version: Some(task.requirement_version()),
+                        task_id: None,
+                        goal: None,
+                    });
+                }
+                if let Some(report) = task.latest_report()
+                    && (matched(report.id.as_str()) || matched(&task.title))
+                {
+                    report_objects.push(FileReferenceObject {
+                        kind: "report".to_owned(),
+                        id: report.id.as_str().to_owned(),
+                        title: task.title.clone(),
+                        version: Some(report.version),
+                        task_id: Some(task.id.as_str().to_owned()),
+                        goal: None,
+                    });
+                }
+            }
+        }
+        if let Some(projects) = &self.options.projects
+            && let Ok(projects) = projects.list()
+        {
+            for project in projects {
+                if matched(&project.id) || matched(&project.name) || matched(&project.goal) {
+                    project_objects.push(FileReferenceObject {
+                        kind: "project".to_owned(),
+                        id: project.id.clone(),
+                        title: project.name.clone(),
+                        version: None,
+                        task_id: None,
+                        goal: Some(project.goal.clone()),
+                    });
+                }
+            }
+        }
+        let mut objects = task_objects;
+        objects.extend(report_objects);
+        objects.extend(project_objects);
+        Self::trim_candidates(&mut references, &mut objects);
+        Ok(FileReferencesListResponse {
+            references,
+            objects,
+        })
     }
 
     /// 存一份文字附件（base64 → 只读副本，返回 id）。
@@ -199,7 +338,7 @@ impl RootHost {
         })
     }
 
-    /// 按 id 读回附件（卡片「点开看全文」）。
+    /// 按 id 读回附件（卡片「点开看全文」/图片预览）。
     pub(crate) async fn attachment_get(
         &self,
         request: AttachmentGetRequest,
@@ -208,12 +347,88 @@ impl RootHost {
             .map_err(attachment_error)?;
         let bytes = std::fs::read(&stored.path)
             .map_err(|error| ServiceError::AttachmentInvalid(format!("附件读不回来：{error}")))?;
-        // 仓库按 git 的「无 NUL 即文字」收；不是合法 UTF-8 时给 text=None（旧数据兼容口径）。
-        let text = String::from_utf8(bytes).ok();
+        let mime = stored.mime.clone();
+        // 文字文件给全文；非文字（含 NUL 的合法 UTF-8 二进制）只给二进制 base64。
+        let text = if tools::attachments::is_text(&bytes) {
+            String::from_utf8(bytes.clone()).ok()
+        } else {
+            None
+        };
+        let data = if text.is_none() {
+            Some(encode_base64(&bytes))
+        } else {
+            None
+        };
         Ok(AttachmentGetResponse {
             name: stored.name,
             bytes: stored.bytes as u64,
+            mime,
             text,
+            data,
         })
+    }
+}
+
+#[cfg(test)]
+mod image_format_tests {
+    use super::image_format_supported;
+
+    #[test]
+    fn only_png_jpeg_gif_webp_are_image_blocks() {
+        for mime in ["image/png", "image/jpeg", "image/gif", "image/webp"] {
+            assert!(image_format_supported(mime), "{mime} 要进图片块");
+        }
+        for mime in [
+            "image/svg+xml",
+            "image/bmp",
+            "image/tiff",
+            "text/plain",
+            "application/pdf",
+        ] {
+            assert!(!image_format_supported(mime), "{mime} 不能进图片块");
+        }
+    }
+
+    fn reference(index: usize) -> super::FileReferenceEntry {
+        super::FileReferenceEntry {
+            path: format!("/tmp/file-{index}.txt"),
+            bytes: 1,
+        }
+    }
+
+    fn object(index: usize) -> super::FileReferenceObject {
+        super::FileReferenceObject {
+            kind: "task".to_owned(),
+            id: format!("task-{index}"),
+            title: format!("任务 {index}"),
+            version: Some(1),
+            task_id: None,
+            goal: None,
+        }
+    }
+
+    #[test]
+    fn candidates_share_one_budget_of_twenty() {
+        // 文件 >20：只剩 20 个文件，对象一个不给。
+        let mut references: Vec<_> = (0..25).map(reference).collect();
+        let mut objects: Vec<_> = (0..5).map(object).collect();
+        super::RootHost::trim_candidates(&mut references, &mut objects);
+        assert_eq!(references.len(), 20);
+        assert!(objects.is_empty());
+
+        // 文件+对象 >20：文件 15，对象只留 5。
+        let mut references: Vec<_> = (0..15).map(reference).collect();
+        let mut objects: Vec<_> = (0..10).map(object).collect();
+        super::RootHost::trim_candidates(&mut references, &mut objects);
+        assert_eq!(references.len(), 15);
+        assert_eq!(objects.len(), 5);
+        assert_eq!(references.len() + objects.len(), 20);
+
+        // 文件+对象 <20：原样保留。
+        let mut references: Vec<_> = (0..5).map(reference).collect();
+        let mut objects: Vec<_> = (0..5).map(object).collect();
+        super::RootHost::trim_candidates(&mut references, &mut objects);
+        assert_eq!(references.len(), 5);
+        assert_eq!(objects.len(), 5);
     }
 }

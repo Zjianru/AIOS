@@ -41,7 +41,11 @@ graphMember: boolean,
 /**
  * 创建任务时冻结的模型（只给显示名，切换模型不影响它）。
  */
-model: string, tools: Array<string>, attempts: number,
+model: string,
+/**
+ * 任务冻结的模型能不能看图（目录 input + 用户覆盖在服务端合成；查不到按看不了）。
+ */
+seesImages: boolean, tools: Array<string>, attempts: number,
 /**
  * 这个 Attempt 的会话现在真的在跑一轮（不是只开着等报告）；任务菜单只在为 true 时可点。
  */

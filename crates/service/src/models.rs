@@ -62,6 +62,34 @@ pub fn tool_update_for(
     })
 }
 
+/// 这个模型能不能看图：用户填的 input 覆盖 > 目录 modalities.input。
+/// 没有声明就按看不了（页面/请求都照实降级）。
+pub fn supports_images(data_dir: &Path, connection: &ConnectionInfo, model: &str) -> bool {
+    let user = connection
+        .models
+        .as_deref()
+        .and_then(|rows| rows.iter().find(|row| row.id == model))
+        .and_then(|row| row.input.as_ref());
+    if let Some(input) = user {
+        return input.iter().any(|item| item == "image");
+    }
+    let from_model = selectable_models(data_dir, connection)
+        .into_iter()
+        .find(|info| info.id == model)
+        .is_some_and(|info| info.input.iter().any(|item| item == "image"));
+    if from_model {
+        return true;
+    }
+    let provider =
+        model::catalog::provider_id_for_connection(&connection.preset, &connection.endpoint);
+    model::catalog::global()
+        .unwrap_or_else(model::catalog::snapshot)
+        .models_for(&provider)
+        .into_iter()
+        .find(|info| info.id == model)
+        .is_some_and(|info| info.input.iter().any(|item| item == "image"))
+}
+
 fn info_from_row(row: &credentials::ModelRow) -> ModelInfo {
     ModelInfo {
         id: row.id.clone(),
@@ -75,5 +103,6 @@ fn info_from_row(row: &credentials::ModelRow) -> ModelInfo {
         thinks: false,
         efforts: Vec::new(),
         tool_update: None,
+        input: row.input.clone().unwrap_or_default(),
     }
 }

@@ -45,7 +45,7 @@ export function rewindSourceOfMessage(message: unknown): RewindSource | null {
       else text.push(value);
       continue;
     }
-    if (typed.type === 'file' && typeof typed.attachmentId === 'string') {
+    if ((typed.type === 'file' || typed.type === 'image') && typeof typed.attachmentId === 'string') {
       const name = typeof typed.name === 'string' ? typed.name : '';
       source.files.push({
         id: typed.attachmentId,

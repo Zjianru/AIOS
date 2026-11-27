@@ -14,14 +14,28 @@ export function useTaskChatSideData(options: {
   task: TaskReadHeader | null;
   taskId: string | null;
   saying: boolean;
-  queued: { inputId: string; text: string; pastes: string[]; attachments: SendAttachmentRef[] }[];
+  queued: {
+    inputId: string;
+    text: string;
+    pastes: string[];
+    attachments: SendAttachmentRef[];
+    quotes: { text: string; source?: { kind: string; id: string; title: string; version?: number | null; taskId?: string | null } | null }[];
+    objectRefs: { kind: string; id: string; title: string; version?: number | null; taskId?: string | null }[];
+  }[];
   refreshHeader: () => void;
   stopTurn: () => void;
 }): {
   paused: boolean;
   views: ReturnType<typeof deriveTurnViews>;
   upstreamResults: { task_id: string; title: string; requirement_version: number; summary: string }[];
-  queuedVisible: { inputId: string; text: string; pastes: string[]; attachments: SendAttachmentRef[] }[];
+  queuedVisible: {
+    inputId: string;
+    text: string;
+    pastes: string[];
+    attachments: SendAttachmentRef[];
+    quotes: { text: string; source?: { kind: string; id: string; title: string; version?: number | null; taskId?: string | null } | null }[];
+    objectRefs: { kind: string; id: string; title: string; version?: number | null; taskId?: string | null }[];
+  }[];
 } {
   const { events, task, taskId, saying, queued, stopTurn } = options;
   const [paused, setPaused] = useState(false);

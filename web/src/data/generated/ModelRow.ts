@@ -11,4 +11,8 @@ export type ModelRow = { id: string, name?: string | null, contextWindow?: numbe
  * T012 F1：用户填的四类单价（美元/百万 token；没填的格用目录标价）。旧连接只有
  * 单数 `price`，读入时当作输入价和输出价（alias）；缓存两格可以不填。
  */
-priceInput?: number | null, priceOutput?: number | null, priceCacheRead?: number | null, priceCacheWrite?: number | null, };
+priceInput?: number | null, priceOutput?: number | null, priceCacheRead?: number | null, priceCacheWrite?: number | null,
+/**
+ * user input modalities override (None = follow catalog; Some(vec) = override).
+ */
+input?: Array<string> | null, };

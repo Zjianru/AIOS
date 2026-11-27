@@ -237,6 +237,12 @@ pub struct SendRequest {
     /// 用户拖进来的文件（已经存进附件仓库）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<SendAttachment>,
+    /// @ 选中的任务/报告/项目引用片（只增字段）。
+    #[serde(default, rename = "objectRefs", skip_serializing_if = "Vec::is_empty")]
+    pub object_refs: Vec<SendObjectRef>,
+    /// 选中的文字引用（带来源/选区；旧纯文本引用仍在 content 里）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quotes: Vec<SendQuote>,
     /// 画布按钮放进输入框的那一句带着画布身份（id + 标题）；用户自己写的不带。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canvas: Option<SendCanvas>,
@@ -276,11 +282,32 @@ pub struct SendAttachment {
     pub mime: Option<String>,
 }
 
+/// 用户选中一段文字引用进对话（source 为空=普通引用）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct SendQuote {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SendObjectRef>,
+}
+
 /// 画布放进输入框的那一句带来的画布（页面从日志的 meta.canvas 拿 id 和标题）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct SendCanvas {
     pub id: String,
     pub title: String,
+}
+
+/// 随消息带进输入框的一个对象引用片。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct SendObjectRef {
+    /// task / report / project。
+    pub kind: String,
+    pub id: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u32>,
+    #[serde(default, rename = "taskId", skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
 }
 
 fn default_delivery() -> DeliveryMode {
@@ -730,6 +757,9 @@ pub struct TaskReadHeader {
     pub graph_member: bool,
     /// 创建任务时冻结的模型（只给显示名，切换模型不影响它）。
     pub model: String,
+    /// 任务冻结的模型能不能看图（目录 input + 用户覆盖在服务端合成；查不到按看不了）。
+    #[serde(default, rename = "seesImages")]
+    pub sees_images: bool,
     pub tools: Vec<String>,
     pub attempts: u64,
     /// 这个 Attempt 的会话现在真的在跑一轮（不是只开着等报告）；任务菜单只在为 true 时可点。
@@ -1020,6 +1050,12 @@ pub struct TaskSayRequest {
     /// 用户拖进来的文件（已经存进附件仓库）；规则和 Kind 对话一样。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<SendAttachment>,
+    /// @ 选中的任务/报告/项目引用片（只增字段）。
+    #[serde(default, rename = "objectRefs", skip_serializing_if = "Vec::is_empty")]
+    pub object_refs: Vec<SendObjectRef>,
+    /// 选中的文字引用（带来源/选区）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quotes: Vec<SendQuote>,
 }
 
 /// 说一句的结果：输入 id 和新 Attempt 编号（在跑时没有新 Attempt）。
@@ -1512,8 +1548,15 @@ pub struct AttachmentGetRequest {
 pub struct AttachmentGetResponse {
     pub name: String,
     pub bytes: u64,
+    /// 附件原类型（按扩展名兜底；旧数据没有）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime: Option<String>,
+    /// 文字文件附全文；非文字为 None（旧数据兼容口径）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    /// 二进制 base64（图片预览/发送用；文字文件不回，避免重复）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
 }
 
 /// @ 文件候选（query 是 @ 后面那段；空就是列前面的）。
@@ -1530,10 +1573,31 @@ pub struct FileReferenceEntry {
     pub bytes: u64,
 }
 
+/// @ 菜单里的一个 AIOS 对象候选（只增分组；任务/报告/项目共用）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct FileReferenceObject {
+    /// task / report / project。
+    pub kind: String,
+    pub id: String,
+    pub title: String,
+    /// 任务/报告的要求版本；项目没有。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u32>,
+    /// 报告所属任务；其他没有。
+    #[serde(default, rename = "taskId", skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    /// 项目目标；其他没有。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<String>,
+}
+
 /// @ 文件候选列表。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, TS)]
 pub struct FileReferencesListResponse {
     pub references: Vec<FileReferenceEntry>,
+    /// 任务/报告/项目分组（只增字段，旧页面忽略）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub objects: Vec<FileReferenceObject>,
 }
 
 /// 编辑连接，只改 endpoint/model（不换 key）。
@@ -1897,7 +1961,7 @@ pub struct ActionActResponse {
 ///
 /// 连接上的旧价格乘数后来整条删掉，不升版本：两个请求里的这个字段本来就可省略，旧页再发
 /// 由 serde 当未知字段忽略；响应里少了它，旧页读到 undefined 也不会拿去定价。
-pub const PROTOCOL_VERSION: u64 = 33;
+pub const PROTOCOL_VERSION: u64 = 34;
 
 /// 日历读取：不带 appointmentId 读全部；带 week 时额外给那周的计划点。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]

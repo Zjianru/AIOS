@@ -113,6 +113,9 @@ pub struct ModelRow {
     pub price_cache_read: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub price_cache_write: Option<f64>,
+    /// user input modalities override (None = follow catalog; Some(vec) = override).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<Vec<String>>,
 }
 
 /// T012.4：编辑连接时一次传的新形状字段（endpoint/model 必填，其余可选）。
@@ -195,6 +198,7 @@ fn normalize_info(info: &mut ConnectionInfo) {
             price_output: None,
             price_cache_read: None,
             price_cache_write: None,
+            input: None,
         });
     }
     if info.preset.is_empty() {
@@ -442,6 +446,7 @@ mod shape_tests {
                 price_output: None,
                 price_cache_read: None,
                 price_cache_write: None,
+                input: None,
             })
         );
         assert_eq!(info.preset, "deepseek");
@@ -545,6 +550,7 @@ mod shape_tests {
             price_output: Some(2.0),
             price_cache_read: None,
             price_cache_write: None,
+            input: None,
         };
         let json = serde_json::to_value(&row).expect("json");
         assert_eq!(json["contextWindow"], 128_000);
@@ -585,6 +591,7 @@ mod shape_tests {
                     price_output: None,
                     price_cache_read: None,
                     price_cache_write: None,
+                    input: None,
                 }]),
                 auth_header: None,
             })

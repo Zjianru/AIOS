@@ -619,6 +619,11 @@ impl Agent {
         Ok(())
     }
 
+    /// 运行时刷新当前模型的看图能力（设置页改输入模态后，下一轮生效）。
+    pub fn set_supports_images(&self, supports: bool) {
+        self.inner.model.set_supports_images(supports);
+    }
+
     /// 新会话上启动 agent（会话日志由 store 建好，尚无事件）。
     ///
     /// 配置非法时在建之前返回 Err（不清理 spill、不动工具集、不留下驱动任务）。

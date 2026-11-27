@@ -96,6 +96,7 @@ fn keyring_factory(data_dir: &Path, identity: &Path) -> service::ModelFactory {
                 context_window: DEFAULT_CONTEXT_WINDOW,
                 effort: Effort::new(effort),
                 tool_update: None,
+                supports_images: false,
             },
             Some(std::sync::Arc::new(ConnectionCredential {
                 data_dir: data.clone(),
@@ -196,6 +197,8 @@ async fn send(host: &RootHost, request_id: &str, text: &str) {
         delivery: DeliveryMode::FollowUp,
         pastes: Vec::new(),
         attachments: Vec::new(),
+        object_refs: Vec::new(),
+        quotes: Vec::new(),
         canvas: None,
         result_card: None,
         result_cards: Vec::new(),

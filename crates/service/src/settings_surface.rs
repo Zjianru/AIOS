@@ -410,6 +410,9 @@ impl RootHost {
                 if let Some(price) = row.price_cache_write {
                     info.price_cache_write = Some(price);
                 }
+                if let Some(input) = &row.input {
+                    info.input = input.clone();
+                }
             } else {
                 models.push(model::catalog::ModelInfo {
                     id: row.id.clone(),
@@ -423,6 +426,7 @@ impl RootHost {
                     thinks: false,
                     efforts: Vec::new(),
                     tool_update: None,
+                    input: row.input.clone().unwrap_or_default(),
                 });
             }
         }

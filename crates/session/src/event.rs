@@ -55,7 +55,7 @@ use crate::SessionId;
 /// 旧日志原样读，旧版本读不了带新字段的日志，按 spec 升版本）。
 /// v20：新增 conversation/rewound 会话事件（外壳 surfaceOp replace 圈恢复区间）与
 /// File 块的 mime 可选字段；旧日志原样读，旧版本读不了新事件，按 spec 升版本、旧版本仍拒绝。
-pub const FORMAT_VERSION: u64 = 20;
+pub const FORMAT_VERSION: u64 = 21;
 
 /// 读取器最早能读的版本。14–20 版日志原样读、续写时 header 留原版本；
 /// 13 及以下、21 及以上拒绝（文件一字不改）。

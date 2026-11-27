@@ -322,6 +322,7 @@ mod tests {
                 price_output: None,
                 price_cache_read: None,
                 price_cache_write: None,
+                input: None,
             }]),
             auth_header: None,
         }
@@ -473,6 +474,7 @@ mod tests {
                 price_output: None,
                 price_cache_read: None,
                 price_cache_write: None,
+                input: None,
             }]),
             auth_header: None,
         }

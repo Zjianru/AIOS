@@ -172,8 +172,8 @@ test('引用：选中文字变成输入框上方的引用卡', async ({ page }) 
 });
 
 
-/// T013.7 清单 13：拖进文字文件出卡片；拖进二进制给提示。
-test('拖拽：文字文件出卡片，二进制提示只能放文字文件', async ({ page }) => {
+/// T013.7 清单 13 / 拖进文字文件出卡片；二进制也收，出非文字卡。
+test('拖拽：文字文件出卡片，二进制出非文字卡', async ({ page }) => {
   const fixture = await startKernelFixture();
   try {
     await page.goto(urlOf(fixture));
@@ -190,7 +190,7 @@ test('拖拽：文字文件出卡片，二进制提示只能放文字文件', as
       data.items.add(new File([new Uint8Array([0, 1, 2, 3])], 'bin.dat', { type: 'application/octet-stream' }));
       element.dispatchEvent(new DragEvent('drop', { dataTransfer: data, bubbles: true, cancelable: true }));
     });
-    await expect(page.getByText('只能放文字文件')).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator('[data-kind="attachment-binary"]')).toHaveCount(1, { timeout: 15_000 });
     await expect(page.locator('[data-kind="file-card"]')).toHaveCount(1);
   } finally {
     await fixture.close();

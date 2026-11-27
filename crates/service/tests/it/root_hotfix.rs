@@ -21,6 +21,7 @@ fn deepseek_config() -> DeepSeekConfig {
         context_window: DEFAULT_CONTEXT_WINDOW,
         effort: Effort::new("high"),
         tool_update: None,
+        supports_images: false,
     }
 }
 
@@ -91,6 +92,7 @@ fn factory(data_dir: &Path, identity: &Path) -> service::ModelFactory {
                 context_window: DEFAULT_CONTEXT_WINDOW,
                 effort: Effort::new(effort),
                 tool_update: None,
+                supports_images: false,
             },
             Some(crate::common::test_credential(&data)),
         ))

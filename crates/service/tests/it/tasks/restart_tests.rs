@@ -1066,6 +1066,8 @@ async fn resume_attempt_rehands_the_latest_upstream_result() {
         text: "再查一遍".to_owned(),
         pastes: Vec::new(),
         attachments: Vec::new(),
+        object_refs: Vec::new(),
+        quotes: Vec::new(),
     }))
     .await
     .expect("A2 输入");
@@ -1110,6 +1112,8 @@ async fn resume_attempt_rehands_the_latest_upstream_result() {
         text: "照最新的再写一遍".to_owned(),
         pastes: Vec::new(),
         attachments: Vec::new(),
+        object_refs: Vec::new(),
+        quotes: Vec::new(),
     }))
     .await
     .expect("B2 输入");

@@ -433,12 +433,13 @@ function ModelCatalog({ models, onChange, defaults, discover, required, connecti
 
       {models.length ? (
         <div className="mt-2 space-y-1.5">
-          <div className="grid grid-cols-[1fr_1fr_64px_64px_112px_24px] gap-1.5 px-0.5 text-1 text-ink-3">
+          <div className="grid grid-cols-[1fr_1fr_64px_64px_112px_88px_24px] gap-1.5 px-0.5 text-1 text-ink-3">
             <span>模型 ID</span>
             <span>显示名称</span>
             <span>上下文</span>
             <span>最大输出</span>
             <span>单价 $/M</span>
+            <span title="空着跟目录走；目录没写就当看不了图">输入</span>
             <span />
           </div>
           <div className="px-0.5 text-1 leading-4 text-ink-3" data-settings="price-help">
@@ -446,7 +447,7 @@ function ModelCatalog({ models, onChange, defaults, discover, required, connecti
           </div>
           {models.map((row, index) => (
             <div key={index}>
-            <div className="grid grid-cols-[1fr_1fr_64px_64px_112px_24px] items-center gap-1.5">
+            <div className="grid grid-cols-[1fr_1fr_64px_64px_112px_88px_24px] items-center gap-1.5">
               <input
                 className={cn(inputClass, 'brand-type', blockedBy(row.id) && 'text-ink-3 line-through')}
                 value={row.id}
@@ -468,6 +469,26 @@ function ModelCatalog({ models, onChange, defaults, discover, required, connecti
               >
                 {priceLabel(row)}
               </button>
+              <select
+                data-settings="model-input"
+                title={row.input ? '自己选的输入模态；选「跟目录」回到目录写的' : '跟目录走'}
+                value={row.input ? (row.input.includes('image') ? 'text+image' : 'text') : ''}
+                onChange={(event) =>
+                  setRow(index, {
+                    input:
+                      event.target.value === ''
+                        ? undefined
+                        : event.target.value === 'text+image'
+                          ? ['text', 'image']
+                          : ['text'],
+                  })
+                }
+                className={cn(inputClass, 'px-1 text-1', row.input ? 'text-ink' : 'text-ink-3')}
+              >
+                <option value="">跟目录</option>
+                <option value="text">文字</option>
+                <option value="text+image">文字+图片</option>
+              </select>
               <div className="flex items-center">
                 {onMask && connectionId && row.id.trim() ? (
                   blockedBy(row.id) ? (

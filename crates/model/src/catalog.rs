@@ -65,6 +65,15 @@ pub struct CatalogModel {
     /// models.dev 的 status；`deprecated` 表示厂商不再通过公开 API 提供这个模型。
     #[serde(default)]
     pub status: Option<String>,
+    /// models.dev 的 modalities（保留输入模态）。
+    #[serde(default)]
+    pub modalities: Modalities,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Modalities {
+    #[serde(default)]
+    pub input: Vec<String>,
 }
 
 impl CatalogModel {
@@ -208,6 +217,9 @@ pub struct ModelInfo {
         skip_serializing_if = "Option::is_none"
     )]
     pub tool_update: Option<ToolUpdate>,
+    /// input modalities (models.dev modalities.input; empty = not declared).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input: Vec<String>,
 }
 
 /// 只认 `addition-only`；不认识的字符串（例如 DSH 的 `in-history`）读成 None，不报错。
@@ -330,6 +342,7 @@ fn model_info(provider: &CatalogProvider, model: &CatalogModel) -> ModelInfo {
         thinks: model.reasoning,
         efforts: levels(provider, model),
         tool_update: declared_tool_update(&provider.id, &model.id),
+        input: model.modalities.input.clone(),
     }
 }
 
@@ -459,6 +472,7 @@ pub fn merge_live(
             thinks: false,
             efforts: Vec::new(),
             tool_update: None,
+            input: Vec::new(),
         });
         if let Some(name) = live.display_name {
             info.name = name;
@@ -493,6 +507,7 @@ pub fn live_models_info(live: &[LiveModel]) -> Vec<ModelInfo> {
             thinks: false,
             efforts: Vec::new(),
             tool_update: live.tool_update,
+            input: Vec::new(),
         })
         .collect()
 }

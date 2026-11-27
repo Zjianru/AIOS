@@ -301,6 +301,8 @@ async fn upstream_new_result_marks_reevaluation_and_continue_checks_again() {
         text: "再查一版".to_owned(),
         pastes: Vec::new(),
         attachments: Vec::new(),
+        object_refs: Vec::new(),
+        quotes: Vec::new(),
     }))
     .await
     .expect("A 第二轮输入");
@@ -486,6 +488,8 @@ async fn update_task_requirement_card_round_trip_opens_a_new_attempt() {
             delivery: service::DeliveryMode::FollowUp,
             pastes: Vec::new(),
             attachments: Vec::new(),
+            object_refs: Vec::new(),
+            quotes: Vec::new(),
             canvas: None,
             result_card: Some(service::SendResultCard {
                 task_id: task_id.clone(),

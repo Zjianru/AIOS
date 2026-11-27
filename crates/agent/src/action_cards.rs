@@ -140,6 +140,9 @@ fn first_text(message: &Message) -> Option<&str> {
         ContentBlock::Reasoning { .. }
         | ContentBlock::ToolCall { .. }
         | ContentBlock::File { .. }
+        | ContentBlock::Image { .. }
+        | ContentBlock::ObjectRef { .. }
+        | ContentBlock::Quote { .. }
         | ContentBlock::ResultCard { .. } => None,
     })
 }
