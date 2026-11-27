@@ -135,7 +135,12 @@ impl InstallPackageAction {
         installer.install_spec(&spec).await?;
         let status = installer.status(id);
         Ok(ActionOutcome {
-            summary: format!("{} 已装好（{}）。", spec.name, spec.version),
+            summary: format!(
+                "{} 已装好（{}）；{} 个文件 sha256 都对上了。",
+                spec.name,
+                spec.version,
+                spec.files.len()
+            ),
             data: json!({
                 "package": installer::status_view(&status),
                 "note": "下载并核对完成",

@@ -36,6 +36,13 @@ const OCR_DICT_URL: &str = "https://raw.githubusercontent.com/PaddlePaddle/Paddl
 pub fn manifest() -> &'static [PackageSpec] {
     static MANIFEST: std::sync::OnceLock<Vec<PackageSpec>> = std::sync::OnceLock::new();
     MANIFEST.get_or_init(|| {
+        // 只在显式测试进程里允许用本地假清单；生产只读内置清单。
+        if let Some(path) = std::env::var_os("AIOS_PACKAGE_TEST_MANIFEST")
+            && let Ok(text) = std::fs::read_to_string(path)
+            && let Ok(specs) = serde_json::from_str::<Vec<PackageSpec>>(&text)
+        {
+            return specs;
+        }
         vec![PackageSpec {
             id: "pp-ocrv6-small".to_owned(),
             name: "本机 OCR（PP-OCRv6 small）".to_owned(),

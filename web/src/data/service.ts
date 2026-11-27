@@ -711,3 +711,27 @@ export async function actionAct(
 ): Promise<ActionActResponse> {
   return (await post({ method: 'action-act', action, details } as never)) as unknown as ActionActResponse;
 }
+
+// 设置 › 看图的协议入口。
+import type { PackageStatusResponse as VisionPackageStatusResponse } from './generated/PackageStatusResponse';
+import type { PackageUninstallRequest as VisionPackageUninstallRequest } from './generated/PackageUninstallRequest';
+import type { PackageUninstallResponse as VisionPackageUninstallResponse } from './generated/PackageUninstallResponse';
+import type { ScreenPermissionResponse } from './generated/ScreenPermissionResponse';
+import type { VisionTestRequest } from './generated/VisionTestRequest';
+import type { VisionTestResponse } from './generated/VisionTestResponse';
+
+export async function visionTest(input: VisionTestRequest): Promise<VisionTestResponse> {
+  return post({ method: 'vision-test', ...input });
+}
+
+export async function screenPermission(): Promise<ScreenPermissionResponse> {
+  return post({ method: 'screen-permission' });
+}
+
+export async function visionPackageStatus(): Promise<VisionPackageStatusResponse> {
+  return post({ method: 'package-status' });
+}
+
+export async function visionPackageUninstall(input: VisionPackageUninstallRequest): Promise<VisionPackageUninstallResponse> {
+  return post({ method: 'package-uninstall', ...input });
+}

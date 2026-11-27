@@ -95,6 +95,8 @@ pub struct VisionTools {
     data_dir: std::path::PathBuf,
     runtime: Arc<VisionRuntime>,
     permission: Arc<dyn ScreenPermissionProbe>,
+    // Last ground/crop images for vision_present fallback.
+    last_images: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl VisionTools {
@@ -107,6 +109,7 @@ impl VisionTools {
             data_dir,
             runtime,
             permission,
+            last_images: Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
@@ -457,9 +460,12 @@ impl VisionTools {
         let meta = Self::image_meta(&[&annotated, &crop]);
         let mut meta = meta;
         meta["bbox"] = json!([x, y, w, h]);
+        if let Ok(mut last) = self.last_images.lock() {
+            *last = vec![annotated.id.clone(), crop.id.clone()];
+        }
         let text = format!(
-            "找到「{query}」（附件 {}）：原图 bbox {},{},{},{}；已给标注图和放大图。",
-            stored.name, x, y, w, h
+            "找到「{query}」（附件 {}）：原图 bbox {},{},{},{}；标注图 id={}，放大图 id={}。调 vision_present 时把这两个 id 原样传入。",
+            stored.name, x, y, w, h, annotated.id, crop.id
         );
         Ok(ToolResult::success_with_meta(&call.id, text, meta))
     }
@@ -542,8 +548,21 @@ impl VisionTools {
         }
         let mut entries = Vec::new();
         for id in &ids {
-            let (_, stored) = self.read_image(id)?;
-            entries.push(stored);
+            if let Ok((_, stored)) = self.read_image(id) {
+                entries.push(stored);
+            }
+        }
+        if entries.is_empty()
+            && let Ok(last) = self.last_images.lock()
+        {
+            for id in last.iter() {
+                if let Ok((_, stored)) = self.read_image(id) {
+                    entries.push(stored);
+                }
+            }
+        }
+        if entries.is_empty() {
+            return Err(ToolFailure::plain("没有可展示的图片附件"));
         }
         let refs: Vec<&tools::attachments::StoredAttachment> = entries.iter().collect();
         Ok(ToolResult::success_with_meta(
@@ -1098,8 +1117,13 @@ mod tests {
         .await;
         assert_eq!(missing.error_code.as_deref(), Some("OCR_MODEL_MISSING"));
         let Some(models) = std::env::var_os("AIOS_OCR_MODELS").map(std::path::PathBuf::from) else {
+            eprintln!("SKIP: AIOS_OCR_MODELS 未设置");
             return;
         };
+        if !models.join("det.onnx").is_file() {
+            eprintln!("SKIP: AIOS_OCR_MODELS 下没有模型文件");
+            return;
+        }
         let installer = crate::installer::Installer::new(dir.path().to_path_buf());
         let spec = crate::installer::find("pp-ocrv6-small").unwrap();
         let root = installer.version_root(spec);

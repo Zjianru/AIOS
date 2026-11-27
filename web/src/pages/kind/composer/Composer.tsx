@@ -23,6 +23,9 @@ import { canRecallCleared } from '../rewind.ts';
 import { takePendingDraft, takePendingQuote } from '@/lib/pendingDraft';
 import type { RewindSource } from '../rewind.ts';
 import { attachmentGet, attachmentPut, fileReferences, peekAvailableModels } from '@/data/service';
+import { getModelSettings } from '@/data/keyring';
+import type { VisionModelRefView } from '@/data/keyring';
+import { markImageSent, NO_VISION_TEXT } from '../visionSentAs';
 import type { FileReferenceEntry, FileReferenceObject, SendAttachmentRef } from '@/data/service';
 import { cn } from '@/lib/utils';
 import {
@@ -189,6 +192,39 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const kindModel = useKindStore((state) => state.model);
   // 查不到/读不到都按看不了图（不猜）；加载完成前也不显示缩略图。
   const [modelSeesImages, setModelSeesImages] = useState(false);
+  const [visionChain, setVisionChain] = useState<VisionModelRefView[]>([]);
+  useEffect(() => {
+    let alive = true;
+    const read = () => {
+      void getModelSettings()
+        .then((settings) => {
+          if (alive) setVisionChain(settings.visionModels);
+        })
+        .catch(() => {
+          if (alive) setVisionChain([]);
+        });
+    };
+    read();
+    const onChanged = () => read();
+    window.addEventListener('aios:vision-settings', onChanged);
+    return () => {
+      alive = false;
+      window.removeEventListener('aios:vision-settings', onChanged);
+    };
+  }, []);
+  // 图片一放进输入框就记下「发出去会是什么」，历史展示不随后来的设置变；
+  // 发送时仍会按那一刻的设置再写一次。
+  useEffect(() => {
+    if (modelSeesImages) return;
+    const firstVision = visionChain[0];
+    for (const file of attachments) {
+      if (!imageMimeSupported(file.mime)) continue;
+      markImageSent(
+        file.id,
+        firstVision ? { kind: 'paraphrased', model: firstVision.model } : { kind: 'omitted' },
+      );
+    }
+  }, [attachments, modelSeesImages, visionChain]);
   useEffect(() => {
     let alive = true;
     void peekAvailableModels(kindModel.connectionId)
@@ -713,6 +749,16 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       resize();
       inputRef.current?.focus();
     });
+    if (!modelSeesImages) {
+      const firstVision = visionChain[0];
+      for (const file of attachments) {
+        if (!imageMimeSupported(file.mime)) continue;
+        markImageSent(
+          file.id,
+          firstVision ? { kind: 'paraphrased', model: firstVision.model } : { kind: 'omitted' },
+        );
+      }
+    }
     const accepted = await onSend(value, {
       pastes,
       attachments: attachments.map(({ id, name, bytes, mime }) => ({ id, name, bytes, mime: mime ?? null })),
@@ -1097,6 +1143,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
                   file={file}
                   mime={file.mime}
                   imagesOk={imagesOk ?? modelSeesImages}
+                  noVision={!(imagesOk ?? modelSeesImages) && visionChain.length === 0}
+                  paraphraseBy={!(imagesOk ?? modelSeesImages) ? visionChain[0]?.model : undefined}
                   onRemove={() => setAttachments((previous) => previous.filter((item) => item.id !== file.id))}
                 />
               ) : (
@@ -1113,6 +1161,16 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
                 />
               ),
             )}
+          </div>
+        ) : null}
+        {attachments.some((file) => imageMimeSupported(file.mime)) && !(imagesOk ?? modelSeesImages) ? (
+          <div
+            className="mb-1.5 text-1 leading-4 text-wait"
+            data-kind={visionChain.length === 0 ? 'no-vision' : 'paraphrase'}
+          >
+            {visionChain.length === 0
+              ? NO_VISION_TEXT
+              : '主模型看不了图：发出去之前，看图模型 ' + visionChain[0].model + ' 先把这张图转述成一段文字，放在图的位置；原图照旧存着。'}
           </div>
         ) : null}
         <div className="flex items-end gap-2">

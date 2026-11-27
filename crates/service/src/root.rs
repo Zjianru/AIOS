@@ -246,7 +246,7 @@ pub(crate) const PAGE_LIST: &str = concat!(
 
 /// T078.3：Kind 的分条/表情规则，和页面清单一同进 FixedBlock。
 /// 看图固定说明：静态前缀，随下一次重排生效，不每轮追加。
-pub(crate) const KIND_VISION_RULES: &str = "When an image placeholder says the model cannot see it, say plainly that you cannot see the image; never invent its content. If no vision model is configured, tell the user to add one in Settings › Models & Connections › Vision.
+pub(crate) const KIND_VISION_RULES: &str = "When an image placeholder says the model cannot see it, say plainly that you cannot see the image; never invent its content. If no vision model is configured, tell the user to add one in Settings › Models & Connections › Vision. When the user asks to read text from an image and the local OCR tool returns OCR_MODEL_MISSING, load aios-settings and propose the install_package card for id pp-ocrv6-small once; never download it yourself. When the user asks where something is in an image, call vision_ground and then vision_present so the answer shows the annotated and zoomed images. If no vision model is configured and the image placeholder is an omission line with only the attachment id, do not call any image tool; say plainly you cannot see it and point to Settings › Models & Connections › Vision. When the user asks you to look again at an image that was sent earlier (for example 现在看看那张图 or 回头看), use the attachment id from the omission line, call vision_ground to get the annotated and zoomed images, then call vision_present with exactly the two image attachment ids returned by vision_ground (not the original image id) so both images appear under your answer; answer from the reconstructed note as well.
 ";
 
 pub(crate) const KIND_OUTPUT_RULES: &str = concat!(

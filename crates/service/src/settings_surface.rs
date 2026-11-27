@@ -647,7 +647,7 @@ impl RootHost {
                 drop(
                     host.agent()
                         .append_plugin_notice(
-                            "看图模型已填；之前看不了的图可按附件 id 用 vision_describe 看",
+                            "看图模型已填；之前看不了的图可按附件 id 用 vision_describe 看；要框图和放大图就调 vision_ground，再调 vision_present 把图发给用户。",
                         )
                         .await,
                 );

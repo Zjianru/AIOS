@@ -29,6 +29,7 @@ import { MemoChip, memoryCardOf } from '@/pages/kind/MemoChip';
 import { formatDurationMs } from '@/lib/numbers';
 import type { TurnStatus } from '@/data/types';
 import { Markdown } from '../Markdown';
+import { ToolImages } from '../VisionImages';
 import { Card } from '../cards/Card';
 import { toolCardOf } from '../cards/model';
 import {
@@ -181,6 +182,12 @@ function ToolRow({ step, cwd }: { step: ToolStepView; cwd: string }) {
           <MemoChip card={memoryCardOf(step.meta)!} />
         </div>
       ) : null}
+      {(() => {
+        const meta = step.meta ?? null;
+        const raw = meta ? (meta.images ?? meta.imageAttachments) : null;
+        const images = Array.isArray(raw) ? raw.filter((item): item is string => typeof item === 'string') : [];
+        return images.length > 0 ? <ToolImages ids={images} /> : null;
+      })()}
       {open ? (
         <div className="mb-2 mt-1 pl-[22px]">
           <ToolCardBody step={step} cwd={cwd} />
