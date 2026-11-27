@@ -1332,6 +1332,30 @@ mod image_block_serialize_tests {
     }
 
     #[test]
+    fn file_quote_model_line_keeps_version() {
+        let value = body(
+            &config(false),
+            vec![ContentBlock::Quote {
+                text: "第一行\n第二行".to_owned(),
+                source: Some(crate::ir::QuoteSource {
+                    kind: "file".to_owned(),
+                    id: "评测记录.md".to_owned(),
+                    title: "评测记录.md".to_owned(),
+                    version: Some(3),
+                    task_id: None,
+                }),
+            }],
+        );
+        let content = &value["messages"][0]["content"][0];
+        let text = content["text"].as_str().unwrap_or_default();
+        assert!(text.contains("引用阅读页文件"), "来源行：{text}");
+        assert!(text.contains("评测记录.md"), "身份：{text}");
+        assert!(text.contains("版本 3"), "版本：{text}");
+        assert!(text.contains("> 第一行"), "原文第一行：{text}");
+        assert!(text.contains("> 第二行"), "原文第二行：{text}");
+    }
+
+    #[test]
     fn svg_is_not_sent_as_an_image_block() {
         let path = std::env::temp_dir().join("aios-image-svg.svg");
         std::fs::write(&path, b"<svg/>").unwrap();

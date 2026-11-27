@@ -330,6 +330,10 @@ impl ContentBlock {
                 version.unwrap_or(1)
             ),
             "project" => format!("[引用项目：{title}（{id}）]"),
+            "file" => format!(
+                "[引用阅读页文件：{title}（{id}，版本 {}）]",
+                version.unwrap_or(1)
+            ),
             _ => format!("[引用了 {kind}：{title}（{id}）]"),
         }
     }

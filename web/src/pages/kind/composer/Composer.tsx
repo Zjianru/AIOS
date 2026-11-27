@@ -430,12 +430,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             restored.push(item as ComposerQuote);
           }
         }
-        const pending = takePendingQuote();
-        if (pending) restored.push({ text: pending.text, source: pending.source });
+        if (pendingQuote) restored.push({ text: pendingQuote.text, source: pendingQuote.source });
         setQuotes(restored);
-      } else {
-        const pending = takePendingQuote();
-        if (pending) setQuotes([{ text: pending.text, source: pending.source }]);
+      } else if (pendingQuote) {
+        setQuotes([{ text: pendingQuote.text, source: pendingQuote.source }]);
       }
       if (Array.isArray(draft.pastes)) {
         setPastes(draft.pastes.filter((item): item is string => typeof item === 'string'));

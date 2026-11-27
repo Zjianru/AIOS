@@ -362,3 +362,28 @@ test('阅读页选中文字：引用到 Kind 输入框（草稿），发送后�
 
 
 
+
+
+test('Kind 已有草稿时，阅读页引用也进输入框、草稿不丢', async ({ page }) => {
+  test.setTimeout(180_000);
+  const fixture = await startKernelFixture();
+  try {
+    await page.goto(urlOf(fixture, '#kind'));
+    const box = page.locator('[data-kind="composer-input"]');
+    await expect(box).toBeVisible({ timeout: 30_000 });
+    await box.fill('已有草稿一句');
+    await page.waitForTimeout(300);
+    await page.goto(urlOf(fixture, '#read:' + encodeURIComponent('评测记录.md')));
+    const heading = page.locator('h2').first();
+    await expect(heading).toBeVisible({ timeout: 30_000 });
+    await selectTextIn(page, heading, '评测记录');
+    await page.locator('[data-kind="quote-selection"]').click();
+    await expect(page).toHaveURL(/#kind/, { timeout: 10_000 });
+    await expect(page.locator('[data-kind="composer-input"]')).toHaveValue('已有草稿一句', { timeout: 20_000 });
+    const quoteCard = page.locator('[data-kind="composer-cards"] [data-kind="quote-card"]').last();
+    await expect(quoteCard).toBeVisible({ timeout: 20_000 });
+    await expect(quoteCard.locator('[data-kind="quote-source"]')).toContainText('阅读页');
+  } finally {
+    await fixture.close();
+  }
+});
