@@ -13,10 +13,13 @@ use vision::{GlobalNote, GlobalNotes, NoteKind, SessionNotes};
 /// 描述一条失败时给上层的类别；只用于选下一个后端/冷却。
 #[derive(Debug, Clone)]
 pub enum DescribeFailure {
-    RateLimited { retry_after_ms: Option<u64> },
+    RateLimited {
+        retry_after_ms: Option<u64>,
+    },
     Auth,
     Timeout,
-    Other,
+    #[allow(dead_code)]
+    Other(String),
 }
 
 /// 自动描述需要的最少输入。
@@ -109,7 +112,7 @@ impl VisionRuntime {
         let extra = match failure {
             DescribeFailure::RateLimited { retry_after_ms } => retry_after_ms.unwrap_or(60_000),
             DescribeFailure::Auth => 10 * 60_000,
-            DescribeFailure::Timeout | DescribeFailure::Other => 0,
+            DescribeFailure::Timeout | DescribeFailure::Other(_) => 0,
         };
         if extra == 0 {
             return;
@@ -252,14 +255,14 @@ impl Describer for KeyringDescriber {
         Box::pin(async move {
             let keyring = Arc::new(
                 credentials::Keyring::open(&self.data_dir, self.identity.as_deref())
-                    .map_err(|_error| DescribeFailure::Other)?,
+                    .map_err(|error| DescribeFailure::Other(error.to_string()))?,
             );
             let view = keyring.view();
             let connection = view
                 .connections
                 .into_iter()
                 .find(|connection| connection.id == row.connection)
-                .ok_or(DescribeFailure::Other)?;
+                .ok_or_else(|| DescribeFailure::Other("连接不存在".to_owned()))?;
             let source = Arc::new(ServiceCredentialSource {
                 keyring,
                 connection: row.connection.clone(),
@@ -274,12 +277,12 @@ impl Describer for KeyringDescriber {
                 model: row.model.clone(),
                 max_tokens: 1024,
                 context_window: 128_000,
-                effort: model::Effort::new("high"),
+                effort: model::Effort::new("low"),
                 tool_update: None,
                 supports_images: true,
             };
             let client = model::DeepSeek::with_credentials(config, source)
-                .map_err(|_error| DescribeFailure::Other)?;
+                .map_err(|error| DescribeFailure::Other(error.to_string()))?;
             let image_block = ContentBlock::Image {
                 attachment_id: image.attachment_id.clone(),
                 name: image.name.clone(),
@@ -308,7 +311,7 @@ impl Describer for KeyringDescriber {
                 }
             }
             if text.trim().is_empty() {
-                return Err(DescribeFailure::Other);
+                return Err(DescribeFailure::Other("看图模型没有返回文字".to_owned()));
             }
             Ok(text)
         })
@@ -322,7 +325,7 @@ fn classify_model_error(error: model::ModelError) -> DescribeFailure {
         },
         model::ErrorCode::Quota | model::ErrorCode::Auth => DescribeFailure::Auth,
         model::ErrorCode::Timeout | model::ErrorCode::Transport => DescribeFailure::Timeout,
-        _ => DescribeFailure::Other,
+        _ => DescribeFailure::Other(error.message),
     }
 }
 
@@ -545,7 +548,7 @@ mod tests {
                 .lock()
                 .expect("queue describer 锁被毒化")
                 .pop_front()
-                .unwrap_or(Err(DescribeFailure::Other));
+                .unwrap_or(Err(DescribeFailure::Other("测试".to_owned())));
             Box::pin(async move { result })
         }
     }
@@ -723,7 +726,7 @@ mod tests {
                 model: "m1".to_owned(),
             }],
         );
-        let describer = queue(vec![Err(DescribeFailure::Other)]);
+        let describer = queue(vec![Err(DescribeFailure::Other("测试".to_owned()))]);
         let runtime = VisionRuntime::with_describer(dir.path().to_path_buf(), None, describer);
         let notes = runtime
             .prepare(

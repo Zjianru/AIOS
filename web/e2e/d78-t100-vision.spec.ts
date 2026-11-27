@@ -11,7 +11,7 @@ test.setTimeout(300_000);
 const MAIN = 'MiniMax-M3.1-Flash';
 const VISION = 'MiniMax-M3';
 const RED_PNG =
-  'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAWklEQVR42u3PMQEAAAgDoJnc6BpjDyQgdWXm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5uYGHZgAAWQ6m9YAAAAASUVORK5CYII=';
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
 
 const input = (page: import('@playwright/test').Page) =>
   page.locator('[data-kind="composer-input"]');
@@ -27,7 +27,7 @@ async function configure(
   };
   const connection = settings.settings.connections.find((item) => item.id === 'minimax-cn');
   if (!connection) throw new Error('D78 夹具里没有 minimax-cn 连接');
-  await apiPost(request, fixture, {
+  const update = await apiPost(request, fixture, {
     method: 'connection-update',
     id: connection.id,
     endpoint: connection.endpoint,
@@ -39,17 +39,21 @@ async function configure(
       { id: VISION, input: ['text', 'image'] },
     ],
   });
-  await apiPost(request, fixture, {
+  if (!update.ok()) throw new Error('connection-update ' + update.status());
+  const select = await apiPost(request, fixture, {
     method: 'session-model-select',
     connection: connection.id,
     model: MAIN,
     effortWanted: 'max',
   });
-  await apiPost(request, fixture, { method: 'recheck' });
-  await apiPost(request, fixture, {
+  if (!select.ok()) throw new Error('session-model-select ' + select.status());
+  const recheck = await apiPost(request, fixture, { method: 'recheck' });
+  if (!recheck.ok()) throw new Error('recheck ' + recheck.status());
+  const vision = await apiPost(request, fixture, {
     method: 'settings-update',
     visionModels: [{ connection: connection.id, model: VISION }],
   });
+  if (!vision.ok()) throw new Error('settings-update ' + vision.status());
 }
 
 async function attachImage(page: import('@playwright/test').Page) {
@@ -81,6 +85,15 @@ test('D78 转述：主模型看不了图，看图链 MiniMax-M3 自动描述后�
     await input(page).fill('这张图是什么颜色？只回一个颜色词。');
     await send(page);
     await waitFinished(page);
+    const noteFiles = (await readdir(path.join(fixture.dataDir, 'sessions'))).filter((name) =>
+      name.endsWith('.vision-notes.jsonl'),
+    );
+    const notes = await Promise.all(
+      noteFiles.map((name) => readFile(path.join(fixture.dataDir, 'sessions', name), 'utf8')),
+    );
+    const joined = notes.join('');
+    expect(joined).toContain('此前由视觉模型读取');
+    expect(joined).not.toContain('没有给出描述');
     const answer = (
       await page.locator('[data-kind="assistant-answer"], [data-kind="answer"]').last().innerText()
     ).trim();

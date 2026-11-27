@@ -632,7 +632,7 @@ impl Agent {
 
     /// 当前主模型能不能看图（装配/运行时覆盖后的值）。
     pub fn supports_images(&self) -> bool {
-        self.inner.model.config().supports_images
+        self.inner.model.supports_images()
     }
 
     /// 设置/清空本轮图片投影的会话旁注；服务在发消息前按会话旁注文件准备。
