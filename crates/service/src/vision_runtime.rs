@@ -266,12 +266,17 @@ impl VisionRuntime {
                     && confidence >= OCR_MIN_CONFIDENCE
                 {
                     let global = GlobalNotes::new(&self.data_dir);
-                    drop(global.write_if_absent(&GlobalNote {
-                        attachment_id: id.clone(),
-                        description: text.clone(),
-                        model: "local:pp-ocrv6-small".to_owned(),
-                        created_at: Self::now_ms(),
-                    }));
+                    drop(
+                        global.write_if_absent(&GlobalNote {
+                            attachment_id: id.clone(),
+                            description: text.clone(),
+                            model: "local:pp-ocrv6-small".to_owned(),
+                            confidence_milli: Some(
+                                (confidence.clamp(0.0, 1.0) * 1000.0).round() as u32
+                            ),
+                            created_at: Self::now_ms(),
+                        }),
+                    );
                     let note = vision::described_text(&image.name, &text);
                     wrote_any |= notes
                         .write_text(id, NoteKind::Described, note)
@@ -311,6 +316,7 @@ impl VisionRuntime {
                             attachment_id: id.clone(),
                             description: description.clone(),
                             model: format!("{}/{}", row.connection, row.model),
+                            confidence_milli: None,
                             created_at: Self::now_ms(),
                         }));
                         let text = vision::described_text(&image.name, &description);

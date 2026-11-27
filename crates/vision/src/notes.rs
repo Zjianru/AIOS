@@ -34,6 +34,13 @@ pub struct GlobalNote {
     pub attachment_id: String,
     pub description: String,
     pub model: String,
+    /// 本机 OCR 的置信度（0–1000）；看图模型写的描述没有这个字段。
+    #[serde(
+        rename = "confidenceMilli",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub confidence_milli: Option<u32>,
     #[serde(rename = "createdAt")]
     pub created_at: u64,
 }

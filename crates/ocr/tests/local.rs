@@ -3,6 +3,7 @@
 #[test]
 fn reads_mixed_chinese_english_and_numbers() {
     let Some(dir) = std::env::var_os("AIOS_OCR_MODELS").map(std::path::PathBuf::from) else {
+        eprintln!("SKIP: AIOS_OCR_MODELS 未设置（本机 OCR 真模型测试）");
         return;
     };
     let engine = ocr::LocalOcr::load(
@@ -21,5 +22,10 @@ fn reads_mixed_chinese_english_and_numbers() {
             output.text
         );
     }
-    assert!(output.confidence > 0.5, "置信度过低：{}", output.confidence);
+    assert!(
+        output.confidence >= 0.98,
+        "中英混排置信度要 >=0.98，实际 {}",
+        output.confidence
+    );
+    eprintln!("OCR_CONFIDENCE={:#.6}", output.confidence);
 }

@@ -70,11 +70,17 @@ test('D78 本机 OCR：中英混排逐字读，本机成功不调看图链', asy
     const notesDir = path.join(fixture.dataDir, 'vision', 'notes');
     const noteNames = await readdir(notesDir).catch(() => [] as string[]);
     let noteText = '';
+    let localConfidence = 0;
     for (const name of noteNames) {
       if (!name.endsWith('.json')) continue;
-      noteText += await readFile(path.join(notesDir, name), 'utf8');
+      const text = await readFile(path.join(notesDir, name), 'utf8');
+      noteText += text;
+      const note = JSON.parse(text) as { model?: string; confidenceMilli?: number };
+      if (note.model === 'local:pp-ocrv6-small') localConfidence = note.confidenceMilli ?? 0;
     }
+    console.log('OCR_CONFIDENCE_MILLI=' + String(localConfidence));
     expect(noteText).toContain('local:pp-ocrv6-small');
+    expect(localConfidence).toBeGreaterThanOrEqual(980);
   } finally {
     await fixture.close();
   }
