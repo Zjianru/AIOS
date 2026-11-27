@@ -233,6 +233,6 @@ test('停止：旧日志没有 mime 的图片附件按扩展名回图片', async
   await waitQueued(request, 'pic.png');
   await stopTurn(page);
 
-  await expect(page.locator('[data-kind="file-card"]')).toHaveCount(1, { timeout: 15_000 });
-  await expect(page.locator('[data-kind="file-card"]')).toContainText('image/png');
+  await expect(page.locator('[data-kind="attachment-image"]')).toHaveCount(1, { timeout: 15_000 });
+  await expect(page.locator('[data-kind="attachment-image"]')).toContainText('pic.png');
 });

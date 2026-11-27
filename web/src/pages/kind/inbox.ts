@@ -188,7 +188,7 @@ function restoreOf(message: InboxMessage, seq: number, index: number): QueueRest
         } else if (block.paste) pastes.push(block.text);
         else text.push(block.text);
       } else if (
-        block.type === 'file' &&
+        (block.type === 'file' || block.type === 'image') &&
         typeof block.attachmentId === 'string' &&
         typeof block.name === 'string' &&
         typeof block.bytes === 'number'

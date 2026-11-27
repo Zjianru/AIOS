@@ -189,8 +189,8 @@ test('恢复带附件/结果卡/画布的消息：原文回输入框，各是一
   await selectRow(page, '带附件的话');
   await menu(page).locator('[data-kind="rewind-action"][data-action="restore"]').click();
   await expect(input(page)).toHaveValue('带附件的话');
-  await expect(page.locator('[data-kind="file-card"]')).toHaveCount(1);
-  await expect(page.locator('[data-kind="file-card"]')).toContainText('image/png');
+  await expect(page.locator('[data-kind="attachment-image"]')).toHaveCount(1);
+  await expect(page.locator('[data-kind="attachment-image"]')).toContainText('pic.png');
   await expect(page.locator('[data-kind="result-card-chip"]')).toHaveCount(1);
   await expect(page.locator('[data-kind="attachment-canvas"]')).toHaveCount(1);
 });
