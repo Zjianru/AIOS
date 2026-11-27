@@ -4,8 +4,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use service::{
-    AttachmentPutRequest, Call, RootHost, SendAttachment, SendCanvas, SendObjectRef, SendRequest,
-    SendResultCard,
+    AttachmentPutRequest, Call, RootHost, SendAttachment, SendCanvas, SendObjectRef, SendQuote,
+    SendRequest, SendResultCard,
 };
 use tempfile::tempdir;
 
@@ -49,6 +49,7 @@ fn request(content: &str) -> SendRequest {
         pastes: Vec::new(),
         attachments: Vec::new(),
         object_refs: Vec::new(),
+        quotes: Vec::new(),
         canvas: None,
         result_card: None,
         result_cards: Vec::new(),
@@ -546,4 +547,36 @@ async fn send_object_refs_become_object_ref_blocks_in_the_log() {
         other => panic!("第二个对象引用要写成 ObjectRef 块：{other:?}"),
     }
     assert!(matches!(&blocks[3], model::ContentBlock::ObjectRef { kind, .. } if kind == "project"));
+}
+
+#[tokio::test]
+async fn send_quoted_selection_becomes_a_quote_block_in_the_log() {
+    let data = tempdir().unwrap();
+    let cwd = tempdir().unwrap();
+    let host = host(data.path(), cwd.path()).await;
+    let mut send = request("引用一下");
+    send.quotes = vec![SendQuote {
+        text: "判重用的是原始链接".to_owned(),
+        source: Some(SendObjectRef {
+            kind: "report".to_owned(),
+            id: "report-1".to_owned(),
+            title: "查重复链接".to_owned(),
+            version: Some(2),
+            task_id: Some("task-1".to_owned()),
+        }),
+    }];
+    host.dispatch(Call::Send(send)).await.expect("send");
+    let blocks = wait_user_blocks(&host, data.path()).await;
+    match &blocks[1] {
+        model::ContentBlock::Quote { text, source } => {
+            assert_eq!(text, "判重用的是原始链接");
+            let source = source.as_ref().expect("引用要带来源");
+            assert_eq!(source.kind, "report");
+            assert_eq!(source.id, "report-1");
+            assert_eq!(source.title, "查重复链接");
+            assert_eq!(source.version, Some(2));
+            assert_eq!(source.task_id.as_deref(), Some("task-1"));
+        }
+        other => panic!("引用要写成 Quote 块：{other:?}"),
+    }
 }

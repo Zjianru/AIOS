@@ -27,6 +27,7 @@ import { DeliveryBlock } from './DeliveryBlock';
 import { TurnRow, UserCards } from '@/pages/kind/TurnRow';
 import type { TurnUserView } from '@/pages/kind/turnViews';
 import { Composer } from '@/pages/kind/composer/Composer';
+import { SelectionQuote } from '@/pages/kind/SelectionQuote';
 import type { ComposerHandle, ComposerSendOptions } from '@/pages/kind/composer/Composer';
 import { mergeLiveEvent } from './taskLive';
 import { TaskStatsDock } from './TaskStatsDock';
@@ -70,7 +71,13 @@ export function TaskChatScene() {
   const [saying, setSaying] = useState(false);
   /** T028.5：已经受理、还没出现在会话日志里的输入（排队或正在送）。 */
   const [queued, setQueued] = useState<
-    { inputId: string; text: string; pastes: string[]; attachments: SendAttachmentRef[] }[]
+    {
+      inputId: string;
+      text: string;
+      pastes: string[];
+      attachments: SendAttachmentRef[];
+      quotes: { text: string; source?: { kind: string; id: string; title: string; version?: number | null; taskId?: string | null } | null }[];
+    }[]
   >([]);
   const composerRef = useRef<ComposerHandle | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -413,11 +420,12 @@ export function TaskChatScene() {
       const pastes = options.pastes;
       const attachments = options.attachments;
       const objectRefs = options.objectRefs ?? [];
-      const response = await taskSay(taskId, text, { pastes, attachments, objectRefs });
+      const quotes = options.quotes ?? [];
+      const response = await taskSay(taskId, text, { pastes, attachments, objectRefs, quotes });
       // 说了以后（尤其新 Attempt）等它真的跑起来再接回实时帧。
       if (!socketRef.current) void reopenTaskStream(requestToken.current);
       setQueued((current) =>
-        current.concat({ inputId: response.inputId, text, pastes, attachments }),
+        current.concat({ inputId: response.inputId, text, pastes, attachments, quotes }),
       );
       if (typeof response.newAttempt === 'number') {
         const attempt = response.newAttempt;
@@ -841,6 +849,15 @@ export function TaskChatScene() {
         onScroll={onScroll}
       >
         <div ref={contentRef} className="mx-auto w-full max-w-[680px] pb-6" data-conversation="task">
+          <SelectionQuote
+            source={{
+              kind: 'task',
+              id: taskId,
+              title: task.title,
+              version: task.requirementVersions?.length ?? 1,
+            }}
+            onQuote={(text, source) => composerRef.current?.putQuote({ text, source })}
+          >
           {views.length === 0 ? (
             <div className="px-6 py-10 text-center text-3 leading-6 text-ink-3" data-kind="task-empty">
               这个任务的会话还没写下任何内容。
@@ -861,7 +878,8 @@ export function TaskChatScene() {
             ))
           )}
           {queuedVisible.map((item) => {
-            const hasCards = item.pastes.length > 0 || item.attachments.length > 0;
+            const hasCards =
+              item.pastes.length > 0 || item.attachments.length > 0 || item.quotes.length > 0;
             const user: TurnUserView = {
               text: '',
               elements: [],
@@ -869,6 +887,7 @@ export function TaskChatScene() {
               files: item.attachments,
               images: [],
               objectRefs: [],
+              quotes: item.quotes,
               canvas: null,
               resultCard: null,
               rpcId: null,
@@ -904,6 +923,7 @@ export function TaskChatScene() {
               正在读更早的记录…
             </div>
           ) : null}
+          </SelectionQuote>
         </div>
       </div>
       )}

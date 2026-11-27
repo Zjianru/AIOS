@@ -256,8 +256,16 @@ test('任务对话同一 Composer：@ 对象候选和引用片也在', async ({ 
   try {
     const response = await apiPost(request, fixture, { method: 'work' });
     const work = (await response.json()) as { tasks: { id: string; title: string }[] };
-    const task = work.tasks.find((item) => item.title === '查 A');
-    expect(task, '夹具里要有任务「查 A」').toBeTruthy();
+    let task = work.tasks[0];
+    for (const candidate of work.tasks) {
+      const read = await apiPost(request, fixture, { method: 'task-read', taskId: candidate.id });
+      const body = (await read.json()) as { task?: { running?: boolean } };
+      if (!body.task?.running) {
+        task = candidate;
+        break;
+      }
+    }
+    expect(task, '夹具里要有任务').toBeTruthy();
     await page.goto(urlOf(fixture, '#taskchat:' + task!.id));
     const box = page.locator('[data-kind="composer-input"]');
     await expect(box).toBeVisible({ timeout: 30_000 });
@@ -273,3 +281,84 @@ test('任务对话同一 Composer：@ 对象候选和引用片也在', async ({ 
     await fixture.close();
   }
 });
+
+async function selectTextIn(
+  page: import('@playwright/test').Page,
+  locator: import('@playwright/test').Locator,
+  needle: string,
+) {
+  await locator.scrollIntoViewIfNeeded();
+  await locator.evaluate((element, needleText) => {
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    let node = walker.nextNode();
+    while (node && !(node.textContent ?? '').includes(needleText)) node = walker.nextNode();
+    if (!node) throw new Error('选区文字没找到：' + needleText);
+    const start = (node.textContent ?? '').indexOf(needleText);
+    const range = document.createRange();
+    range.setStart(node, start);
+    range.setEnd(node, start + needleText.length);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    const target = range.commonAncestorContainer.parentElement ?? element;
+    target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+  }, needle);
+}
+
+test('报告卡选中文字：引用到 Kind 输入框，发送成引用块，刷新还在', async ({ page }) => {
+  test.setTimeout(180_000);
+  const fixture = await startKernelFixture({ taskResult: 'ready' });
+  try {
+    await page.goto(urlOf(fixture, '#kind'));
+    await page.getByPlaceholder('和 Kind 说…').fill('帮我查一下新闻归档里的判重规则');
+    await page.locator('[data-kind="send"]').click();
+    const card = page.locator('[data-kind="task-result"]').last();
+    await expect(card).toBeVisible({ timeout: 30_000 });
+    await expect(card).toHaveAttribute('data-state', 'ready', { timeout: 30_000 });
+    const summary = '判重用的是原始链接';
+    await selectTextIn(page, card, summary);
+    const quoteButton = page.locator('[data-kind="quote-selection"]');
+    await expect(quoteButton).toBeVisible();
+    await quoteButton.click();
+    const quoteCard = page.locator('[data-kind="composer-cards"] [data-kind="quote-card"]').last();
+    await expect(quoteCard).toBeVisible();
+    await expect(quoteCard.locator('[data-kind="quote-source"]')).toContainText('报告');
+    await page.locator('[data-kind="send"]').click();
+    const row = page.locator('[data-kind="user-message-row"]').last();
+    await expect(row.locator('[data-kind="quote-card"]')).toBeVisible({ timeout: 20_000 });
+    await expect(row.locator('[data-kind="quote-source"]')).toContainText('报告');
+    await page.reload();
+    const history = page.locator('[data-kind="user-message-row"]').last();
+    await expect(history.locator('[data-kind="quote-card"]')).toBeVisible({ timeout: 30_000 });
+    await expect(history.locator('[data-kind="quote-source"]')).toContainText('报告');
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('阅读页选中文字：引用到 Kind 输入框（草稿），发送后消息有引用块', async ({ page }) => {
+  test.setTimeout(180_000);
+  const fixture = await startKernelFixture();
+  try {
+    await page.goto(urlOf(fixture, '#read:' + encodeURIComponent('评测记录.md')));
+    const heading = page.locator('h2').first();
+    await expect(heading).toBeVisible({ timeout: 30_000 });
+    await selectTextIn(page, heading, '评测记录');
+    const quoteButton = page.locator('[data-kind="quote-selection"]');
+    await expect(quoteButton).toBeVisible();
+    await quoteButton.click();
+    await expect(page).toHaveURL(/#kind/, { timeout: 10_000 });
+    const quoteCard = page.locator('[data-kind="composer-cards"] [data-kind="quote-card"]').last();
+    await expect(quoteCard).toBeVisible({ timeout: 20_000 });
+    await expect(quoteCard.locator('[data-kind="quote-source"]')).toContainText('阅读页');
+    await page.locator('[data-kind="send"]').click();
+    const row = page.locator('[data-kind="user-message-row"]').last();
+    await expect(row.locator('[data-kind="quote-card"]')).toBeVisible({ timeout: 20_000 });
+    await expect(row.locator('[data-kind="quote-source"]')).toContainText('阅读页');
+  } finally {
+    await fixture.close();
+  }
+});
+
+
+

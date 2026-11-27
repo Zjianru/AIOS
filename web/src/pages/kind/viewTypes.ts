@@ -72,6 +72,18 @@ export interface ObjectRefView {
   taskId?: string;
 }
 
+/** 消息里的一段选中引用。 */
+export interface QuoteView {
+  text: string;
+  source?: {
+    kind: string;
+    id: string;
+    title: string;
+    version?: number | null;
+    taskId?: string | null;
+  } | null;
+}
+
 export interface TurnUserView {
   text: string;
   elements: TextElement[];
@@ -83,6 +95,8 @@ export interface TurnUserView {
   images: SendAttachmentRef[];
   /** @ 引用片（任务/报告/项目；带身份和版本）。 */
   objectRefs: ObjectRefView[];
+  /** 选中文字引用（带来源；text 只用于展示，正文不重复）。 */
+  quotes: QuoteView[];
  /** ：这句话是画布里的按钮放进来的（日志块上的 canvas：id + 标题）；没有就是自己写的。 */
   canvas: { id: string; title: string } | null;
  /** ：这句话带着一张结果卡（「要求修改」放进输入框的卡）。 */

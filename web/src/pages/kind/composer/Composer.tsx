@@ -20,7 +20,7 @@ import { fileMentions } from '../atGrammar';
 import type { QueueRestore } from '../inbox';
 import { mimeFromFileName } from '../fileMime.ts';
 import { canRecallCleared } from '../rewind.ts';
-import { takePendingDraft } from '@/lib/pendingDraft';
+import { takePendingDraft, takePendingQuote } from '@/lib/pendingDraft';
 import type { RewindSource } from '../rewind.ts';
 import { attachmentGet, attachmentPut, fileReferences, peekAvailableModels } from '@/data/service';
 import type { FileReferenceEntry, FileReferenceObject, SendAttachmentRef } from '@/data/service';
@@ -46,6 +46,8 @@ export interface ComposerSendOptions {
   attachments: SendAttachmentRef[];
   /** @ 选中的任务/报告/项目引用片。 */
   objectRefs?: FileReferenceObject[];
+  /** 选中文字引用（带来源的走服务端 Quote 块；不带来源的仍拼进正文）。 */
+  quotes?: ComposerQuote[];
   /** T015.4：画布放进来的那一句带着画布身份；没有就是自己写的。 */
   canvas?: { id: string; title: string };
   /** T054.2：结果卡「要求修改」带进来的那张卡。 */
@@ -69,11 +71,13 @@ export interface ComposerHandle {
   recallCleared: () => boolean;
   /** 恢复对话时把原文（字/粘贴/附件/结果卡/画布标记）放回输入框。 */
   putBack: (source: RewindSource) => void;
+  /** 任务对话/报告里选中的一段话放进输入框（带来源）。 */
+  putQuote: (quote: ComposerQuote) => void;
 }
 
 interface ClearedDraft {
   text: string;
-  quotes: string[];
+  quotes: ComposerQuote[];
   pastes: string[];
   attachments: { id: string; name: string; bytes: number; mime: string }[];
   fromCanvas: { id: string; title: string } | null;
@@ -102,6 +106,18 @@ interface ComposerProps {
   pageTag?: string;
   /** 当前模型能不能看图；看不了时图片卡照实写，仍允许发送。 */
   imagesOk?: boolean;
+}
+
+/** 输入框里的一段引用（source 为空=Kind 里普通选段，仍拼进正文）。 */
+export interface ComposerQuote {
+  text: string;
+  source?: {
+    kind: string;
+    id: string;
+    title: string;
+    version?: number | null;
+    taskId?: string | null;
+  } | null;
 }
 
 /** 本地记录文件的 MIME（发送时只带 id/name/bytes；预览用）。 */
@@ -166,7 +182,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const composingRef = useRef(false);
   const [text, setText] = useState('');
-  const [quotes, setQuotes] = useState<string[]>([]);
+  const [quotes, setQuotes] = useState<ComposerQuote[]>([]);
   const [pastes, setPastes] = useState<string[]>([]);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [objectRefs, setObjectRefs] = useState<FileReferenceObject[]>([]);
@@ -330,7 +346,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     }
     touchedRef.current = true;
     changedDuringSendRef.current = true;
-    setQuotes((previous) => [...previous, selected]);
+    setQuotes((previous) => [...previous, { text: selected }]);
     setPageQuote(null);
     window.getSelection()?.removeAllRanges();
     requestAnimationFrame(() => inputRef.current?.focus());
@@ -358,8 +374,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     try {
       const raw = localStorage.getItem('aios.kind.draft.' + draftScope);
       const pendingText = takePendingDraft();
+      const pendingQuote = takePendingQuote();
       if (!raw) {
         if (pendingText !== null) setText(pendingText);
+        if (pendingQuote) setQuotes([{ text: pendingQuote.text, source: pendingQuote.source }]);
         return;
       }
       const draft = JSON.parse(raw) as {
@@ -405,7 +423,19 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         }
       }
       if (Array.isArray(draft.quotes)) {
-        setQuotes(draft.quotes.filter((item): item is string => typeof item === 'string'));
+        const restored: ComposerQuote[] = [];
+        for (const item of draft.quotes) {
+          if (typeof item === 'string') restored.push({ text: item });
+          else if (item && typeof item === 'object' && typeof (item as { text?: unknown }).text === 'string') {
+            restored.push(item as ComposerQuote);
+          }
+        }
+        const pending = takePendingQuote();
+        if (pending) restored.push({ text: pending.text, source: pending.source });
+        setQuotes(restored);
+      } else {
+        const pending = takePendingQuote();
+        if (pending) setQuotes([{ text: pending.text, source: pending.source }]);
       }
       if (Array.isArray(draft.pastes)) {
         setPastes(draft.pastes.filter((item): item is string => typeof item === 'string'));
@@ -604,6 +634,18 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     [atMenu],
   );
 
+  useEffect(() => {
+    const onQuote = (event: Event) => {
+      const detail = (event as CustomEvent<ComposerQuote>).detail;
+      if (!detail || typeof detail.text !== 'string') return;
+      touchedRef.current = true;
+      changedDuringSendRef.current = true;
+      setQuotes((previous) => previous.concat(detail));
+    };
+    window.addEventListener('aios:quote', onQuote);
+    return () => window.removeEventListener('aios:quote', onQuote);
+  }, []);
+
   const intakeFiles = useCallback(async (files: File[]) => {
     touchedRef.current = true;
     changedDuringSendRef.current = true;
@@ -637,11 +679,23 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       return;
     }
     // G3：引用卡在发送时才按行变成 `> `，排在打的字前面（气泡里画成引用块）。
-    const quoted = quotes.map(quotedLines).join(String.fromCharCode(10) + String.fromCharCode(10));
+    // G3：普通引用卡在发送时按行加引用前缀拼进正文；带来源的走 quotes 字段（服务端 Quote 块）。
+    const plainQuotes = quotes.filter((item) => !item.source).map((item) => item.text);
+    const sourcedQuotes = quotes
+      .filter((item) => item.source)
+      .map((item) => ({ text: item.text, source: item.source! }));
+    const quoted = plainQuotes.map(quotedLines).join(String.fromCharCode(10) + String.fromCharCode(10));
     const value = [quoted, text.trim()]
       .filter((part) => part.length > 0)
       .join(String.fromCharCode(10));
-    if (!value && pastes.length === 0 && attachments.length === 0 && objectRefs.length === 0) return;
+    if (
+      !value &&
+      pastes.length === 0 &&
+      attachments.length === 0 &&
+      objectRefs.length === 0 &&
+      sourcedQuotes.length === 0
+    )
+      return;
     // T013.8：发送时先清空（马上能继续打），受理失败再把内容放回来（草稿不清）。
     const snapshot = { text, quotes, pastes, attachments, objectRefs, quote, fromCanvas, resultCard, extraCanvases, extraResultCards };
     changedDuringSendRef.current = false;
@@ -665,6 +719,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       pastes,
       attachments: attachments.map(({ id, name, bytes, mime }) => ({ id, name, bytes, mime: mime ?? null })),
       objectRefs,
+      quotes: sourcedQuotes,
       canvases: [...(fromCanvas ? [fromCanvas] : []), ...extraCanvases],
       resultCards: [...(resultCard ? [resultCard] : []), ...extraResultCards],
     });
@@ -859,6 +914,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       clearToHistory,
       recallCleared,
       putBack,
+      putQuote: (quote) => {
+        touchedRef.current = true;
+        changedDuringSendRef.current = true;
+        setQuotes((previous) => previous.concat(quote));
+        requestAnimationFrame(() => inputRef.current?.focus());
+      },
     }),
     [clearToHistory, hasDraftContent, putBack, recallCleared, resize, submit],
   );
@@ -1007,7 +1068,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             {quotes.map((item, index) => (
               <QuoteCard
                 key={'quote-' + index}
-                quote={item}
+                quote={item.text}
+                source={item.source}
                 onRemove={() => setQuotes((previous) => previous.filter((_, position) => position !== index))}
               />
             ))}
@@ -1182,7 +1244,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             if (!selected) return;
             touchedRef.current = true;
             changedDuringSendRef.current = true;
-            setQuotes((previous) => [...previous, selected]);
+            setQuotes((previous) => [...previous, { text: selected }]);
             setQuote('');
             inputRef.current?.focus();
           }}

@@ -173,6 +173,18 @@ impl CanvasSource {
     }
 }
 
+/// 引用块的来源（身份+版本；和 @ 对象片同形；阅读页文件 kind=file）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuoteSource {
+    pub kind: String,
+    pub id: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u32>,
+    #[serde(default, rename = "taskId", skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+}
+
 /// 消息内容块。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
@@ -211,6 +223,12 @@ pub enum ContentBlock {
         /// 报告所属任务；任务/项目没有。
         #[serde(default, rename = "taskId", skip_serializing_if = "Option::is_none")]
         task_id: Option<String>,
+    },
+    /// 用户选中一段文字引用进对话；source 是来源对象（任务/报告/阅读页文件）。
+    Quote {
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<QuoteSource>,
     },
     /// T013.4：用户消息里的一个文件块（投给模型时换成 fileHandleText）。
     File {
@@ -316,6 +334,32 @@ impl ContentBlock {
         }
     }
 
+    /// 引用块投给模型的内容：来源行 + 原文；没有来源就只给原文。
+    pub fn quote_text(text: &str, source: Option<&QuoteSource>) -> String {
+        let quoted = text
+            .lines()
+            .map(|line| format!("> {line}"))
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            );
+        match source {
+            Some(source) => format!(
+                "{}
+{quoted}",
+                ContentBlock::object_ref_text(
+                    &source.kind,
+                    &source.id,
+                    &source.title,
+                    source.version,
+                    source.task_id.as_deref(),
+                )
+            ),
+            None => quoted,
+        }
+    }
+
     /// 文本块的内容；非文本块返回 None。
     pub fn as_text(&self) -> Option<&str> {
         match self {
@@ -324,6 +368,7 @@ impl ContentBlock {
             | Self::ToolCall { .. }
             | Self::File { .. }
             | Self::Image { .. }
+            | Self::Quote { .. }
             | Self::ObjectRef { .. }
             | Self::ResultCard { .. } => None,
         }
@@ -341,6 +386,7 @@ impl ContentBlock {
             | Self::Reasoning { .. }
             | Self::File { .. }
             | Self::Image { .. }
+            | Self::Quote { .. }
             | Self::ObjectRef { .. }
             | Self::ResultCard { .. } => None,
         }

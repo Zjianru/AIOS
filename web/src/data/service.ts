@@ -206,6 +206,8 @@ export interface SendOptions {
   attachments?: SendAttachmentRef[];
   /** @ 选中的任务/报告/项目引用片。 */
   objectRefs?: ObjectRefRef[];
+  /** 选中文字引用：带来源的走服务端 Quote 块；不带来源的仍拼进正文（旧路）。 */
+  quotes?: { text: string; source?: ObjectRefRef | null }[];
   /** T015.4：画布按钮放进输入框的那一句带着画布身份（id + 标题）；自己写的不带。 */
   canvas?: { id: string; title: string };
   /** T054.2：结果卡「要求修改」带进输入框的那张卡。 */
@@ -263,6 +265,7 @@ export async function sendMessage(
     pastes: options.pastes ?? [],
     attachments: options.attachments ?? [],
     objectRefs: options.objectRefs ?? [],
+    quotes: options.quotes ?? [],
     // （N2）：多条放回按顺序走列表；单条旧字段不再重复发（服务端两套都收）。
     resultCards: options.resultCards ?? [],
     canvases: options.canvases ?? [],
@@ -372,7 +375,7 @@ export async function taskStop(taskId: string, mode: StopMode): Promise<TaskStop
 }
 
 /** T028.5：任务对话里的粘贴段与附件（和 Kind 对话的 SendOptions 同名同形）。 */
-export type TaskSayOptions = Pick<SendOptions, 'pastes' | 'attachments' | 'objectRefs'>;
+export type TaskSayOptions = Pick<SendOptions, 'pastes' | 'attachments' | 'objectRefs' | 'quotes'>;
 
 /**
  * T028.5：在任务对话里说一句。在跑时插进这一轮；停了/失败了就在原会话开新 Attempt。
@@ -386,6 +389,7 @@ export async function taskSay(
   const pastes = options.pastes ?? [];
   const attachments = options.attachments ?? [];
   const objectRefs = options.objectRefs ?? [];
+  const quotes = options.quotes ?? [];
   return post({
     method: 'task-say',
     taskId,
@@ -393,6 +397,7 @@ export async function taskSay(
     ...(pastes.length > 0 ? { pastes } : {}),
     ...(attachments.length > 0 ? { attachments } : {}),
     ...(objectRefs.length > 0 ? { objectRefs } : {}),
+    ...(quotes.length > 0 ? { quotes } : {}),
   });
 }
 

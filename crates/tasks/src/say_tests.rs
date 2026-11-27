@@ -151,6 +151,7 @@ fn records_pastes_with_the_input_and_accepts_a_paste_only_message() {
                 pastes: vec!["第一段".to_owned(), String::new()],
                 attachments: Vec::new(),
                 object_refs: Vec::new(),
+                quotes: Vec::new(),
             },
             T0 + 10,
         )
@@ -170,6 +171,7 @@ fn records_pastes_with_the_input_and_accepts_a_paste_only_message() {
                 pastes: vec![String::new()],
                 attachments: Vec::new(),
                 object_refs: Vec::new(),
+                quotes: Vec::new(),
             },
             T0 + 11,
         ),

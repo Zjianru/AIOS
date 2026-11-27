@@ -156,6 +156,18 @@ impl RootHost {
                 blocks.push(model::ContentBlock::paste(paste.clone()));
             }
         }
+        for quote in &request.quotes {
+            blocks.push(model::ContentBlock::Quote {
+                text: quote.text.clone(),
+                source: quote.source.as_ref().map(|source| model::QuoteSource {
+                    kind: source.kind.clone(),
+                    id: source.id.clone(),
+                    title: source.title.clone(),
+                    version: source.version,
+                    task_id: source.task_id.clone(),
+                }),
+            });
+        }
         for object in &request.object_refs {
             blocks.push(model::ContentBlock::ObjectRef {
                 kind: object.kind.clone(),

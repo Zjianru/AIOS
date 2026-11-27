@@ -33,6 +33,7 @@ import type { CardViewProps } from './model';
 import { previewOf } from './BodyText';
 import { Markdown } from '@/pages/kind/Markdown';
 import { cn } from '@/lib/utils';
+import { SelectionQuote } from '../SelectionQuote';
 
 /** T059 F1：卡里由模型/程序写的正文按 Markdown 渲染；折起时仍按原上限给预览。 */
 function RichBody({ slot, className }: { slot: TaskResultSlots['summary']; className?: string }) {
@@ -326,7 +327,22 @@ export function TaskResultCardView({ envelope, slots, host }: CardViewProps<Task
           <RichBody slot={slots.question} className="break-words text-3 leading-5 text-ink" />
         </div>
       ) : null}
-      <RichBody slot={slots.summary} className="mt-2 break-words text-2 leading-5 text-ink-2" />
+      <SelectionQuote
+        source={{
+          kind: 'report',
+          id: slots.reportId || slots.taskId,
+          title: slots.title,
+          version: slots.reportVersion,
+          taskId: slots.taskId,
+        }}
+        onQuote={(text, source) => {
+          window.dispatchEvent(
+            new CustomEvent('aios:quote', { detail: { text, source } }),
+          );
+        }}
+      >
+        <RichBody slot={slots.summary} className="mt-2 break-words text-2 leading-5 text-ink-2" />
+      </SelectionQuote>
       {program ? <ProgramChecks program={program} /> : null}
       {gate?.state === 'waiting' && gate.recheck ? (
         <div className="mt-1 text-1 text-done" data-kind="gate-recheck">

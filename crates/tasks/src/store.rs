@@ -1941,6 +1941,7 @@ impl Store {
                 pastes: Vec::new(),
                 attachments: attachments.to_vec(),
                 object_refs: Vec::new(),
+                quotes: Vec::new(),
             },
             now,
         )
@@ -1960,6 +1961,7 @@ impl Store {
             && input.pastes.iter().all(String::is_empty)
             && input.attachments.is_empty()
             && input.object_refs.is_empty()
+            && input.quotes.is_empty()
         {
             return Err(TaskError::EmptyInput);
         }
@@ -1976,6 +1978,7 @@ impl Store {
             pastes: input.pastes,
             attachments: input.attachments,
             object_refs: input.object_refs,
+            quotes: input.quotes,
         });
         // 只回报「接着做会开第几次 Attempt」；Attempt 行等投递真的接上会话再落，
         // 免得投递只 Later 时留下一个没有会话的空 Attempt。

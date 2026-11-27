@@ -171,6 +171,7 @@ async fn a_new_turn_supersedes_the_old_background_limit() {
             pastes: Vec::new(),
             attachments: Vec::new(),
             object_refs: Vec::new(),
+            quotes: Vec::new(),
         }))
         .await
         .expect("说一句");

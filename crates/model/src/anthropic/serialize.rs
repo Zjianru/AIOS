@@ -214,6 +214,7 @@ pub(super) fn request_body(
                         | ContentBlock::File { .. }
                         | ContentBlock::Image { .. }
                         | ContentBlock::ObjectRef { .. }
+                        | ContentBlock::Quote { .. }
                         | ContentBlock::ResultCard { .. } => {
                             return Err(unsupported("system 消息只能包含文本块"));
                         }
@@ -281,6 +282,10 @@ pub(super) fn request_body(
                                 Some(WireBlock::Text { text: text.clone() })
                             }
                             ContentBlock::Text { .. } => None,
+                            // 选中引用投给模型：来源行 + 每行加引用前缀的原文。
+                            ContentBlock::Quote { text, source } => Some(WireBlock::Text {
+                                text: ContentBlock::quote_text(text, source.as_ref()),
+                            }),
                             // 对象引用片投给模型时换成一行身份+版本（规则在 Kind 固定说明）。
                             ContentBlock::ObjectRef {
                                 kind,
@@ -374,6 +379,7 @@ pub(super) fn request_body(
                         | ContentBlock::File { .. }
                         | ContentBlock::Image { .. }
                         | ContentBlock::ObjectRef { .. }
+                        | ContentBlock::Quote { .. }
                         | ContentBlock::ResultCard { .. } => {
                             return Err(unsupported("tool 消息只能包含文本内容块"));
                         }

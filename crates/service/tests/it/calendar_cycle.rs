@@ -211,6 +211,7 @@ async fn root_forward_recognizes_a_real_task_report_message() {
         pastes: Vec::new(),
         attachments: Vec::new(),
         object_refs: Vec::new(),
+        quotes: Vec::new(),
         canvas: None,
         result_card: None,
         result_cards: Vec::new(),

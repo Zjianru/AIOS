@@ -142,6 +142,9 @@ pub(crate) fn estimate_message(message: &Message) -> u64 {
                 total += tools::estimate_text_tokens(kind) as u64;
                 total += tools::estimate_text_tokens(title) as u64;
             }
+            ContentBlock::Quote { text, .. } => {
+                total += tools::estimate_text_tokens(text) as u64;
+            }
             ContentBlock::Image { name, path, .. } => {
                 total += tools::estimate_text_tokens(name) as u64;
                 total += path

@@ -186,6 +186,7 @@ async fn send(root: &service::RootHost, request_id: &str, content: &str) {
         pastes: Vec::new(),
         attachments: Vec::new(),
         object_refs: Vec::new(),
+        quotes: Vec::new(),
         canvas: None,
         result_card: None,
         result_cards: Vec::new(),

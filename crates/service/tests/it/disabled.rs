@@ -198,6 +198,7 @@ async fn send(host: &RootHost, request_id: &str, text: &str) {
         pastes: Vec::new(),
         attachments: Vec::new(),
         object_refs: Vec::new(),
+        quotes: Vec::new(),
         canvas: None,
         result_card: None,
         result_cards: Vec::new(),

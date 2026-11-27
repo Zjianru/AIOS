@@ -41,6 +41,7 @@ fn send_request(content: &str) -> SendRequest {
         pastes: Vec::new(),
         attachments: Vec::new(),
         object_refs: Vec::new(),
+        quotes: Vec::new(),
         canvas: None,
         result_card: None,
         result_cards: Vec::new(),

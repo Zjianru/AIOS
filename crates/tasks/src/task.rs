@@ -699,6 +699,9 @@ pub struct Input {
     /// @ 选中的任务/报告/项目引用片；旧任务行没有这个字段时按空读。
     #[serde(default)]
     pub object_refs: Vec<InputObjectRef>,
+    /// 选中的文字引用；旧任务行没有这个字段时按空读。
+    #[serde(default)]
+    pub quotes: Vec<InputQuote>,
 }
 
 /// 任务输入里引用的一个 AIOS 对象（身份和版本；投递时换一行文字给模型）。
@@ -713,6 +716,14 @@ pub struct InputObjectRef {
     pub task_id: Option<String>,
 }
 
+/// 任务输入里的一段选中引用（文字 + 来源身份/版本）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InputQuote {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<InputObjectRef>,
+}
+
 /// 用户在任务对话里说的一句话：文字、粘贴段、附件至少有一项。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NewInput {
@@ -720,6 +731,7 @@ pub struct NewInput {
     pub pastes: Vec<String>,
     pub attachments: Vec<InputAttachment>,
     pub object_refs: Vec<InputObjectRef>,
+    pub quotes: Vec<InputQuote>,
 }
 
 /// 一条输入里引用的附件（规则和 Kind 对话一样）。

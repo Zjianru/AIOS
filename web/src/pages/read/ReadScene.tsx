@@ -13,6 +13,8 @@ import { toast } from 'sonner';
 import { getRead } from '@/data/api';
 import type { ReadDoc, ReadSection } from '@/data/selectors';
 import { go } from '@/app/navigate';
+import { SelectionQuote } from '@/pages/kind/SelectionQuote';
+import { setPendingQuote } from '@/lib/pendingDraft';
 import { useRouteStore } from '@/app/routeStore';
 import { cn } from '@/lib/utils';
 
@@ -453,7 +455,20 @@ function ReadMainPane() {
               ) : comparing && doc.diff ? (
                 <DiffViewer doc={doc} onClose={() => setComparing(false)} />
               ) : (
-                <DocPreview doc={doc} />
+                <SelectionQuote
+                  source={{
+                    kind: 'file',
+                    id: fileName,
+                    title: fileName,
+                    version: Number(doc.version) || 1,
+                  }}
+                  onQuote={(text, source) => {
+                    setPendingQuote({ text, source });
+                    go('kind');
+                  }}
+                >
+                  <DocPreview doc={doc} />
+                </SelectionQuote>
               )}
             </div>
           </div>

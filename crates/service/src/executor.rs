@@ -491,6 +491,20 @@ impl TaskRuntime {
                             task_id: object.task_id,
                         })
                         .collect(),
+                    quotes: request
+                        .quotes
+                        .into_iter()
+                        .map(|quote| tasks::InputQuote {
+                            text: quote.text,
+                            source: quote.source.map(|source| tasks::InputObjectRef {
+                                kind: source.kind,
+                                id: source.id,
+                                title: source.title,
+                                version: source.version,
+                                task_id: source.task_id,
+                            }),
+                        })
+                        .collect(),
                 },
                 Self::now(),
             )
@@ -2267,6 +2281,18 @@ impl TaskRuntime {
             if !paste.is_empty() {
                 blocks.push(model::ContentBlock::paste(paste.clone()));
             }
+        }
+        for quote in &input.quotes {
+            blocks.push(model::ContentBlock::Quote {
+                text: quote.text.clone(),
+                source: quote.source.as_ref().map(|source| model::QuoteSource {
+                    kind: source.kind.clone(),
+                    id: source.id.clone(),
+                    title: source.title.clone(),
+                    version: source.version,
+                    task_id: source.task_id.clone(),
+                }),
+            });
         }
         for object in &input.object_refs {
             blocks.push(model::ContentBlock::ObjectRef {

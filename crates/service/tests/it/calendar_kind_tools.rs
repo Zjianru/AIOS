@@ -505,6 +505,7 @@ async fn card_act_records_the_kind_turn_that_proposed_it() {
         pastes: Vec::new(),
         attachments: Vec::new(),
         object_refs: Vec::new(),
+        quotes: Vec::new(),
         canvas: None,
         result_card: None,
         result_cards: Vec::new(),

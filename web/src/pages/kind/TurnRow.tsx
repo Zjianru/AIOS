@@ -29,6 +29,7 @@ import {
   FileCard,
   ImageCard,
   ObjectRefCard,
+  QuoteCard,
   FromCanvasChip,
   PasteCard,
   ResultCardChip,
@@ -75,6 +76,9 @@ export function UserCards({ user }: { user: TurnUserView }) {
           paste={paste}
           onOpen={() => setOpenPaste(openPaste === index ? null : index)}
         />
+      ))}
+      {user.quotes.map((quote, index) => (
+        <QuoteCard key={'quote-' + index} quote={quote.text} source={quote.source} />
       ))}
       {user.objectRefs.map((object) => (
         <ObjectRefCard key={'object-' + object.kind + '-' + object.id} object={object} />
@@ -576,7 +580,8 @@ export const TurnRow = memo(function TurnRow({
           {view.user.pastes.length > 0 ||
           view.user.files.length > 0 ||
           view.user.images.length > 0 ||
-          view.user.objectRefs.length > 0 ? (
+          view.user.objectRefs.length > 0 ||
+          view.user.quotes.length > 0 ? (
             <UserCards user={view.user} />
           ) : null}
           {view.user.text ? (

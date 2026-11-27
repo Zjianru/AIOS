@@ -240,6 +240,9 @@ pub struct SendRequest {
     /// @ 选中的任务/报告/项目引用片（只增字段）。
     #[serde(default, rename = "objectRefs", skip_serializing_if = "Vec::is_empty")]
     pub object_refs: Vec<SendObjectRef>,
+    /// 选中的文字引用（带来源/选区；旧纯文本引用仍在 content 里）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quotes: Vec<SendQuote>,
     /// 画布按钮放进输入框的那一句带着画布身份（id + 标题）；用户自己写的不带。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canvas: Option<SendCanvas>,
@@ -277,6 +280,14 @@ pub struct SendAttachment {
     /// 附件原类型（旧页面/旧日志没有；按扩展名兜底）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mime: Option<String>,
+}
+
+/// 用户选中一段文字引用进对话（source 为空=普通引用）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct SendQuote {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SendObjectRef>,
 }
 
 /// 画布放进输入框的那一句带来的画布（页面从日志的 meta.canvas 拿 id 和标题）。
@@ -1042,6 +1053,9 @@ pub struct TaskSayRequest {
     /// @ 选中的任务/报告/项目引用片（只增字段）。
     #[serde(default, rename = "objectRefs", skip_serializing_if = "Vec::is_empty")]
     pub object_refs: Vec<SendObjectRef>,
+    /// 选中的文字引用（带来源/选区）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quotes: Vec<SendQuote>,
 }
 
 /// 说一句的结果：输入 id 和新 Attempt 编号（在跑时没有新 Attempt）。

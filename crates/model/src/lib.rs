@@ -31,7 +31,7 @@ pub use effort::{
 pub use error::{ErrorCode, ModelError};
 pub use ir::{
     BlockType, CanvasSource, ContentBlock, FinishReason, InstructionChange,
-    InstructionChangeAction, Message, MessageId, MessageSource, Role, SkillCatalogEntry,
-    StreamChunk, ToolSchema, Usage, UserMessage,
+    InstructionChangeAction, Message, MessageId, MessageSource, QuoteSource, Role,
+    SkillCatalogEntry, StreamChunk, ToolSchema, Usage, UserMessage,
 };
 pub use tool_updates::{ToolAddition, ToolHistory, ToolRequest, ToolUpdate};

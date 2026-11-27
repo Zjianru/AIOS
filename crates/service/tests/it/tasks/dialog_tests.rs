@@ -289,6 +289,7 @@ async fn a_task_say_attachment_is_validated_and_lands_in_the_thin_request() {
             pastes: Vec::new(),
             attachments: vec![missing],
             object_refs: Vec::new(),
+            quotes: Vec::new(),
         }))
         .await
         .expect_err("不存在的附件要拒收");
@@ -328,6 +329,7 @@ async fn a_task_say_attachment_is_validated_and_lands_in_the_thin_request() {
                 mime: None,
             }],
             object_refs: Vec::new(),
+            quotes: Vec::new(),
         }))
         .await
         .expect("带附件说一句");
@@ -413,6 +415,7 @@ async fn a_paste_only_task_say_lands_as_a_paste_block() {
             pastes: vec!["只有粘贴的一段".to_owned()],
             attachments: Vec::new(),
             object_refs: Vec::new(),
+            quotes: Vec::new(),
         }))
         .await
         .expect("只有粘贴也算一句");
