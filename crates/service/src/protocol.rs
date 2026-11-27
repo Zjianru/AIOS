@@ -135,12 +135,15 @@ pub enum Call {
     CalendarRead(CalendarReadRequest),
     /// 日历动作。
     CalendarAction(CalendarActionRequest),
-    /// T094：插件开关列表（官方 Office）。
+    /// 插件开关列表（官方 Office）。
     #[serde(rename = "plugin_list")]
     PluginList(PluginListRequest),
-    /// T094：打开/关掉一个插件（只增，协议 35）。
+    /// 打开/关掉一个插件（只增，协议 35）。
     #[serde(rename = "plugin_set")]
     PluginSet(PluginSetRequest),
+    /// .3：只读读一个 Office 文件的字节（路径或附件 id；预览用）。
+    #[serde(rename = "file_read_bytes")]
+    FileReadBytes(FileReadBytesRequest),
 }
 
 /// 调用的结果（与 Call 一一对应）。
@@ -227,12 +230,15 @@ pub enum Response {
     CalendarRead(CalendarReadResponse),
     /// 日历动作：暂停/恢复/立即跑一次/取消。
     CalendarAction(CalendarActionResponse),
-    /// T094：插件开关列表。
+    /// 插件开关列表。
     #[serde(rename = "plugin_list")]
     PluginList(PluginListResponse),
-    /// T094：打开/关掉插件后的同一份视图。
+    /// 打开/关掉插件后的同一份视图。
     #[serde(rename = "plugin_set")]
     PluginSet(PluginListResponse),
+    /// .3：只读文件字节（base64）。
+    #[serde(rename = "file_read_bytes")]
+    FileReadBytes(FileReadBytesResponse),
 }
 
 /// 发消息（DSH session-controller 的 prompt）。requestId 是幂等键：同一 id 只进一次。
@@ -2467,18 +2473,18 @@ pub struct MonitorTaskResponse {
     pub events: Vec<ServiceEvent>,
 }
 
-/// T094：插件列表请求（无参数）。
+/// 插件列表请求（无参数）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct PluginListRequest {}
 
-/// T094：打开/关掉一个插件；id 只认 office。
+/// 打开/关掉一个插件；id 只认 office。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct PluginSetRequest {
     pub id: String,
     pub enabled: bool,
 }
 
-/// T094：插件页的一张卡（只有官方 Office）。
+/// 插件页的一张卡（只有官方 Office）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct PluginView {
     pub id: String,
@@ -2492,10 +2498,37 @@ pub struct PluginView {
     pub data_dir: String,
 }
 
-/// T094：插件列表；内容包第一刀没有实现，空表由页面写空态。
+/// 插件列表；内容包第一刀没有实现，空表由页面写空态。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct PluginListResponse {
     pub plugins: Vec<PluginView>,
     #[serde(default)]
     pub content_packs: Vec<String>,
+}
+
+/// .3：读一个 Office 文件字节；路径与附件 id 二选一。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct FileReadBytesRequest {
+    /// 绝对路径，或相对根会话工作目录的路径。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// 附件仓库 id（sha256:...）。
+    #[serde(
+        default,
+        rename = "attachmentId",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub attachment_id: Option<String>,
+}
+
+/// .3：文件字节与预览需要的元信息。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct FileReadBytesResponse {
+    pub mime: String,
+    /// base64 后的文件字节。
+    pub bytes_base64: String,
+    /// 原始字节数。
+    pub size: u64,
+    /// 内容版本（附件用 sha256；路径用 mtime+size）。
+    pub content_version: String,
 }

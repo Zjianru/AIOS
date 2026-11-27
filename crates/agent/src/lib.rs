@@ -144,6 +144,8 @@ pub type PreCompactionHook =
 /// compaction-basic 的阈值/保留/预留 token、bundle/base 的 spill 预算。
 #[derive(Clone)]
 pub struct AgentConfig {
+    /// 插件开关；None = 按 data-dir 取共享开关（产品装配显式传入，低层测试可注入隔离）。
+    pub plugin_switches: Option<tools::PluginSwitches>,
     /// 一次 step 里并行安全工具调用的并发上限；设成 1 就是串行。DSH 默认 10。
     pub max_parallel_tool_calls: usize,
     /// 上下文占用到窗口的这个比例时触发自动压缩；DSH 默认 0.8（compaction-basic: thresholdRatio）。
@@ -252,6 +254,7 @@ impl Default for AgentConfig {
         // 没有 HOME（或不是绝对路径）时用户级根为空：不能把相对路径交给 validate。
         let home = home_dir().map(|home| home.join(".agents"));
         Self {
+            plugin_switches: None,
             max_parallel_tool_calls: 10,
             compaction_threshold_ratio: 0.8,
             compaction_retain_ratio: 0.16,
@@ -698,7 +701,7 @@ impl Agent {
         self.inner.append(&[kind]).await
     }
 
-    /// T094：插件关掉的固定通知（SystemMessage；打开时不发）。只落日志/广播，等下一条请求带上。
+    /// 插件关掉的固定通知（SystemMessage；打开时不发）。只落日志/广播，等下一条请求带上。
     pub async fn append_plugin_notice(&self, text: impl Into<String>) -> Result<(), AgentError> {
         let turn = self.inner.current_or_last_turn().max(1);
         self.append_event(session::EventKind::SystemMessage {

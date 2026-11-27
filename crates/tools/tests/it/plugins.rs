@@ -1,4 +1,4 @@
-//! T094：插件开关过滤与「已关」拦截。
+//! 插件开关过滤与「已关」拦截。
 
 use std::collections::BTreeSet;
 use std::sync::Arc;

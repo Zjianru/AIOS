@@ -1,4 +1,4 @@
-//! T094：插件开关的协议面（settings › 插件页用）。
+//! 插件开关的协议面（settings › 插件页用）。
 //!
 //! 官方插件只有 Office；开关持久化在 settings.plugins，运行时写进共享 PluginSwitches，
 //! 下一 step 工具的 ToolRegistry 追加/SkillCatalog 更新自然发生（打开不发 SystemMessage）。

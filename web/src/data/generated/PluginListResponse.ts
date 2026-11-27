@@ -2,6 +2,6 @@
 import type { PluginView } from "./PluginView";
 
 /**
- * T094：插件列表；内容包第一刀没有实现，空表由页面写空态。
+ * 插件列表；内容包第一刀没有实现，空表由页面写空态。
  */
 export type PluginListResponse = { plugins: Array<PluginView>, content_packs: Array<string>, };

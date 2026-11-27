@@ -2,10 +2,7 @@ use super::*;
 
 #[test]
 fn protocol_version_is_35() {
-    assert_eq!(
-        PROTOCOL_VERSION, 35,
-        "T094：只增 PluginList/PluginSet，升到 35"
-    );
+    assert_eq!(PROTOCOL_VERSION, 35, "只增 PluginList/PluginSet，升到 35");
 }
 
 #[test]

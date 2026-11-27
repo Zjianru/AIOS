@@ -31,12 +31,12 @@ pub struct Settings {
     /// 执行域的设置；文件里缺这一节按默认值读。
     #[serde(default)]
     pub exec: ExecSettings,
-    /// 插件开关（T094）；文件里缺这一节按默认全关读。
+    /// 插件开关；文件里缺这一节按默认全关读。
     #[serde(default)]
     pub plugins: PluginsSettings,
 }
 
-/// 插件开关（T094）：官方插件默认全关。
+/// 插件开关：官方插件默认全关。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct PluginsSettings {
     /// Office 插件。

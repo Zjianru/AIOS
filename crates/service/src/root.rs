@@ -315,7 +315,7 @@ pub async fn open_root_session_with(
             options.projects.clone(),
             options.task_runtime.clone(),
         )) as std::sync::Arc<dyn tools::Tool>,
-        // T094：Kind 只有 office_read；插件关着时 ToolSet 过滤掉，执行入口回 PLUGIN_CLOSED。
+        // Kind 只有 office_read；插件关着时 ToolSet 过滤掉，执行入口回 PLUGIN_CLOSED。
         std::sync::Arc::new(office::OfficeReadTool) as std::sync::Arc<dyn tools::Tool>,
     ];
     extra_tools.extend(web_extra_tools(&options));

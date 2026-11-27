@@ -536,7 +536,7 @@ mod key_condition_tests {
     }
 }
 
-/// T094：插件开关 + q 2.3 rehydrate 的定向单测。
+/// 插件开关 + q 2.3 rehydrate 的定向单测。
 #[cfg(test)]
 mod plugin_switch_tests {
     use std::collections::BTreeSet;
@@ -688,6 +688,93 @@ mod plugin_switch_tests {
             tools
                 .enabled(&BTreeSet::new(), &BTreeSet::new())
                 .contains("read")
+        );
+    }
+}
+
+///  F4：Skill 开出来的工具在压缩前后工具表一样（条件求值不看 recorded）。
+#[cfg(test)]
+mod skill_compaction_tool_tests {
+    use std::collections::BTreeSet;
+    use std::sync::LazyLock;
+
+    use serde_json::json;
+    use tools::{
+        PluginSwitches, Tool, ToolCall, ToolCondition, ToolContext, ToolFuture, ToolResult, ToolSet,
+    };
+
+    use super::*;
+
+    struct SkillTool;
+
+    impl Tool for SkillTool {
+        fn name(&self) -> &str {
+            "skill_loaded_tool"
+        }
+        fn description(&self) -> &str {
+            "skill 开出来的工具"
+        }
+        fn parameters(&self) -> &serde_json::Value {
+            static PARAMS: LazyLock<serde_json::Value> =
+                LazyLock::new(|| json!({"type": "object"}));
+            &PARAMS
+        }
+        fn condition(&self) -> ToolCondition {
+            ToolCondition::AfterSkill(vec!["web".to_owned()])
+        }
+        fn execute<'a>(
+            &'a self,
+            call: ToolCall,
+            _context: &'a ToolContext,
+        ) -> ToolFuture<'a, ToolResult> {
+            Box::pin(async move { ToolResult::success(call.id, "ok") })
+        }
+    }
+
+    fn events(include_compaction: bool) -> Vec<Event> {
+        let mut events = vec![Event::new(
+            1,
+            0,
+            EventKind::ToolRegistry {
+                turn: 1,
+                step: 1,
+                additions: vec![model::ToolSchema {
+                    name: "skill_loaded_tool".to_owned(),
+                    description: String::new(),
+                    parameters: json!({"type": "object"}),
+                    defer_loading: false,
+                }],
+            },
+        )];
+        if include_compaction {
+            events.push(Event::new(
+                2,
+                0,
+                EventKind::CompactionEnd {
+                    compaction_id: "c1".to_owned(),
+                    source_command_id: None,
+                    turn: None,
+                    error: None,
+                },
+            ));
+        }
+        events
+    }
+
+    #[test]
+    fn skill_tools_are_the_same_before_and_after_compaction() {
+        let mut tools = ToolSet::new(vec![Box::new(SkillTool)]);
+        tools.set_plugin_switches(PluginSwitches::new());
+        let loaded: BTreeSet<String> = ["web".to_owned()].into();
+        let keys = BTreeSet::new();
+        let before = ToolRegistryState::rehydrate(&events(false));
+        let after = ToolRegistryState::rehydrate(&events(true));
+        let before_enabled = before.enabled(&tools, &loaded, &keys);
+        let after_enabled = after.enabled(&tools, &loaded, &keys);
+        assert!(before_enabled.contains("skill_loaded_tool"));
+        assert_eq!(
+            before_enabled, after_enabled,
+            "Skill 开出来的工具压缩前后表一样"
         );
     }
 }

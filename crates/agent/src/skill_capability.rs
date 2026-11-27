@@ -3,9 +3,9 @@
 //! 行为照 DSH tool-skill：
 //! - 目录：可用 skill 的 name + description 作为 source=skill-catalog 的 user 消息，有变化才追加；
 //! - 用户显式 /name：只扫这一步 claim 到的 source=user 消息，空白边界的 /name 命中
-//!   user-invocable skill 时注入全文（renderSkillContent，source=skill-invocation），
-//!   放在目录之后（DSH：背景注入先、模型要执行的材料最后）；
-//!   disable-model-invocation skill 是这条通道的专属入口，未知/不允许的名字保持普通文本。
+//!  user-invocable skill 时注入全文（renderSkillContent，source=skill-invocation），
+//!  放在目录之后（DSH：背景注入先、模型要执行的材料最后）；
+//!  disable-model-invocation skill 是这条通道的专属入口，未知/不允许的名字保持普通文本。
 //!
 //! 手动 /compact 的 PreStep（trigger=Some(Manual)）跳过，避免手动压缩顺带注入。
 

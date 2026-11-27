@@ -641,12 +641,12 @@ export async function saveExecSettings(patch: {
   return (await post({ method: 'settings-update', ...patch })).exec;
 }
 
-/** T094 设置 › 插件：列表（官方 Office 卡 + 内容包空态）。 */
+/**  设置 › 插件：列表（官方 Office 卡 + 内容包空态）。 */
 export async function pluginList(): Promise<PluginListResponse> {
   return post({ method: 'plugin_list' });
 }
 
-/** T094 设置 › 插件：打开/关掉一个插件；返回同一份列表视图。 */
+/**  设置 › 插件：打开/关掉一个插件；返回同一份列表视图。 */
 export async function pluginSet(input: PluginSetRequest): Promise<PluginListResponse> {
   return post({ method: 'plugin_set', ...input });
 }

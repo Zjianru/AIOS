@@ -107,7 +107,7 @@ impl Tool for OfficeReadTool {
                 Ok(path) => path,
                 Err(error) => return ToolResult::error(call.id, error),
             };
-            let Some(format) = OfficeFormat::from_path(&resolved) else {
+            if OfficeFormat::from_path(&resolved).is_none() {
                 return ToolResult::error(
                     call.id,
                     ToolFailure::coded(
@@ -115,7 +115,7 @@ impl Tool for OfficeReadTool {
                         format!("不支持的 Office 格式：{}", resolved.display()),
                     ),
                 );
-            };
+            }
             match read_window(&resolved, offset, limit) {
                 Ok(document) => ToolResult::success(
                     call.id,

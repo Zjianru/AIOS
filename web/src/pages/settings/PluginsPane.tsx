@@ -1,5 +1,5 @@
 /**
- * 设置 › 插件（T094.2）：官方 Office 卡 + 内容包空态。
+ * 设置 › 插件（）：官方 Office 卡 + 内容包空态。
  *
  * 卡上写插件名、说明、开关、Skill 摘要、数据目录与「打开/关掉影响」；
  * 开关走 plugin_set，和插件页开关同一条路径（settings.plugins + 共享 PluginSwitches）。

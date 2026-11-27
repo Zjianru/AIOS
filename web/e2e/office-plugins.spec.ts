@@ -1,4 +1,4 @@
-//! T094.2：设置 › 插件页（官方 Office 卡、开关当场生效、内容包空态）。
+//! 设置 › 插件页（官方 Office 卡、开关当场生效、内容包空态）。
 
 import { expect, test } from '@playwright/test';
 import { startKernelFixture } from './service-fixture';

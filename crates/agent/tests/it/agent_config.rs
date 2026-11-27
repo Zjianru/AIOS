@@ -146,6 +146,7 @@ async fn accepts_valid_non_default_values() {
         absolute_paths_only: false,
         compaction_profile: agent::CompactionProfile::Thin,
         compaction_fixed_block: None,
+        plugin_switches: None,
         max_parallel_tool_calls: 2,
         compaction_threshold_ratio: 0.5,
         compaction_retain_ratio: 0.1,

@@ -1,8 +1,8 @@
 //! Office 结构化读、xlsx 新建与 verify（纯 Rust，无进程/无运行时）。
 //!
 //! - read：xlsx=calamine（sheet/单元格/公式）、docx=docx-rs（段落/表格）、
-//!   pptx=zip+quick-xml（幻灯片文字/形状锚点）；结果按 05 篇 7.5 有界返回
-//!   （超出给 total_units 与 read_window 再读入口），带锚点（A1/段落号/slide+shape）。
+//!  pptx=zip+quick-xml（幻灯片文字/形状锚点）；结果按 05 篇 7.5 有界返回
+//!  （超出给 total_units 与 read_window 再读入口），带锚点（A1/段落号/slide+shape）。
 //! - create_xlsx：rust_xlsxwriter；verify_xlsx：calamine 独立读回 + 容器/部件核对。
 //!
 //! 调用方只见 OfficeDocument/OfficeError；不承诺版式，只给结构与文字。

@@ -1,4 +1,4 @@
-//! T094.2：插件打开/关掉后「下一 step 工具表」变了（全量工具表路由）。
+//! 插件打开/关掉后「下一 step 工具表」变了（全量工具表路由）。
 
 use std::sync::Arc;
 
@@ -156,15 +156,10 @@ async fn addition_only_route_adds_office_read_at_next_step() {
     mount(&server).await;
     let data_dir = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
-    let switches = tools::plugins::switches_for(data_dir.path());
-    let agent = Agent::open(options_for_route(
-        data_dir.path(),
-        cwd.path(),
-        &server.uri(),
-        true,
-    ))
-    .await
-    .expect("组装");
+    let switches = tools::PluginSwitches::new();
+    let mut open = options_for_route(data_dir.path(), cwd.path(), &server.uri(), true);
+    open.config.plugin_switches = Some(switches.clone());
+    let agent = Agent::open(open).await.expect("低层注入开关也能组装");
     agent
         .send(UserMessage::text("第一轮"), Delivery::FollowUp)
         .await
