@@ -28,7 +28,7 @@ static CREATE_PARAMETERS: LazyLock<Value> = LazyLock::new(|| {
     json!({
         "type": "object",
         "properties": {
-            "path": { "type": "string", "description": "要写的 .xlsx 路径（写任务里必须在写入范围内）" },
+            "name": { "type": "string", "description": "要写的 .xlsx 文件名（单个文件名，不能带目录）" },
             "format": { "type": "string", "enum": ["xlsx"], "description": "第一刀只支持 xlsx" },
             "sheets": {
                 "type": "array",
@@ -56,7 +56,7 @@ static CREATE_PARAMETERS: LazyLock<Value> = LazyLock::new(|| {
                 }
             }
         },
-        "required": ["path", "sheets"],
+        "required": ["name", "sheets"],
         "additionalProperties": false
     })
 });
@@ -130,7 +130,27 @@ impl Tool for OfficeReadTool {
     }
 }
 
-pub struct OfficeCreateTool;
+pub struct OfficeCreateTool {
+    data_dir: std::path::PathBuf,
+    task_id: String,
+}
+
+impl OfficeCreateTool {
+    /// 写任务专用：目标固定在 <data_dir>/library/office/<taskId>/，不接受任意路径。
+    pub fn new(data_dir: impl Into<std::path::PathBuf>, task_id: impl Into<String>) -> Self {
+        Self {
+            data_dir: data_dir.into(),
+            task_id: task_id.into(),
+        }
+    }
+
+    fn library_dir(&self) -> std::path::PathBuf {
+        self.data_dir
+            .join("library")
+            .join("office")
+            .join(&self.task_id)
+    }
+}
 
 impl Tool for OfficeCreateTool {
     fn name(&self) -> &str {
@@ -138,7 +158,7 @@ impl Tool for OfficeCreateTool {
     }
 
     fn description(&self) -> &str {
-        "新建 xlsx（第一刀只支持 xlsx；写任务里使用）。返回已生成路径与「未做视觉自检」。docx/pptx 不生成。"
+        "新建 xlsx（第一刀只支持 xlsx；写任务里使用）。文件写到 AIOS 的 library/office/<taskId>/，生成后程序读回校验；回执固定「未做视觉自检」。docx/pptx 不生成。"
     }
 
     fn parameters(&self) -> &Value {
@@ -177,13 +197,23 @@ impl Tool for OfficeCreateTool {
                     ),
                 );
             }
-            let Some(path) = args.get("path").and_then(Value::as_str) else {
-                return ToolResult::error(call.id, ToolFailure::plain("缺少 path"));
+            let Some(name) = args.get("name").and_then(Value::as_str) else {
+                return ToolResult::error(call.id, ToolFailure::plain("缺少 name"));
             };
-            if !path.to_ascii_lowercase().ends_with(".xlsx") {
+            let name = name.trim();
+            if name.is_empty()
+                || name.contains('/')
+                || name.contains('\\')
+                || name == "."
+                || name == ".."
+                || !name.to_ascii_lowercase().ends_with(".xlsx")
+            {
                 return ToolResult::error(
                     call.id,
-                    ToolFailure::coded("OFFICE_ONLY_XLSX", "生成目标必须是 .xlsx".to_owned()),
+                    ToolFailure::coded(
+                        "OFFICE_NAME",
+                        "name 只能是单个 .xlsx 文件名（不能带目录）".to_owned(),
+                    ),
                 );
             }
             let Some(sheets) = args.get("sheets").and_then(Value::as_array) else {
@@ -195,11 +225,7 @@ impl Tool for OfficeCreateTool {
                     return ToolResult::error(call.id, ToolFailure::plain(message));
                 }
             };
-            let target = if std::path::Path::new(path).is_absolute() {
-                std::path::PathBuf::from(path)
-            } else {
-                context.cwd.join(path)
-            };
+            let target = self.library_dir().join(name);
             if let Err(error) = tools::check_write(context, &target) {
                 return ToolResult::error(call.id, error);
             }
@@ -226,10 +252,22 @@ impl Tool for OfficeCreateTool {
                     ToolFailure::coded("OFFICE_WRITE", format!("写文件失败：{error}")),
                 );
             }
+            let sheet_count = plan.sheets.len();
+            let readback = match crate::verify_xlsx(&bytes) {
+                Ok(document) => document.sheet_names.len(),
+                Err(error) => {
+                    return ToolResult::error(
+                        call.id,
+                        ToolFailure::coded("OFFICE_VERIFY", format!("程序读回失败：{error}")),
+                    );
+                }
+            };
             let path_text = target.display().to_string();
             ToolResult::success_with_meta(
                 call.id,
-                format!("已生成 {path_text}（未做视觉自检）"),
+                format!(
+                    "已生成 {path_text}（{sheet_count} 个工作表，读回 {readback} 个）· 未做视觉自检"
+                ),
                 json!({ "diffs": [{ "path": path_text }] }),
             )
         })

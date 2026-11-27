@@ -149,6 +149,8 @@ export interface FixtureOptions {
  /// ：写任务、接受、bash 开关、工作树、非仓库和改错字的真服务夹具。
  /// worktree 场景会在起服务前把数据目录做成一个 git 仓库；expand 的第二段路由由测试
  /// 拿到真实任务 id 后再生成。
+  /** T094.4：Kind 派写任务，ThinAgent 用 office_create 生成 xlsx。 */
+  t094?: 'office';
   t030?: 'write' | 'ask' | 'expand' | 'bash' | 'retained' | 'worktree' | 'nonrepo' | 'typo' | 'scope';
   /** T078.2：Kind kind_react + kind_say 分条/表情回放。 */
   t078Say?: boolean;

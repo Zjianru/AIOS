@@ -167,6 +167,7 @@ async fn accepts_valid_non_default_values() {
         fixed_block: None,
         dynamic_block: None,
         write_scope: None,
+        extra_write_scope: None,
         memory_context: None,
         pre_compaction: None,
         pre_compaction_instruction: None,

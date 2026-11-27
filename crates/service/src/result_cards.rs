@@ -12,7 +12,7 @@ use session::{Event, EventKind, SessionId, SessionStore};
 use tasks::Task;
 
 /// 写类工具的名字（ThinAgent 只开 write/edit；apply_patch 留给日志里已有的结果）。
-const WRITE_TOOLS: [&str; 3] = ["write", "edit", "apply_patch"];
+const WRITE_TOOLS: [&str; 4] = ["write", "edit", "apply_patch", "office_create"];
 
 /// relay 的 request id 前缀（`task-report:<taskId>:<reportId>`）。
 const TASK_REPORT_PREFIX: &str = "task-report:";
@@ -157,5 +157,44 @@ fn display_path(cwd: &Path, path: &Path) -> String {
             }
         }
         Err(_) => path.to_string_lossy().into_owned(),
+    }
+}
+
+#[cfg(test)]
+mod office_deliverable_tests {
+    use super::*;
+    use session::Event;
+
+    /// office_create 也算写类工具：成功结果的 meta.diffs 进改动清单（changed_count 的同源）。
+    #[test]
+    fn office_create_meta_diffs_are_changed_files() {
+        let events = vec![
+            Event::new(
+                1,
+                0,
+                EventKind::ToolCall {
+                    turn: 1,
+                    step: 1,
+                    call_id: "call-office".to_owned(),
+                    name: "office_create".to_owned(),
+                    arguments: "{}".to_owned(),
+                },
+            ),
+            Event::new(
+                2,
+                0,
+                EventKind::ToolResult {
+                    turn: 1,
+                    step: 1,
+                    message: model::Message::tool_result("call-office", "已生成", false),
+                    error: None,
+                    meta: Some(serde_json::json!({
+                        "diffs": [{ "path": "/tmp/data/library/office/task-1/水果表.xlsx" }]
+                    })),
+                },
+            ),
+        ];
+        let changed = changed_paths(&events, Path::new("/tmp/work"));
+        assert_eq!(changed, vec!["/tmp/data/library/office/task-1/水果表.xlsx"]);
     }
 }

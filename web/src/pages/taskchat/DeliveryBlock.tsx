@@ -9,6 +9,8 @@ import type { DeliveryRecord } from '@/data/generated/DeliveryRecord';
 import type { DeliveryHistoryItem } from '@/data/generated/DeliveryHistoryItem';
 import type { TaskReadGateCheck } from '@/data/generated/TaskReadGateCheck';
 import { clockOf } from '@/lib/numbers';
+import { officeKindOf } from '@/office/format';
+import { OfficeDeliverable } from '@/office/DeliverableList';
 import { cn } from '@/lib/utils';
 
 const TONE: Record<string, string> = {
@@ -112,11 +114,15 @@ export function DeliveryBlock({ delivery }: { delivery: DeliveryRecord | null })
                 {what.changed.length ? (
                   <span>
                     改了 {what.changed.length} 个文件：
-                    {what.changed.map((path) => (
-                      <span key={path} className="process-path mr-2">
-                        {path}
-                      </span>
-                    ))}
+                    {what.changed.map((path) =>
+                      officeKindOf(path) ? (
+                        <OfficeDeliverable key={path} path={path} />
+                      ) : (
+                        <span key={path} className="process-path mr-2">
+                          {path}
+                        </span>
+                      ),
+                    )}
                   </span>
                 ) : (
                   <span className="text-ink-3">没有记录到改过的文件</span>

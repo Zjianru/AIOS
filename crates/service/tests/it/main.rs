@@ -18,6 +18,7 @@ mod host;
 mod legacy_root_session;
 mod memory;
 mod memory_index;
+mod office_create;
 mod plugins;
 mod rewind;
 mod root;

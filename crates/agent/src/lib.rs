@@ -199,6 +199,8 @@ pub struct AgentConfig {
     /// 工具写入范围（D85）：写类工具只允许写这个前缀下的路径；None = 不限。
     /// 服务给写任务的 ThinAgent 填；Kind、CLI 不填。
     pub write_scope: Option<PathBuf>,
+    /// 第二个受控写入根（Office library）；None = 没有。
+    pub extra_write_scope: Option<PathBuf>,
     /// 每步向服务要记忆上下文；None = 这个会话不注入。
     pub memory_context: Option<MemoryContextProvider>,
     /// 记忆送达落账回调；None = 不记（CLI/测试）。
@@ -278,6 +280,7 @@ impl Default for AgentConfig {
             fixed_block: None,
             dynamic_block: None,
             write_scope: None,
+            extra_write_scope: None,
             memory_context: None,
             memory_delivery: None,
             memory_flashback: None,

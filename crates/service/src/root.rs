@@ -668,3 +668,14 @@ mod page_list_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod kind_office_tools {
+    use super::KIND_TOOLS;
+
+    #[test]
+    fn kind_has_office_read_but_never_office_create() {
+        assert!(KIND_TOOLS.contains(&"office_read"), "Kind 能读 Office");
+        assert!(!KIND_TOOLS.contains(&"office_create"), "Kind 不直接生成");
+    }
+}

@@ -3383,7 +3383,10 @@ impl TaskRuntime {
     ) -> Result<ServiceHost, String> {
         let mut extra_tools = crate::root::web_extra_tools(&self.options);
         extra_tools.push(std::sync::Arc::new(office::OfficeReadTool));
-        extra_tools.push(std::sync::Arc::new(office::OfficeCreateTool));
+        extra_tools.push(std::sync::Arc::new(office::OfficeCreateTool::new(
+            self.data_dir.clone(),
+            task.id.as_str(),
+        )));
         extra_tools.push(Arc::new(TaskReportTool::new(
             Arc::clone(self),
             task.id.clone(),
@@ -3407,6 +3410,12 @@ impl TaskRuntime {
         agent_config.plugin_switches = Some(tools::plugins::switches_for(&self.data_dir));
         agent_config.tool_keys = crate::root::tool_key_source(&self.options);
         agent_config.write_scope = task.effective_write_scope();
+        agent_config.extra_write_scope = Some(
+            self.data_dir
+                .join("library")
+                .join("office")
+                .join(task.id.as_str()),
+        );
         agent_config.identity_prompt = Some(
             "You are AIOS's executor: you investigate and implement the task Kind hands you."
                 .to_owned(),
@@ -3422,6 +3431,14 @@ impl TaskRuntime {
         agent_config.compaction_fixed_block = Some(std::sync::Arc::new(move || {
             fixed_runtime.compaction_task_block(&fixed_task, attempt_id)
         }));
+        let mut policy = thin_policy(task.bash);
+        if task.tools.iter().any(|name| name == "office_create")
+            && tools::plugins::switches_for(&self.data_dir).is_on(tools::PluginId::Office)
+        {
+            policy.push_str(
+                "\nOffice plugin is on: you also have office_create for new xlsx files. It writes under the AIOS library/office/<taskId>/ area; after it succeeds, read the file back before reporting, and always say the receipt is not a visual self-check.",
+            );
+        }
         let agent = agent::Agent::open(AgentOpenOptions {
             data_dir: self.data_dir.clone(),
             cwd: task.effective_cwd().to_path_buf(),
@@ -3436,7 +3453,7 @@ impl TaskRuntime {
                 // ThinAgent 不等命令、不盯后台输出；要等就转后台，结果会叫醒它。
                 no_wait: true,
             },
-            policy_prompt: Some(thin_policy(task.bash)),
+            policy_prompt: Some(policy),
         })
         .await
         .map_err(|error| error.to_string())?;

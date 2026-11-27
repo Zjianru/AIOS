@@ -100,6 +100,8 @@ pub struct ToolContext {
     /// 写入范围（已 canonicalize 的绝对路径）；None = 不限（Kind、CLI 照旧）。
     /// 写任务由服务按任务行填；写类工具在 resolve 之后用它核目标。
     write_scope: Option<PathBuf>,
+    /// 第二个受控写入根（Office：<data>/library/office/<taskId>）；仍走同一 check_write。
+    extra_write_scope: Option<PathBuf>,
     /// 本步属于哪一轮（后台命令按轮杀）；单独驱动工具时是 0。
     turn: u64,
 }
@@ -123,6 +125,7 @@ impl ToolContext {
             enabled: None,
             session_events: Arc::new(Vec::new),
             write_scope: None,
+            extra_write_scope: None,
             turn: 0,
         }
     }
@@ -186,6 +189,15 @@ impl ToolContext {
     /// 写入范围；None = 不限。
     pub fn write_scope(&self) -> Option<&Path> {
         self.write_scope.as_deref()
+    }
+
+    pub fn with_extra_write_scope(mut self, scope: Option<PathBuf>) -> Self {
+        self.extra_write_scope = scope;
+        self
+    }
+
+    pub fn extra_write_scope(&self) -> Option<&Path> {
+        self.extra_write_scope.as_deref()
     }
 }
 

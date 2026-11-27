@@ -1,0 +1,13 @@
+{
+  "routes": [
+    {
+      "contains": "\"name\":\"task_accept\"",
+      "file": "t094-kind-office.jsonl"
+    },
+    {
+      "contains": "\"name\":\"task_report\"",
+      "file": "t094-thin-office.jsonl",
+      "paceMs": 60
+    }
+  ]
+}
