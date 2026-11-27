@@ -18,4 +18,4 @@ slow-timeout = { period = "10s", terminate-after = 6 }
 # 测试槽单独跑，隔开这个抢占源；其余测试仍按 nextest 默认并发。
 [[profile.default.overrides]]
 filter = 'test(/tasks::(restart_tests|stop_tests)::/)'
-threads-required = 4
+threads-required = 16
