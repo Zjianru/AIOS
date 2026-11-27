@@ -798,7 +798,7 @@ mod attachment_http_tests {
     }
 
     #[tokio::test]
-    async fn attachment_put_over_http_rejects_binary() {
+    async fn attachment_put_over_http_accepts_binary() {
         let dir = tempfile::tempdir().unwrap();
         let (status, json) = call_api(
             host(dir.path()).await,
@@ -809,8 +809,9 @@ mod attachment_http_tests {
             }),
         )
         .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
-        assert_eq!(json["code"], "attachment/not-text");
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert!(json["id"].as_str().is_some_and(|id| id.starts_with("sha256:")));
+        assert_eq!(json["bytes"], 1);
     }
 
     #[tokio::test]
