@@ -25,6 +25,18 @@ async function send(page: Page, text: string) {
   await sendButton(page).click();
 }
 
+/** 等这一轮真正结束、最后一段回答不再停在思考占位（真模型流式会先写「正在想…」）。 */
+async function sendAndWait(page: Page, text: string) {
+  const before = await answerText(page).catch(() => '');
+  await send(page, text);
+  await waitFinished(page);
+  await expect
+    .poll(async () => (await answerText(page)) !== before && !(await answerText(page)).includes('正在想'), {
+      timeout: 240_000,
+    })
+    .toBe(true);
+}
+
 async function waitFinished(page: Page) {
   await expect(page.getByRole('button', { name: /已完成|已派出|停下了/ }).last()).toBeVisible({
     timeout: 240_000,
@@ -57,11 +69,10 @@ test('D78 Office：插件开时 Kind 读 xlsx 说结构', async ({ page, request
     const file = await officePath(fixture);
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind');
     await expect(input(page)).toBeVisible({ timeout: 60_000 });
-    await send(
+    await sendAndWait(
       page,
       '请读这个 xlsx：' + file + '。只按读到的说：有哪些工作表，A1 和 B1 分别是什么？',
     );
-    await waitFinished(page);
     const answer = await answerText(page);
     expect(answer).toContain('汇总');
     expect(answer).toContain('名字');
@@ -77,8 +88,7 @@ test('D78 Office：插件关时 Kind 不编 xlsx 内容', async ({ page, request
     const file = await officePath(fixture);
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind');
     await expect(input(page)).toBeVisible({ timeout: 60_000 });
-    await send(page, '请读这个 xlsx：' + file + '，告诉我第一张表 A1 写的是什么。');
-    await waitFinished(page);
+    await sendAndWait(page, '请读这个 xlsx：' + file + '，告诉我第一张表 A1 写的是什么。');
     const answer = await answerText(page);
     expect(answer).not.toContain('汇总');
     expect(answer).not.toContain('名字');
@@ -98,8 +108,7 @@ test('D78 Office：说「打开 Office 插件」出确认卡，确认后下一�
     const file = await officePath(fixture);
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind');
     await expect(input(page)).toBeVisible({ timeout: 60_000 });
-    await send(page, '打开 Office 插件。');
-    await waitFinished(page);
+    await sendAndWait(page, '打开 Office 插件。');
     const card = page.locator('[data-kind="confirm-card"]').last();
     await expect(card).toBeVisible({ timeout: 60_000 });
     await expect(card).toContainText('Office');
@@ -120,8 +129,7 @@ test('D78 Office：说「打开 Office 插件」出确认卡，确认后下一�
     const plugins = body.plugins ?? body.data?.plugins ?? [];
     expect(plugins.find((plugin) => plugin.id === 'office')?.enabled).toBe(true);
 
-    await send(page, '现在读 ' + file + ' 的 A1 和 B1，各是什么？只按读到的回答。');
-    await waitFinished(page);
+    await sendAndWait(page, '现在读 ' + file + ' 的 A1 和 B1，各是什么？只按读到的回答。');
     const answer = await answerText(page);
     expect(answer).toContain('名字');
   } finally {
