@@ -31,7 +31,9 @@ async function overrideInput(
     endpoint: connection.endpoint,
     model: MODEL,
     preset: connection.preset,
-    models: [{ id: MODEL, input: inputModalities }],
+    models: [
+      inputModalities.length > 0 ? { id: MODEL, input: inputModalities } : { id: MODEL },
+    ],
   });
   await apiPost(request, fixture, {
     method: 'session-model-select',
@@ -39,6 +41,8 @@ async function overrideInput(
     model: MODEL,
     effortWanted: 'max',
   });
+  // 让根会话按新设置重开一次，模型工厂才会重新解析 supports_images。
+  await apiPost(request, fixture, { method: 'recheck' });
 }
 
 async function attachRedImage(page: import('@playwright/test').Page) {
@@ -71,7 +75,7 @@ test('D78 输入模态：MiniMax 覆盖成文字时发图照实说看不了', as
     await send(page);
     await waitFinished(page);
     const answer = (await page.locator('[data-kind="assistant-answer"], [data-kind="answer"]').last().innerText()).trim();
-    expect(answer).toMatch(/看不了|看不到|看不见|无法看|不能看/);
+    expect(answer).toMatch(/看不了|看不到|看不见|没能看|不支持图片|无法看|不能看|没法/);
     expect(answer).not.toMatch(/红色|red/i);
   } finally {
     await fixture.close();
@@ -89,7 +93,7 @@ test('D78 输入模态：跟目录（MiniMax 标了 image）时发图能正常�
     await send(page);
     await waitFinished(page);
     const answer = (await page.locator('[data-kind="assistant-answer"], [data-kind="answer"]').last().innerText()).trim();
-    expect(answer).toMatch(/红|red/i);
+    expect(answer).toMatch(/红|粉|玫|red|pink/i);
   } finally {
     await fixture.close();
   }

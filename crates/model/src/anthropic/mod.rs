@@ -63,6 +63,8 @@ pub struct DeepSeek {
     next_context_window: Arc<Mutex<Option<u64>>>,
     /// 本轮冻结的上下文窗口；begin_turn 时从 next_context_window 复制。
     turn_context_window: Arc<Mutex<Option<u64>>>,
+    /// 运行时刷新过的看图能力（设置页改输入模态后，下一轮按它覆盖装配值）。
+    runtime_supports_images: Arc<Mutex<Option<bool>>>,
     /// 学到的连接事实（关不掉思考、通过的鉴权头），同实例的 clone 共享。
     learned: Arc<Learned>,
 }
@@ -98,6 +100,7 @@ impl DeepSeek {
             turn_effort: Arc::new(Mutex::new(None)),
             next_context_window: Arc::new(Mutex::new(None)),
             turn_context_window: Arc::new(Mutex::new(None)),
+            runtime_supports_images: Arc::new(Mutex::new(None)),
             learned: Arc::new(Learned::default()),
         })
     }
@@ -212,6 +215,13 @@ impl DeepSeek {
         }
     }
 
+    /// 换看图能力：设置页改输入模态后由服务在下一轮发送前刷新。
+    pub fn set_supports_images(&self, supports: bool) {
+        if let Ok(mut current) = self.runtime_supports_images.lock() {
+            *current = Some(supports);
+        }
+    }
+
     /// 这一轮实际使用的上下文窗口：本轮冻结优先，否则用装配时的窗口。
     pub fn context_window(&self) -> u64 {
         self.turn_context_window
@@ -307,6 +317,12 @@ impl DeepSeek {
             && let Some(effort) = current.as_deref()
         {
             effective.effort = crate::Effort::new(effort);
+        }
+        // 运行时刷新的看图能力（设置页覆盖后下一轮生效）。
+        if let Ok(current) = self.runtime_supports_images.lock()
+            && let Some(supports) = *current
+        {
+            effective.supports_images = supports;
         }
         // 出站之前先查屏蔽：被拒就不签发、不发请求（聊天、重试、摘要共用这一处）。
         self.credentials.admit(&effective.model)?;
