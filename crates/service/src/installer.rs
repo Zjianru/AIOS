@@ -490,4 +490,23 @@ mod tests {
         let installer = Installer::new(dir.path().to_path_buf());
         assert!(installer.uninstall("evil").is_err());
     }
+
+    #[tokio::test]
+    #[ignore = "真下载 31MB；AIOS_INSTALL_REAL=1 手动跑"]
+    async fn real_install_ocr_package_verifies_manifest() {
+        if std::env::var("AIOS_INSTALL_REAL").as_deref() != Ok("1") {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let installer = Installer::new(dir.path().to_path_buf());
+        installer.install("pp-ocrv6-small").await.expect("真安装");
+        assert!(matches!(
+            installer.status("pp-ocrv6-small").state,
+            PackageState::Installed { .. }
+        ));
+        let root = installer.version_root(find("pp-ocrv6-small").unwrap());
+        for name in ["det.onnx", "rec.onnx", "dict.txt"] {
+            assert!(root.join(name).is_file(), "缺 {name}");
+        }
+    }
 }
