@@ -11,7 +11,7 @@ test.setTimeout(300_000);
 const MAIN = 'MiniMax-M3.1-Flash';
 const VISION = 'MiniMax-M3';
 const RED_PNG =
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  'iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAK0lEQVR4nO3NQQEAAATAQGTQP5kwSvC7BdjldMdn9XoHAAAAAAAAAAAAhy3gIwFE6inHLwAAAABJRU5ErkJggg==';
 
 const input = (page: import('@playwright/test').Page) =>
   page.locator('[data-kind="composer-input"]');
