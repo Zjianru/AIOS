@@ -1102,6 +1102,27 @@ impl TaskRuntime {
                 graph_root: task.is_graph_root(),
                 graph_member: task.is_graph_root() || task.parent.is_some(),
                 model: task.model.model.clone(),
+                sees_images: {
+                    let connection = credentials::Keyring::open_read_only(
+                        self.data_dir.clone(),
+                        self.options.identity.as_deref(),
+                    )
+                    .ok()
+                    .and_then(|keyring| {
+                        keyring
+                            .view()
+                            .connections
+                            .into_iter()
+                            .find(|connection| connection.id == task.model.connection)
+                    });
+                    connection.is_some_and(|connection| {
+                        crate::models::supports_images(
+                            &self.data_dir,
+                            &connection,
+                            &task.model.model,
+                        )
+                    })
+                },
                 tools: task.tools.clone(),
                 attempts: task.runs.iter().map(|run| run.attempts.len() as u64).sum(),
                 running,

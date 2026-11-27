@@ -9,6 +9,14 @@ use crate::protocol::{
 };
 use crate::root_lifecycle::RootHost;
 
+/// 只有这四种图片进 Image 块（Anthropic 支持的格式；svg 等按文字附件走）。
+pub(crate) fn image_format_supported(mime: &str) -> bool {
+    matches!(
+        mime,
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+    )
+}
+
 /// 把附件错误映射成服务错误码。
 pub(crate) fn attachment_error(error: tools::attachments::AttachmentError) -> ServiceError {
     use tools::attachments::AttachmentError;
@@ -269,5 +277,26 @@ impl RootHost {
             text,
             data,
         })
+    }
+}
+
+#[cfg(test)]
+mod image_format_tests {
+    use super::image_format_supported;
+
+    #[test]
+    fn only_png_jpeg_gif_webp_are_image_blocks() {
+        for mime in ["image/png", "image/jpeg", "image/gif", "image/webp"] {
+            assert!(image_format_supported(mime), "{mime} 要进图片块");
+        }
+        for mime in [
+            "image/svg+xml",
+            "image/bmp",
+            "image/tiff",
+            "text/plain",
+            "application/pdf",
+        ] {
+            assert!(!image_format_supported(mime), "{mime} 不能进图片块");
+        }
     }
 }

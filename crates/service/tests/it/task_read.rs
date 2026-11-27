@@ -184,6 +184,10 @@ async fn returns_the_header_and_the_tail_page() {
     assert_eq!(read.task.dod, "给出规则和一个会漏判的例子");
     assert_eq!(read.task.cwd, cwd.path().to_string_lossy());
     assert_eq!(read.task.model, "deepseek-flash");
+    assert!(
+        !read.task.sees_images,
+        "测试夹具没有 Keyring/目录，查不到按看不了图算"
+    );
     assert_eq!(read.task.tools, THIN_TOOLS.map(str::to_owned).to_vec());
     assert_eq!(read.task.attempts, 1);
     assert_eq!(

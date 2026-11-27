@@ -162,7 +162,10 @@ fn base64(bytes: &[u8]) -> String {
 
 fn image_source(mime: Option<&str>, path: Option<&str>) -> Option<WireImageSource> {
     let mime = mime?;
-    if !mime.starts_with("image/") {
+    if !matches!(
+        mime,
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+    ) {
         return None;
     }
     let bytes = std::fs::read(path?).ok()?;
@@ -1301,6 +1304,27 @@ mod image_block_serialize_tests {
         assert_eq!(content[0]["source"]["type"], "base64");
         assert_eq!(content[0]["source"]["media_type"], "image/png");
         assert_eq!(content[0]["source"]["data"], "iVBORw==");
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn svg_is_not_sent_as_an_image_block() {
+        let path = std::env::temp_dir().join("aios-image-svg.svg");
+        std::fs::write(&path, b"<svg/>").unwrap();
+        let value = body(
+            &config(true),
+            vec![ContentBlock::Image {
+                attachment_id:
+                    "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567"
+                        .to_owned(),
+                name: "pic.svg".to_owned(),
+                bytes: 6,
+                mime: Some("image/svg+xml".to_owned()),
+                path: Some(path.to_str().unwrap().to_owned()),
+            }],
+        );
+        let content = &value["messages"][0]["content"];
+        assert_eq!(content[0]["type"], "text", "svg 不进图片块：{content:?}");
         std::fs::remove_file(path).ok();
     }
 

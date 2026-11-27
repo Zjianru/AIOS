@@ -929,6 +929,7 @@ export function TaskChatScene() {
             ref={composerRef}
             offline={false}
             draftKey={'task-' + taskId}
+            imagesOk={task.seesImages}
             placeholder={
               task.running
                 ? '插一句给 ThinAgent（这一轮里就会看到）…'

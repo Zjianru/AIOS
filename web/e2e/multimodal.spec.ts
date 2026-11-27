@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { startKernelFixture } from './service-fixture';
+import { apiPost, startKernelFixture } from './service-fixture';
 
 /** T093.2：设置页输入列、图片附件卡。 */
 
@@ -95,3 +95,76 @@ test('输入框拖入图片：出图片卡（缩略图/名字/大小）', async 
   }
 });
 
+
+test('消息图片真实路径：附一张图→发送→模型回话→消息里有图，刷新后还在', async ({ page }) => {
+  test.setTimeout(180_000);
+  const fixture = await startKernelFixture();
+  try {
+    await page.goto(urlOf(fixture, '#kind'));
+    const composer = page.locator('[data-kind="composer"]');
+    await expect(composer).toBeVisible({ timeout: 30_000 });
+    const dataTransfer = await page.evaluateHandle(() => {
+      const transfer = new DataTransfer();
+      transfer.items.add(new File([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])], 'sent.png', { type: 'image/png' }));
+      return transfer;
+    });
+    await composer.dispatchEvent('drop', { dataTransfer });
+    await expect(page.locator('[data-kind="attachment-image"]')).toBeVisible({ timeout: 20_000 });
+    await page.locator('[data-kind="send"]').click();
+    const row = page.locator('[data-kind="user-message-row"]').last();
+    await expect(row.locator('[data-kind="attachment-image"]')).toBeVisible({ timeout: 20_000 });
+    await expect(row.locator('[data-kind="attachment-image"]')).toContainText('sent.png');
+    // e2e 的模拟模型回话（默认夹具回放）走完这一轮。
+    await expect(page.locator('[data-kind="assistant-answer"], [data-kind="answer"]').last()).toBeVisible({ timeout: 90_000 });
+    await page.reload();
+    const history = page.locator('[data-kind="user-message-row"]').last();
+    await expect(history.locator('[data-kind="attachment-image"]')).toContainText('sent.png', { timeout: 30_000 });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('任务对话：任务冻结模型看不了图时，图片卡带提示（seesImages）', async ({ page, request }) => {
+  test.setTimeout(120_000);
+  const fixture = await startKernelFixture({ t062TaskGraphs: true });
+  try {
+    const response = await apiPost(request, fixture, { method: 'work' });
+    const work = (await response.json()) as {
+      tasks: { id: string; title: string }[];
+    };
+    const task = work.tasks.find((item) => item.title === '查 A');
+    expect(task, '夹具里要有任务「查 A」').toBeTruthy();
+    // 目录里 deepseek-flash 现在标了 text+image；这一条只验证「页面拿 seesImages 画盲提示」：
+    // 先用真实请求拿一份 task-read 响应，把该字段覆盖成 false，再交给页面（真实服务形状）。
+    const readResponse = await apiPost(request, fixture, { method: 'task-read', taskId: task!.id });
+    const readJson = (await readResponse.json()) as { task?: Record<string, unknown> };
+    if (readJson.task) readJson.task.seesImages = false;
+    await page.route('**/api', async (route) => {
+      let method = '';
+      try {
+        method = (route.request().postDataJSON() as { method?: string }).method ?? '';
+      } catch {
+        // 非 JSON 请求原样放行。
+      }
+      if (method !== 'task-read') {
+        await route.continue();
+        return;
+      }
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(readJson) });
+    });
+    await page.goto(urlOf(fixture, '#taskchat:' + task!.id));
+    const composer = page.locator('[data-kind="composer"]');
+    await expect(composer).toBeVisible({ timeout: 30_000 });
+    const dataTransfer = await page.evaluateHandle(() => {
+      const transfer = new DataTransfer();
+      transfer.items.add(new File([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])], 'task.png', { type: 'image/png' }));
+      return transfer;
+    });
+    await composer.dispatchEvent('drop', { dataTransfer });
+    const card = page.locator('[data-kind="attachment-image"]');
+    await expect(card).toBeVisible({ timeout: 20_000 });
+    await expect(card.locator('[data-kind="attachment-image-blind"]')).toContainText('这个模型看不了图');
+  } finally {
+    await fixture.close();
+  }
+});

@@ -569,7 +569,9 @@ export const TurnRow = memo(function TurnRow({
               version={view.user.resultCard.version}
             />
           ) : null}
-          {view.user.pastes.length > 0 || view.user.files.length > 0 ? <UserCards user={view.user} /> : null}
+          {view.user.pastes.length > 0 || view.user.files.length > 0 || view.user.images.length > 0 ? (
+            <UserCards user={view.user} />
+          ) : null}
           {view.user.text ? (
             (() => {
               const continued = view.user.rpcId?.startsWith('continue:')
