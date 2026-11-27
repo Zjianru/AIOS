@@ -653,7 +653,7 @@ export async function pluginSet(input: PluginSetRequest): Promise<PluginListResp
   return post({ method: 'plugin_set', ...input });
 }
 
-/** T094.3：只读读一个文件的字节（路径或附件 id；预览用）。 */
+/** 只读读一个文件的字节（路径或附件 id；预览用）。 */
 export async function fileReadBytes(input: FileReadBytesRequest): Promise<FileReadBytesResponse> {
   return post({ method: 'file_read_bytes', ...input });
 }

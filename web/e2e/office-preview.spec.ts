@@ -35,7 +35,7 @@ async function sendFile(
   expect(body.id).toBeTruthy();
   const response = await apiPost(request, fixture, {
     method: 'send',
-    requestId: 't0943-' + fileName + '-' + String(Date.now()) + '-' + String(Math.random()).slice(2),
+    requestId: 'office-preview-' + fileName + '-' + String(Date.now()) + '-' + String(Math.random()).slice(2),
     content,
     delivery: 'follow-up',
     attachments: [
