@@ -693,13 +693,22 @@ export const TurnRow = memo(function TurnRow({
           {view.question && !readOnly ? <QuestionCard turnId={view.id} question={view.question} /> : null}
           {view.retry ? <RetryLine retry={view.retry} /> : null}
 
-          {view.tools
-            .filter((tool) => tool.name !== 'vision_present')
-            .map((tool) => {
+          {(() => {
+            const imageTools = view.tools.filter((tool) => {
+              if (tool.name === 'vision_present') return false;
+              const raw = tool.meta ? (tool.meta.images ?? tool.meta.imageAttachments) : null;
+              return Array.isArray(raw) && raw.some((id) => typeof id === 'string');
+            });
+            if (imageTools.length === 0) {
+              const presented = presentedImageIds(view.tools);
+              return presented.length > 0 ? <ToolImages ids={presented} /> : null;
+            }
+            return imageTools.map((tool) => {
               const raw = tool.meta ? (tool.meta.images ?? tool.meta.imageAttachments) : null;
               const ids = Array.isArray(raw) ? raw.filter((id): id is string => typeof id === 'string') : [];
               return ids.length > 0 ? <ToolImages key={tool.id} ids={ids} /> : null;
-            })}
+            });
+          })()}
           <div className={cn('group/answer relative mt-1', streaming && 'min-h-[24px]')} data-kind="answer">
             <Answer view={view} />
             {view.answer ? (

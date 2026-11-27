@@ -481,14 +481,22 @@ impl VisionTools {
         let w = bbox[2] * i64::from(width) / 1000;
         let h = bbox[3] * i64::from(height) / 1000;
         let cropped = vision::ops::crop(&image, x, y, w, h);
+        let annotated = vision::ops::annotate(&image, x, y, w, h);
         let out = self.store_png(
             "crop.png",
             &vision::ops::encode_png(&cropped).map_err(ToolFailure::plain)?,
         )?;
+        let boxed = self.store_png(
+            "crop-annotated.png",
+            &vision::ops::encode_png(&annotated).map_err(ToolFailure::plain)?,
+        )?;
+        if let Ok(mut last) = self.last_images.lock() {
+            *last = vec![boxed.id.clone(), out.id.clone()];
+        }
         Ok(ToolResult::success_with_meta(
             &call.id,
-            format!("裁剪好了：{x},{y} 起 {w}×{h}。"),
-            Self::image_meta(&[&out]),
+            format!("裁剪好了：{x},{y} 起 {w}×{h}；同时给框出位置的图和裁剪图。"),
+            Self::image_meta(&[&boxed, &out]),
         ))
     }
 
@@ -935,7 +943,7 @@ mod tests {
         .await;
         assert!(!result.is_error, "{}", result.content);
         let images = result.meta.unwrap()["images"].as_array().unwrap().len();
-        assert_eq!(images, 1);
+        assert_eq!(images, 2);
         let ground = tools
             .readonly()
             .into_iter()
@@ -1239,7 +1247,7 @@ mod tests {
             )
             .await;
             assert!(!result.is_error, "{}", result.content);
-            assert_eq!(result.meta.unwrap()["images"].as_array().unwrap().len(), 1);
+            assert_eq!(result.meta.unwrap()["images"].as_array().unwrap().len(), 2);
         }
     }
 }
