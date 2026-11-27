@@ -3,9 +3,10 @@
 use super::*;
 
 pub(super) async fn wait_until(label: &str, mut check: impl FnMut() -> bool) {
-    // restart/stop 的夹具在 nextest 里单独占满测试槽（见 .config/nextest.toml）；
-    // 正常完成在秒级，18 秒只兜住真正的慢路径。
-    for _ in 0..900 {
+    // 和 common::wait_turns 同一预算：全量默认并发下，第二次 Attempt/重启卡
+    // 的完成能到 20 秒量级；18 秒会把合法完成误判成红，60 秒留同一余量。
+    // 重启/停止两个模块还用 threads-required 占满测试槽（见 .config/nextest.toml）。
+    for _ in 0..3000 {
         if check() {
             return;
         }
