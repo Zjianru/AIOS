@@ -112,9 +112,29 @@ interface LoadState {
   broken: boolean;
 }
 
-/** xlsx/docx/pptx 都是 ZIP；不是 ZIP 就当坏文件，不猜内容。 */
+/** xlsx/docx/pptx 都是 ZIP：本地文件头 + 结尾目录；PK 头但没结尾目录算坏文件，不猜内容。 */
 function isZip(bytes: Uint8Array): boolean {
-  return bytes.length >= 2 && bytes[0] === 0x50 && bytes[1] === 0x4b;
+  if (bytes.length < 22) return false;
+  if (
+    bytes[0] !== 0x50 ||
+    bytes[1] !== 0x4b ||
+    bytes[2] !== 0x03 ||
+    bytes[3] !== 0x04
+  ) {
+    return false;
+  }
+  const tailStart = Math.max(0, bytes.length - 65557);
+  for (let index = tailStart; index + 4 <= bytes.length; index += 1) {
+    if (
+      bytes[index] === 0x50 &&
+      bytes[index + 1] === 0x4b &&
+      bytes[index + 2] === 0x05 &&
+      bytes[index + 3] === 0x06
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function decodeBase64(value: string): Uint8Array {

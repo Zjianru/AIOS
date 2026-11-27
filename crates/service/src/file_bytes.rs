@@ -42,6 +42,16 @@ impl RootHost {
         let canonical = std::fs::canonicalize(&path).map_err(|error| {
             ServiceError::InvalidPath(format!("读不到 {}：{error}", path.display()))
         })?;
+        // 只读预览不越出根会话工作目录：绝对路径也必须在 cwd 内；符号链接按 canonical 后判。
+        let cwd = std::fs::canonicalize(&self.options.cwd)
+            .map_err(|error| ServiceError::InvalidPath(format!("工作目录读不出来：{error}")))?;
+        if !canonical.starts_with(&cwd) {
+            return Err(ServiceError::InvalidPath(format!(
+                "路径不在会话工作目录内：{}（工作目录：{}）",
+                canonical.display(),
+                cwd.display()
+            )));
+        }
         let metadata = std::fs::metadata(&canonical)
             .map_err(|error| ServiceError::InvalidPath(format!("读不到文件信息：{error}")))?;
         if !metadata.is_file() {

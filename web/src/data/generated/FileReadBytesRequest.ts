@@ -5,7 +5,7 @@
  */
 export type FileReadBytesRequest = {
 /**
- * 绝对路径，或相对根会话工作目录的路径。
+ * 根会话工作目录内的路径（相对 cwd；绝对路径也必须在 cwd 内）。
  */
 path?: string | null,
 /**

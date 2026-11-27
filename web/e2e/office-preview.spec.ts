@@ -105,6 +105,7 @@ test('docx/pptx 同一张无保真卡；坏文件写原因，不白屏', async (
     await sendFile(request, fixture, 'sample.docx');
     await sendFile(request, fixture, 'sample.pptx');
     await sendFile(request, fixture, 'broken.docx');
+    await sendFile(request, fixture, 'corrupt.xlsx');
     await page.goto(`${fixture.baseUrl}/?token=${encodeURIComponent(fixture.token)}#kind`);
 
     const docxCard = page.locator('[data-kind="attachment-binary"]', { hasText: 'sample.docx' }).last();
@@ -127,6 +128,11 @@ test('docx/pptx 同一张无保真卡；坏文件写原因，不白屏', async (
     await expect(page.locator('[data-kind="office-preview"]')).toBeVisible({ timeout: 15_000 });
     await expect(page.locator('[data-kind="office-broken"]')).toContainText('文件不是有效的 Office 压缩包');
     await expect(page.getByRole('button', { name: '打开原件' })).toBeVisible();
+    await page.getByRole('button', { name: '关闭预览' }).click();
+
+    const corruptCard = page.locator('[data-kind="attachment-binary"]', { hasText: 'corrupt.xlsx' }).last();
+    await corruptCard.locator('[data-kind="file-open"]').click();
+    await expect(page.locator('[data-kind="office-broken"]')).toContainText('文件不是有效的 Office 压缩包');
     await expect(page.getByRole('button', { name: '在 Finder 中显示' })).toBeVisible();
   } finally {
     await fixture.close();

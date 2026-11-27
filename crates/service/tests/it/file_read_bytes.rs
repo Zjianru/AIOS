@@ -77,3 +77,67 @@ async fn file_read_bytes_reads_attachment_and_rejects_bad_input() {
         .unwrap_err();
     assert!(matches!(error, ServiceError::AttachmentInvalid(_)));
 }
+
+#[tokio::test]
+async fn file_read_bytes_rejects_escape_absolute_outside_and_symlink_outside() {
+    let dir = tempdir().unwrap();
+    let data = dir.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(data.join("inside.txt"), b"inside").unwrap();
+    let outside = tempdir().unwrap();
+    std::fs::write(outside.path().join("secret.txt"), b"secret").unwrap();
+    let host = crate::common::open(crate::common::options(&data)).await;
+
+    // 绝对路径在 cwd 内：允许。
+    let ok = host
+        .dispatch(Call::FileReadBytes(FileReadBytesRequest {
+            path: Some(data.join("inside.txt").display().to_string()),
+            attachment_id: None,
+        }))
+        .await;
+    assert!(ok.is_ok(), "cwd 内绝对路径允许：{ok:?}");
+
+    // 相对 ../ 和绝对外部、cwd 内 symlink 指向外部：都拒绝。
+    std::os::unix::fs::symlink(outside.path().join("secret.txt"), data.join("link.txt")).unwrap();
+    for path in [
+        "../secret.txt".to_owned(),
+        outside.path().join("secret.txt").display().to_string(),
+        data.join("link.txt").display().to_string(),
+    ] {
+        let error = host
+            .dispatch(Call::FileReadBytes(FileReadBytesRequest {
+                path: Some(path.clone()),
+                attachment_id: None,
+            }))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, ServiceError::InvalidPath(_)),
+            "{path} 应按 InvalidPath 拒绝：{error}"
+        );
+        if path.contains("link.txt") || path.contains("secret.txt") && !path.starts_with("..") {
+            assert!(
+                error.to_string().contains("会话工作目录"),
+                "错误要可读：{error}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn file_read_bytes_rejects_file_over_preview_limit() {
+    let dir = tempdir().unwrap();
+    let host = crate::common::open(crate::common::options(dir.path())).await;
+    let huge = dir.path().join("huge.bin");
+    let file = std::fs::File::create(&huge).unwrap();
+    file.set_len(50 * 1024 * 1024 + 1).unwrap();
+    let error = host
+        .dispatch(Call::FileReadBytes(FileReadBytesRequest {
+            path: Some("huge.bin".to_owned()),
+            attachment_id: None,
+        }))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, ServiceError::InvalidPath(_)));
+    assert!(error.to_string().contains("太大"), "{error}");
+}
