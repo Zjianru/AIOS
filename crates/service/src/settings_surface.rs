@@ -637,7 +637,10 @@ impl RootHost {
         // G1：看图链从空变成有，末尾补一条静态通知；前面的请求字节不动。
         if request.vision_models.is_some()
             && previous_vision_models.is_empty()
-            && !settings::load(&self.options.data_dir).vision.models.is_empty()
+            && !settings::load(&self.options.data_dir)
+                .vision
+                .models
+                .is_empty()
         {
             let guard = self.inner.lock().await;
             if let Some(host) = guard.as_ref() {
