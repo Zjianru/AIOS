@@ -810,7 +810,11 @@ mod attachment_http_tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{json}");
-        assert!(json["id"].as_str().is_some_and(|id| id.starts_with("sha256:")));
+        assert!(
+            json["id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("sha256:"))
+        );
         assert_eq!(json["bytes"], 1);
     }
 

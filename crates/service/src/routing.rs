@@ -23,11 +23,7 @@ impl RootHost {
                 }
                 let message = self.user_message_from(&request)?;
                 // 设置页改输入模态后不重开根会话：下一轮发送前按当前设置刷新看图能力。
-                let current_selection = self
-                    .selection
-                    .lock()
-                    .expect("selection 锁被毒化")
-                    .clone();
+                let current_selection = self.selection.lock().expect("selection 锁被毒化").clone();
                 if let Some(selection) = current_selection
                     && let Ok(keyring) = credentials::Keyring::open_read_only(
                         self.options.data_dir.clone(),
