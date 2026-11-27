@@ -198,6 +198,17 @@ impl RootHost {
         ))
     }
 
+    /// 候选整表预算 20：先文件后对象，文件占满就不再给对象。
+    fn trim_candidates(
+        references: &mut Vec<FileReferenceEntry>,
+        objects: &mut Vec<FileReferenceObject>,
+    ) {
+        references.truncate(tools::file_references::DEFAULT_MAX_RESULTS);
+        let remaining =
+            tools::file_references::DEFAULT_MAX_RESULTS.saturating_sub(references.len());
+        objects.truncate(remaining);
+    }
+
     /// 列 @ 文件候选：项目默认目录 + 资料库的文字文件，返回绝对路径。
     ///
     /// Kind 没有工作目录；这里不再以进程/根会话 cwd 为根。项目默认目录不存在时跳过该项目。
@@ -236,7 +247,6 @@ impl RootHost {
         // 保留每个根自己的排序（同名/前缀/子序列），跨项目只按项目顺序拼接。
         let mut seen = std::collections::BTreeSet::new();
         references.retain(|entry| seen.insert(entry.path.clone()));
-        references.truncate(tools::file_references::DEFAULT_MAX_RESULTS);
 
         // 同一份候选接口只增对象分组；数据来自已有任务/项目事实，不加新查询协议。
         let needle = request.query.to_lowercase();
@@ -293,7 +303,7 @@ impl RootHost {
         let mut objects = task_objects;
         objects.extend(report_objects);
         objects.extend(project_objects);
-        objects.truncate(tools::file_references::DEFAULT_MAX_RESULTS);
+        Self::trim_candidates(&mut references, &mut objects);
         Ok(FileReferencesListResponse {
             references,
             objects,
@@ -365,5 +375,48 @@ mod image_format_tests {
         ] {
             assert!(!image_format_supported(mime), "{mime} 不能进图片块");
         }
+    }
+
+    fn reference(index: usize) -> super::FileReferenceEntry {
+        super::FileReferenceEntry {
+            path: format!("/tmp/file-{index}.txt"),
+            bytes: 1,
+        }
+    }
+
+    fn object(index: usize) -> super::FileReferenceObject {
+        super::FileReferenceObject {
+            kind: "task".to_owned(),
+            id: format!("task-{index}"),
+            title: format!("任务 {index}"),
+            version: Some(1),
+            task_id: None,
+            goal: None,
+        }
+    }
+
+    #[test]
+    fn candidates_share_one_budget_of_twenty() {
+        // 文件 >20：只剩 20 个文件，对象一个不给。
+        let mut references: Vec<_> = (0..25).map(reference).collect();
+        let mut objects: Vec<_> = (0..5).map(object).collect();
+        super::RootHost::trim_candidates(&mut references, &mut objects);
+        assert_eq!(references.len(), 20);
+        assert!(objects.is_empty());
+
+        // 文件+对象 >20：文件 15，对象只留 5。
+        let mut references: Vec<_> = (0..15).map(reference).collect();
+        let mut objects: Vec<_> = (0..10).map(object).collect();
+        super::RootHost::trim_candidates(&mut references, &mut objects);
+        assert_eq!(references.len(), 15);
+        assert_eq!(objects.len(), 5);
+        assert_eq!(references.len() + objects.len(), 20);
+
+        // 文件+对象 <20：原样保留。
+        let mut references: Vec<_> = (0..5).map(reference).collect();
+        let mut objects: Vec<_> = (0..5).map(object).collect();
+        super::RootHost::trim_candidates(&mut references, &mut objects);
+        assert_eq!(references.len(), 5);
+        assert_eq!(objects.len(), 5);
     }
 }
