@@ -400,6 +400,47 @@ async fn send_appends_multi_markers_in_order_and_keeps_attachment_mime() {
     }
 }
 #[tokio::test]
+async fn send_svg_attachment_stays_a_file_block_in_the_log() {
+    let data = tempdir().unwrap();
+    let cwd = tempdir().unwrap();
+    let host = host(data.path(), cwd.path()).await;
+    let bytes = b"<svg xmlns='http://www.w3.org/2000/svg'/>";
+    let put = host
+        .dispatch(Call::AttachmentPut(AttachmentPutRequest {
+            name: "pic.svg".to_owned(),
+            data: base64(bytes),
+        }))
+        .await
+        .expect("put");
+    let id = serde_json::to_value(&put).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut send = request("看这个图");
+    send.attachments = vec![SendAttachment {
+        id: id.clone(),
+        name: "pic.svg".to_owned(),
+        bytes: bytes.len() as u64,
+        mime: None,
+    }];
+    host.dispatch(Call::Send(send)).await.expect("send");
+    let blocks = wait_user_blocks(&host, data.path()).await;
+    match &blocks[1] {
+        model::ContentBlock::File {
+            attachment_id,
+            name,
+            mime,
+            ..
+        } => {
+            assert_eq!(attachment_id, &id);
+            assert_eq!(name, "pic.svg");
+            assert_eq!(mime.as_deref(), Some("image/svg+xml"), "svg 仍是文字附件");
+        }
+        other => panic!("svg 不能写成 Image 块：{other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn send_image_attachment_becomes_an_image_block_in_the_log() {
     let data = tempdir().unwrap();
     let cwd = tempdir().unwrap();

@@ -46,7 +46,7 @@ export interface ModelRow {
   priceOutput?: number;
   priceCacheRead?: number;
   priceCacheWrite?: number;
-  /** T093：输入模态覆盖（空=跟目录；['text'] 文字；['text','image'] 文字+图片）。 */
+  /** 输入模态覆盖（空=跟目录；['text'] 文字；['text','image'] 文字+图片）。 */
   input?: string[];
 }
 

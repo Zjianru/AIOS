@@ -6,7 +6,7 @@
  *   长按 Enter（repeat）不连发；
  * - 自动变高，最高 240px，超过后内部滚动；
  * - 粘贴超过 1000 个字符折成卡片（不进 textarea），发送时作为 pastes 的一项；
- * - 拖文件/粘贴文件出附件卡片（T093：图片/文字/其他非文字文件都收，文件夹不收）；
+ * - 拖文件/粘贴文件出附件卡片（图片/文字/其他非文字文件都收，文件夹不收）；
  * - @ 菜单（打 @ 后按打的字列候选，选中插 @路径；带空格的路径加引号）；
  * - 选中文字浮出「引用」，点了变成输入框上方的引用卡；发送时才按行变成 > 行。
  */
@@ -29,6 +29,7 @@ import {
   AttachmentPreview,
   FileCard,
   ImageCard,
+  imageMimeSupported,
   FromCanvasChip,
   PasteCard,
   QuoteCard,
@@ -96,7 +97,7 @@ interface ComposerProps {
   queueRestores?: QueueRestore[];
   /** 输入框里的页面位置标签（Kind 传「现在」；任务对话不传）。 */
   pageTag?: string;
-  /** T093：当前模型能不能看图；看不了时图片卡照实写，仍允许发送。 */
+  /** 当前模型能不能看图；看不了时图片卡照实写，仍允许发送。 */
   imagesOk?: boolean;
 }
 
@@ -162,7 +163,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const [pastes, setPastes] = useState<string[]>([]);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const kindModel = useKindStore((state) => state.model);
-  const [modelSeesImages, setModelSeesImages] = useState(true);
+  // 查不到/读不到都按看不了图（不猜）；加载完成前也不显示缩略图。
+  const [modelSeesImages, setModelSeesImages] = useState(false);
   useEffect(() => {
     let alive = true;
     void peekAvailableModels(kindModel.connectionId)
@@ -170,7 +172,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         const info = result.models.find((model) => model.id === kindModel.modelId);
         if (alive) setModelSeesImages(Boolean(info?.input?.includes('image')));
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (alive) setModelSeesImages(false);
+      });
     return () => {
       alive = false;
     };
@@ -953,7 +957,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               />
             ))}
             {attachments.map((file) =>
-              file.mime?.startsWith('image/') ? (
+              imageMimeSupported(file.mime) ? (
                 <ImageCard
                   key={file.id + '-' + file.name}
                   file={file}

@@ -161,10 +161,7 @@ impl RootHost {
             // 名字/字节数用请求里的值：同内容不同名时，卡片上要显示用户拖进来的那个名字。
             let mime = attachment.mime.clone().or_else(|| stored.mime.clone());
             let path = Some(stored.path.to_string_lossy().into_owned());
-            if mime
-                .as_deref()
-                .is_some_and(|value| value.starts_with("image/"))
-            {
+            if mime.as_deref().is_some_and(image_format_supported) {
                 blocks.push(model::ContentBlock::Image {
                     attachment_id: attachment.id.clone(),
                     name: attachment.name.clone(),

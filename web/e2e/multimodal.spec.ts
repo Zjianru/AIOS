@@ -78,6 +78,16 @@ test('输入框拖入图片：出图片卡（缩略图/名字/大小）', async 
       return transfer;
     });
     await composer.dispatchEvent('drop', { dataTransfer: pdfTransfer });
+    const svgTransfer = await page.evaluateHandle(() => {
+      const transfer = new DataTransfer();
+      transfer.items.add(new File(["<svg xmlns='http://www.w3.org/2000/svg'/>"], 'pic.svg', { type: 'image/svg+xml' }));
+      return transfer;
+    });
+    await composer.dispatchEvent('drop', { dataTransfer: svgTransfer });
+    const svgCard = page.locator('[data-kind="file-card"]');
+    await expect(svgCard).toBeVisible({ timeout: 20_000 });
+    await expect(svgCard).toContainText('pic.svg');
+    await expect(page.locator('[data-kind="attachment-image"]')).toHaveCount(1, { timeout: 5_000 });
     const binary = page.locator('[data-kind="attachment-binary"]');
     await expect(binary).toBeVisible({ timeout: 20_000 });
     await expect(binary).toContainText('report.pdf');
@@ -158,6 +168,41 @@ test('任务对话：任务冻结模型看不了图时，图片卡带提示（se
     const dataTransfer = await page.evaluateHandle(() => {
       const transfer = new DataTransfer();
       transfer.items.add(new File([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])], 'task.png', { type: 'image/png' }));
+      return transfer;
+    });
+    await composer.dispatchEvent('drop', { dataTransfer });
+    const card = page.locator('[data-kind="attachment-image"]');
+    await expect(card).toBeVisible({ timeout: 20_000 });
+    await expect(card.locator('[data-kind="attachment-image-blind"]')).toContainText('这个模型看不了图');
+  } finally {
+    await fixture.close();
+  }
+});
+
+
+test('目录读不到时按看不了图：peek 失败也不猜成能看', async ({ page }) => {
+  test.setTimeout(120_000);
+  const fixture = await startKernelFixture();
+  try {
+    await page.route('**/api', async (route) => {
+      let method = '';
+      try {
+        method = (route.request().postDataJSON() as { method?: string }).method ?? '';
+      } catch {
+        // 非 JSON 请求原样放行。
+      }
+      if (method === 'available-models') {
+        await route.fulfill({ status: 500, contentType: 'application/json', body: '{}' });
+        return;
+      }
+      await route.continue();
+    });
+    await page.goto(urlOf(fixture, '#kind'));
+    const composer = page.locator('[data-kind="composer"]');
+    await expect(composer).toBeVisible({ timeout: 30_000 });
+    const dataTransfer = await page.evaluateHandle(() => {
+      const transfer = new DataTransfer();
+      transfer.items.add(new File([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])], 'failed-model.png', { type: 'image/png' }));
       return transfer;
     });
     await composer.dispatchEvent('drop', { dataTransfer });

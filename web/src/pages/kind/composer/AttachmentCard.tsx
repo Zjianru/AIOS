@@ -11,6 +11,13 @@ import { attachmentGet } from '@/data/service';
 import type { SendAttachmentRef } from '@/data/service';
 import { cn } from '@/lib/utils';
 
+/** 只有这四种 mime 走图片卡/图片块（svg 等按文字附件）。 */
+export function imageMimeSupported(mime?: string | null): boolean {
+  return (
+    mime === 'image/png' || mime === 'image/jpeg' || mime === 'image/gif' || mime === 'image/webp'
+  );
+}
+
 /** 文件类型的人话（故事 7：卡片上有类型与大小）。 */
 export function typeLabel(mime: string): string {
   if (mime === 'text/plain') return '文字';
@@ -46,6 +53,7 @@ const EXTENSION_TYPES: Record<string, string> = {
   jsx: 'JavaScript',
   ts: 'TypeScript',
   tsx: 'TypeScript',
+  svg: 'SVG',
   rs: 'Rust',
   py: 'Python',
   sh: 'Shell',
@@ -152,7 +160,10 @@ interface FileCardProps {
 
 export function FileCard({ file, mime, onOpen, onRemove }: FileCardProps) {
   const type = fileTypeLabel(file.name, mime);
-  const text = !mime || mime.startsWith('text/') || ['application/json', 'application/xml'].includes(mime);
+  const text =
+    !mime ||
+    mime.startsWith('text/') ||
+    ['application/json', 'application/xml', 'image/svg+xml'].includes(mime);
   return (
     <span
       data-kind={text ? 'file-card' : 'attachment-binary'}
@@ -292,7 +303,7 @@ export function AttachmentPreview({ kind, title, text, onClose, className }: Pre
   );
 }
 
-/** T093：图片卡（缩略图 + 名字 + 大小）；当前模型看不了图时照实写。 */
+/** 图片卡（缩略图 + 名字 + 大小）；当前模型看不了图时照实写。 */
 export function ImageCard({
   file,
   mime,
