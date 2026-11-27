@@ -1,0 +1,22 @@
+[package]
+name = "office"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+calamine.workspace = true
+docx-rs.workspace = true
+quick-xml.workspace = true
+rust_xlsxwriter.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tools = { path = "../tools" }
+zip.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -25,6 +25,8 @@ import {
   Terminal,
 } from 'lucide-react';
 import { go } from '@/app/navigate';
+import { officeKindOf } from '@/office/format';
+import { OfficeDeliverable } from '@/office/DeliverableList';
 import { usageResumeLine } from '@/data/usageWait.ts';
 import { useKindStore } from '@/pages/kind/kindStore';
 import type { LucideIcon } from 'lucide-react';
@@ -87,12 +89,18 @@ function Changed({ slots }: { slots: TaskResultSlots }) {
       <div className="text-1 text-ink-3">{slots.changedLine}</div>
       {slots.changed.length > 0 ? (
         <ul className="mt-0.5">
-          {slots.changed.map((file) => (
-            <li key={file} className="process-path flex items-center gap-1.5 text-ink-2">
-              <FilePen className="size-3 shrink-0 text-ink-3" />
-              {file}
-            </li>
-          ))}
+          {slots.changed.map((file) =>
+            officeKindOf(file) ? (
+              <li key={file} className="flex items-center gap-1.5 text-ink-2">
+                <OfficeDeliverable path={file} />
+              </li>
+            ) : (
+              <li key={file} className="process-path flex items-center gap-1.5 text-ink-2">
+                <FilePen className="size-3 shrink-0 text-ink-3" />
+                {file}
+              </li>
+            ),
+          )}
         </ul>
       ) : (
         <div className="text-ink-3">没有经写类工具改过文件。</div>

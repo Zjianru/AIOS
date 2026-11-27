@@ -9,6 +9,7 @@ mod diff_meta;
 mod file_references;
 mod fs_tools;
 mod jobs;
+mod plugins;
 mod skills;
 mod spill;
 mod todo;

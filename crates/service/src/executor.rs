@@ -70,11 +70,47 @@ mod usage_wait_tests;
 /// 任务库文件名（数据目录下）。
 pub const TASKS_DB_FILE: &str = "tasks.sqlite";
 
+/// 一组工具名单：当前名单 + 历史名单（旧任务续接/起跑时也算合法）。
+///
+/// 历史变体：去掉 task_ledger_*；只读任务再去掉 task_handback；以及  之前没有
+/// office_* 的同一批变体。当前名单必须精确匹配，历史名单只用来放过旧任务。
+fn expected_tool_lists(
+    write_scope: bool,
+    bash: bool,
+) -> (BTreeSet<&'static str>, Vec<BTreeSet<&'static str>>) {
+    let (base, read_only): (&[&'static str], bool) = match (write_scope, bash) {
+        (true, true) => (&THIN_WRITE_BASH_TOOLS, false),
+        (true, false) => (&THIN_WRITE_TOOLS, false),
+        (false, _) => (&THIN_TOOLS, true),
+    };
+    let expected: BTreeSet<&'static str> = base.iter().copied().collect();
+    let mut legacy = Vec::new();
+    for without_office in [false, true] {
+        for without_ledger in [false, true] {
+            for without_handback in [false, true] {
+                if without_handback && !read_only {
+                    continue;
+                }
+                let names: BTreeSet<&'static str> = base
+                    .iter()
+                    .copied()
+                    .filter(|name| !(without_office && name.starts_with("office_")))
+                    .filter(|name| !(without_ledger && name.starts_with("task_ledger_")))
+                    .filter(|name| !(without_handback && *name == "task_handback"))
+                    .collect();
+                legacy.push(names);
+            }
+        }
+    }
+    (expected, legacy)
+}
+
 /// ThinAgent 的只读工具名单（构造期 only 过滤；顺序就是名单顺序）。
-pub const THIN_TOOLS: [&str; 11] = [
+pub const THIN_TOOLS: [&str; 12] = [
     "read",
     "glob",
     "grep",
+    "office_read",
     "skill",
     "todo_write",
     "web_search",
@@ -86,10 +122,12 @@ pub const THIN_TOOLS: [&str; 11] = [
 ];
 
 /// 写任务的 ThinAgent 工具名单：只读 9 件加 write、edit（D85）。
-pub const THIN_WRITE_TOOLS: [&str; 13] = [
+pub const THIN_WRITE_TOOLS: [&str; 15] = [
     "read",
     "glob",
     "grep",
+    "office_read",
+    "office_create",
     "write",
     "edit",
     "skill",
@@ -103,10 +141,12 @@ pub const THIN_WRITE_TOOLS: [&str; 13] = [
 ];
 
 /// 开了 bash 的写任务：写任务 11 件再加 bash 和后台任务三件（D85）。
-pub const THIN_WRITE_BASH_TOOLS: [&str; 17] = [
+pub const THIN_WRITE_BASH_TOOLS: [&str; 19] = [
     "read",
     "glob",
     "grep",
+    "office_read",
+    "office_create",
     "write",
     "edit",
     "bash",
@@ -3268,46 +3308,9 @@ impl TaskRuntime {
         if task.code_mode {
             missing.push(missing_item("CodeMode（只读任务必须为否）"));
         }
-        // 工具名单跟着任务的写入范围和 bash 开关走：只读 11 件，写任务 13 件，
-        // 开了 bash 的写任务 17 件。
-        // T056.2 加账本两件之前冻结的旧名单仍要能接着做（T028.4 加 task_handback 同理），
-        // 所以下面按「当前名单」和「历史名单」一起比。
-        let (expected, legacy): (BTreeSet<&str>, Vec<BTreeSet<&str>>) =
-            match (task.write_scope.is_some(), task.bash) {
-                (true, true) => (
-                    THIN_WRITE_BASH_TOOLS.into_iter().collect(),
-                    vec![
-                        THIN_WRITE_BASH_TOOLS
-                            .into_iter()
-                            .filter(|name| !name.starts_with("task_ledger_"))
-                            .collect(),
-                    ],
-                ),
-                (true, false) => (
-                    THIN_WRITE_TOOLS.into_iter().collect(),
-                    vec![
-                        THIN_WRITE_TOOLS
-                            .into_iter()
-                            .filter(|name| !name.starts_with("task_ledger_"))
-                            .collect(),
-                    ],
-                ),
-                (false, _) => (
-                    THIN_TOOLS.into_iter().collect(),
-                    vec![
-                        THIN_TOOLS
-                            .into_iter()
-                            .filter(|name| !name.starts_with("task_ledger_"))
-                            .collect(),
-                        THIN_TOOLS
-                            .into_iter()
-                            .filter(|name| {
-                                !name.starts_with("task_ledger_") && *name != "task_handback"
-                            })
-                            .collect(),
-                    ],
-                ),
-            };
+        // 工具名单跟着任务的写入范围和 bash 开关走；旧任务冻结的旧名单仍要能接着做：
+        // 账本两件/task_handback 之前各一版，以及 office_* 之前各一版。
+        let (expected, legacy) = expected_tool_lists(task.write_scope.is_some(), task.bash);
         let actual: BTreeSet<&str> = task.tools.iter().map(String::as_str).collect();
         if actual != expected && !legacy.iter().any(|legacy| legacy == &actual) {
             missing.push(missing_item("工具名单（和写入范围不符）"));
@@ -3379,6 +3382,11 @@ impl TaskRuntime {
         resume: Option<SessionId>,
     ) -> Result<ServiceHost, String> {
         let mut extra_tools = crate::root::web_extra_tools(&self.options);
+        extra_tools.push(std::sync::Arc::new(office::OfficeReadTool));
+        extra_tools.push(std::sync::Arc::new(office::OfficeCreateTool::new(
+            self.data_dir.clone(),
+            task.id.as_str(),
+        )));
         extra_tools.push(Arc::new(TaskReportTool::new(
             Arc::clone(self),
             task.id.clone(),
@@ -3399,8 +3407,15 @@ impl TaskRuntime {
             task.id.clone(),
         )));
         let mut agent_config = self.options.config.clone();
+        agent_config.plugin_switches = Some(tools::plugins::switches_for(&self.data_dir));
         agent_config.tool_keys = crate::root::tool_key_source(&self.options);
         agent_config.write_scope = task.effective_write_scope();
+        agent_config.extra_write_scope = Some(
+            self.data_dir
+                .join("library")
+                .join("office")
+                .join(task.id.as_str()),
+        );
         agent_config.identity_prompt = Some(
             "You are AIOS's executor: you investigate and implement the task Kind hands you."
                 .to_owned(),
@@ -3416,6 +3431,14 @@ impl TaskRuntime {
         agent_config.compaction_fixed_block = Some(std::sync::Arc::new(move || {
             fixed_runtime.compaction_task_block(&fixed_task, attempt_id)
         }));
+        let mut policy = thin_policy(task.bash);
+        if task.tools.iter().any(|name| name == "office_create")
+            && tools::plugins::switches_for(&self.data_dir).is_on(tools::PluginId::Office)
+        {
+            policy.push_str(
+                "\nOffice plugin is on: you also have office_create for new xlsx files. It writes under the AIOS library/office/<taskId>/ area; after it succeeds, read the file back before reporting, and always say the receipt is not a visual self-check.",
+            );
+        }
         let agent = agent::Agent::open(AgentOpenOptions {
             data_dir: self.data_dir.clone(),
             cwd: task.effective_cwd().to_path_buf(),
@@ -3430,7 +3453,7 @@ impl TaskRuntime {
                 // ThinAgent 不等命令、不盯后台输出；要等就转后台，结果会叫醒它。
                 no_wait: true,
             },
-            policy_prompt: Some(thin_policy(task.bash)),
+            policy_prompt: Some(policy),
         })
         .await
         .map_err(|error| error.to_string())?;
@@ -4968,5 +4991,40 @@ mod interrupt_decision_tests {
             Some(AgentInterrupt::Cancel)
         );
         assert_eq!(TaskRuntime::interrupt_action(false, None), None);
+    }
+}
+
+#[cfg(test)]
+mod tool_list_tolerance_tests {
+    use super::*;
+
+    ///  之前冻结的三种旧名单（只读 11 / 写 13 / 写+bash 17）仍要能起跑/续接；
+    /// 当前名单也认；任意缺一件的名单不认。
+    #[test]
+    fn old_and_current_tool_lists_are_accepted() {
+        for (write_scope, bash) in [(false, false), (true, false), (true, true)] {
+            let (expected, legacy) = expected_tool_lists(write_scope, bash);
+            assert!(legacy.contains(&expected), "当前名单必须在可接受集合里");
+            let old: BTreeSet<&'static str> = expected
+                .iter()
+                .copied()
+                .filter(|name| !name.starts_with("office_"))
+                .collect();
+            assert!(legacy.contains(&old), " 之前的旧名单必须被接受：{old:?}");
+            let office_count = expected
+                .iter()
+                .filter(|name| name.starts_with("office_"))
+                .count();
+            assert_eq!(old.len() + office_count, expected.len());
+        }
+        let (_, legacy) = expected_tool_lists(false, false);
+        let mut missing = THIN_TOOLS
+            .iter()
+            .copied()
+            .filter(|name| *name != "read")
+            .collect::<BTreeSet<_>>();
+        assert!(!legacy.contains(&missing), "缺工具要拒绝：{missing:?}");
+        missing.insert("read");
+        assert!(legacy.contains(&missing), "完整旧名单要接受");
     }
 }

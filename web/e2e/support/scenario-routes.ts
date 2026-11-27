@@ -141,6 +141,12 @@ export function t073RouteFile(options: FixtureOptions): string | null {
   return 't073-cards-routes.json';
 }
 
+/** Office 生成任务夹具。 */
+export function officeGenRouteFile(options: FixtureOptions): string | null {
+  if (!options.officeGen) return null;
+  return 'officegen-routes.json';
+}
+
 export function t030RouteFile(options: FixtureOptions): string | null {
   if (!options.t030) return null;
   return 't030-routes-' + options.t030 + '.json';

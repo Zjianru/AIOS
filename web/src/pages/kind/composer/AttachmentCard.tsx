@@ -7,6 +7,9 @@
 
 import { useEffect, useState } from 'react';
 import { AppWindow, FileText, Quote, X } from 'lucide-react';
+import { officeKindOf, officeLabel } from '@/office/format';
+import { ensureOfficePluginLoaded, useOfficePluginStore } from '@/office/plugin';
+import { OfficeOffDialog, OfficePreviewDialog, type OfficeFileRef } from '@/office/OfficeDialogs';
 import { attachmentGet } from '@/data/service';
 import type { SendAttachmentRef } from '@/data/service';
 import { cn } from '@/lib/utils';
@@ -189,34 +192,73 @@ interface FileCardProps {
 }
 
 export function FileCard({ file, mime, onOpen, onRemove }: FileCardProps) {
-  const type = fileTypeLabel(file.name, mime);
+  const officeKind = officeKindOf(file.name, mime);
+  const pluginEnabled = useOfficePluginStore((state) => state.enabled);
+  const pluginLoaded = useOfficePluginStore((state) => state.loaded);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [offOpen, setOffOpen] = useState(false);
+  useEffect(() => {
+    if (officeKind) ensureOfficePluginLoaded();
+  }, [officeKind]);
+  const officeRef: OfficeFileRef = { id: file.id, name: file.name, bytes: file.bytes, mime };
+  const officeOff = Boolean(officeKind) && pluginLoaded && !pluginEnabled;
+  const type = officeKind
+    ? officeOff
+      ? officeLabel(officeKind) + ' · Office 插件没开'
+      : officeLabel(officeKind)
+    : fileTypeLabel(file.name, mime);
   const text =
-    !mime ||
-    mime.startsWith('text/') ||
-    ['application/json', 'application/xml', 'image/svg+xml'].includes(mime);
+    !officeKind &&
+    (!mime ||
+      mime.startsWith('text/') ||
+      ['application/json', 'application/xml', 'image/svg+xml'].includes(mime));
+  const handleOpen = () => {
+    if (!officeKind) {
+      onOpen();
+      return;
+    }
+    if (!pluginLoaded) {
+      ensureOfficePluginLoaded();
+      return;
+    }
+    if (pluginEnabled) setPreviewOpen(true);
+    else setOffOpen(true);
+  };
   return (
-    <span
-      data-kind={text ? 'file-card' : 'attachment-binary'}
-      className="flex shrink-0 items-center gap-1 rounded-btn border border-line-2 bg-pane px-2 py-1 text-2 text-ink-2"
-    >
-      <FileText className="size-3" />
-      <button
-        type="button"
-        data-kind="file-open"
-        onClick={onOpen}
-        className="flex min-w-0 items-center gap-1 text-left hover:text-ink"
+    <>
+      <span
+        data-kind={text ? 'file-card' : 'attachment-binary'}
+        className="flex shrink-0 items-center gap-1 rounded-btn border border-line-2 bg-pane px-2 py-1 text-2 text-ink-2"
       >
-        <span className="max-w-[150px] truncate">{file.name}</span>
-        <span className="shrink-0 text-ink-3">
-          {type} · {sizeLabel(file.bytes)}
-        </span>
-      </button>
-      {onRemove ? (
-        <button type="button" aria-label="移除文件" onClick={onRemove} className="text-ink-3 hover:text-ink">
-          <X className="size-3" />
+        <FileText className="size-3" />
+        <button
+          type="button"
+          data-kind="file-open"
+          onClick={handleOpen}
+          className="flex min-w-0 items-center gap-1 text-left hover:text-ink"
+        >
+          <span className="max-w-[150px] truncate">{file.name}</span>
+          <span className="shrink-0 text-ink-3">
+            {type} · {sizeLabel(file.bytes)}
+          </span>
         </button>
+        {onRemove ? (
+          <button type="button" aria-label="移除文件" onClick={onRemove} className="text-ink-3 hover:text-ink">
+            <X className="size-3" />
+          </button>
+        ) : null}
+      </span>
+      {officeKind ? (
+        <>
+          <OfficeOffDialog open={offOpen} file={officeRef} onClose={() => setOffOpen(false)} />
+          <OfficePreviewDialog
+            open={previewOpen}
+            file={officeRef}
+            onClose={() => setPreviewOpen(false)}
+          />
+        </>
       ) : null}
-    </span>
+    </>
   );
 }
 

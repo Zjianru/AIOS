@@ -61,7 +61,7 @@ fn bundled_skills_follow_the_assembled_tools() {
     }
     let skills = bundled_skills_for(&root);
     let names: Vec<&str> = skills.iter().map(|skill| skill.name).collect();
-    assert_eq!(names, vec!["aios-settings", "web"]);
+    assert_eq!(names, vec!["aios-settings", "aios-guide", "web"]);
     let web = skills.iter().find(|skill| skill.name == "web").unwrap();
     assert!(
         web.unavailable_hint
@@ -480,10 +480,16 @@ fn bundled_web_skill_needs_the_exa_key_and_names_its_tools() {
         .expect("程序自带 web");
     assert_eq!(web.requires, Some(tools::ToolKey::Exa));
     assert!(
-        !web.available(&std::collections::BTreeSet::new()),
+        !web.available(
+            &std::collections::BTreeSet::new(),
+            &tools::PluginSwitches::new()
+        ),
         "没 key 不进目录"
     );
-    assert!(web.available(&std::collections::BTreeSet::from([tools::ToolKey::Exa])));
+    assert!(web.available(
+        &std::collections::BTreeSet::from([tools::ToolKey::Exa]),
+        &tools::PluginSwitches::new()
+    ));
     assert!(
         web.unavailable_hint
             .contains("设置 › 模型与连接 › 联网搜索"),

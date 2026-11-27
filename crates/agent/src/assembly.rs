@@ -105,6 +105,14 @@ impl Agent {
         for tool in options.extra_tools {
             tools.push_shared(tool);
         }
+        // 插件开关：产品装配可显式注入；低层入口不传时按数据目录共享（服务设置页改一处生效）。
+        tools.set_plugin_switches(
+            options
+                .config
+                .plugin_switches
+                .clone()
+                .unwrap_or_else(|| tools::plugins::switches_for(&options.data_dir)),
+        );
         // only 在构造期过滤 builtin 与 extra_tools 的并集：工具闸门只加不减，别处不能
         // 再收窄；续接也不从日志里把过滤掉的工具找回来。未知名字按配置错误失败。
         if let Some(only) = &options.tool_policy.only {

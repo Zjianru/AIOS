@@ -13,6 +13,7 @@ import {
   t073RouteFile,
   t078RouteFile,
   t030RouteFile,
+  officeGenRouteFile,
   t052RouteFile,
   t053RouteFile,
   t054RouteFile,
@@ -40,6 +41,7 @@ export function startReplay(
     routesFile === undefined
       ? (t078RouteFile(options) ??
         t030RouteFile(options) ??
+        officeGenRouteFile(options) ??
         restartRouteFile(options) ??
         t057RouteFile(options) ??
         t056RouteFile(options) ??

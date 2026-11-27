@@ -168,10 +168,11 @@ impl RootSession {
 ///
 /// 写、改、跑命令和三件后台任务不在里面；这些活派给 ThinAgent。任务工具看
 /// `task_runtime` 有没有装配，由 `kind_tool_policy` 追加。
-pub(crate) const KIND_TOOLS: [&str; 23] = [
+pub(crate) const KIND_TOOLS: [&str; 24] = [
     "read",
     "glob",
     "grep",
+    "office_read",
     "skill",
     "todo_write",
     "ask_user_question",
@@ -221,9 +222,12 @@ pub(crate) const PAGE_LIST: &str = concat!(
     "- 工作：看板（排队 / 在做 / 等你 / 完成）、任务图、日历三个视图。\n",
     "- 任务：一个任务的要求、进展、Attempt、上下文和轨迹。\n",
     "- 任务对话：和某一项任务的对话。\n",
+    "- 项目：一个项目的目标、默认目录、项目材料和项目记忆；任务归属在这里。\n",
+    "- 阅读：一份文档的结构、版本和引用来源；页面还是 fixture，等接真数据。\n",
+    "- 插件：设置 › 插件的官方插件卡——插件名、开关、影响、Skill 摘要和数据目录；打开/关掉当场生效。\n",
     "- 监控：消耗和费用、模型/工具/命令排行、在跑和排队；任务诊断在监控里，用量也并在监控。\n",
     "- 记忆：记忆、日记和做梦。\n",
-    "- 设置：模型与连接、外观、执行、通知、隐私、监控、关于。\n"
+    "- 设置：模型与连接、外观、执行、插件、通知、隐私、监控、关于。\n"
 );
 
 /// T078.3：Kind 的分条/表情规则，和页面清单一同进 FixedBlock。
@@ -314,6 +318,8 @@ pub async fn open_root_session_with(
             options.projects.clone(),
             options.task_runtime.clone(),
         )) as std::sync::Arc<dyn tools::Tool>,
+        // Kind 只有 office_read；插件关着时 ToolSet 过滤掉，执行入口回 PLUGIN_CLOSED。
+        std::sync::Arc::new(office::OfficeReadTool) as std::sync::Arc<dyn tools::Tool>,
     ];
     extra_tools.extend(web_extra_tools(&options));
     if let Some(runtime) = &options.task_runtime {
@@ -633,13 +639,16 @@ mod page_list_tests {
             .lines()
             .filter(|line| line.starts_with("- "))
             .collect();
-        assert_eq!(rows.len(), 8, "一句/页，八页");
+        assert_eq!(rows.len(), 11, "一句/页，十一页（加项目/阅读/插件）");
         for page in [
             "现在",
             "Kind",
             "工作",
             "任务",
             "任务对话",
+            "项目",
+            "阅读",
+            "插件",
             "监控",
             "记忆",
             "设置",
@@ -657,11 +666,30 @@ mod page_list_tests {
             rows.iter()
                 .any(|row| row.contains("监控") && row.contains("用量"))
         );
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("阅读") && row.contains("等接真数据"))
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("插件") && row.contains("设置 › 插件"))
+        );
         for placeholder in ["能力", "资料", "项目工作台", "批注"] {
             assert!(
                 !PAGE_LIST.contains(placeholder),
                 "占位页不能列：{placeholder}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod kind_office_tools {
+    use super::KIND_TOOLS;
+
+    #[test]
+    fn kind_has_office_read_but_never_office_create() {
+        assert!(KIND_TOOLS.contains(&"office_read"), "Kind 能读 Office");
+        assert!(!KIND_TOOLS.contains(&"office_create"), "Kind 不直接生成");
     }
 }

@@ -125,6 +125,9 @@ pub fn mime_for_name(name: &str) -> Option<String> {
         "md" => "text/markdown",
         "json" => "application/json",
         "csv" => "text/csv",
+        "xlsx" | "xlsm" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         _ => return None,
     };
     Some(mime.to_owned())

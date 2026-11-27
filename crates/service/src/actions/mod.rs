@@ -11,6 +11,7 @@ mod confirm_write_scope;
 mod create_project;
 mod mask;
 mod memory_actions;
+mod plugin_set;
 mod project_actions;
 mod resume_task;
 mod select_model;
@@ -126,6 +127,7 @@ impl ActionRegistry {
             identity.clone(),
         )));
         registry.register(Arc::new(set_paused::SetPausedAction::new(data_dir.clone())));
+        registry.register(Arc::new(plugin_set::SetPluginAction::new(data_dir.clone())));
         registry.register(Arc::new(cancel_tasks::CancelTasksAction::new(
             data_dir.clone(),
         )));

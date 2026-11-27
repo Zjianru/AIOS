@@ -723,6 +723,7 @@ pub(super) async fn run_step(
         .gated(Arc::clone(&enabled))
         .observing_session(events_reader)
         .with_write_scope(inner.write_scope.clone())
+        .with_extra_write_scope(inner.extra_write_scope.clone())
         .with_turn(turn);
     let mut outcome = execute_batch(
         &inner.tools,

@@ -44,6 +44,10 @@ import type { SessionModelSelectResponse } from './generated/SessionModelSelectR
 import type { ExecSettingsView } from './generated/ExecSettingsView';
 import type { SettingsUpdateRequest } from './generated/SettingsUpdateRequest';
 import type { SettingsUpdateResponse } from './generated/SettingsUpdateResponse';
+import type { PluginListResponse } from './generated/PluginListResponse';
+import type { FileReadBytesRequest } from './generated/FileReadBytesRequest';
+import type { FileReadBytesResponse } from './generated/FileReadBytesResponse';
+import type { PluginSetRequest } from './generated/PluginSetRequest';
 import type { StatusResponse } from './generated/StatusResponse';
 import type { StopMode } from './generated/StopMode';
 import type { TaskDeliveryResponse } from './generated/TaskDeliveryResponse';
@@ -67,6 +71,7 @@ export type { CardVerb };
 export type { ConnectionInfo };
 export type { ConnectionQuotaResponse };
 export type { ExecSettingsView };
+export type { PluginView } from './generated/PluginView';
 export type { FileReferenceEntry };
 export type { FileReferenceObject };
 export type { Frame };
@@ -636,6 +641,21 @@ export async function saveExecSettings(patch: {
   bash?: boolean;
 }): Promise<ExecSettingsView> {
   return (await post({ method: 'settings-update', ...patch })).exec;
+}
+
+/**  设置 › 插件：列表（官方 Office 卡 + 内容包空态）。 */
+export async function pluginList(): Promise<PluginListResponse> {
+  return post({ method: 'plugin_list' });
+}
+
+/**  设置 › 插件：打开/关掉一个插件；返回同一份列表视图。 */
+export async function pluginSet(input: PluginSetRequest): Promise<PluginListResponse> {
+  return post({ method: 'plugin_set', ...input });
+}
+
+/** 只读读一个文件的字节（路径或附件 id；预览用）。 */
+export async function fileReadBytes(input: FileReadBytesRequest): Promise<FileReadBytesResponse> {
+  return post({ method: 'file_read_bytes', ...input });
 }
 
 /** 只看一眼可用模型（打开选择器、补价格/窗口/档）：服务端不落盘，「新」的基准也不动。 */

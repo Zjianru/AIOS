@@ -144,6 +144,8 @@ pub type PreCompactionHook =
 /// compaction-basic 的阈值/保留/预留 token、bundle/base 的 spill 预算。
 #[derive(Clone)]
 pub struct AgentConfig {
+    /// 插件开关；None = 按 data-dir 取共享开关（产品装配显式传入，低层测试可注入隔离）。
+    pub plugin_switches: Option<tools::PluginSwitches>,
     /// 一次 step 里并行安全工具调用的并发上限；设成 1 就是串行。DSH 默认 10。
     pub max_parallel_tool_calls: usize,
     /// 上下文占用到窗口的这个比例时触发自动压缩；DSH 默认 0.8（compaction-basic: thresholdRatio）。
@@ -197,6 +199,8 @@ pub struct AgentConfig {
     /// 工具写入范围（D85）：写类工具只允许写这个前缀下的路径；None = 不限。
     /// 服务给写任务的 ThinAgent 填；Kind、CLI 不填。
     pub write_scope: Option<PathBuf>,
+    /// 第二个受控写入根（Office library）；None = 没有。
+    pub extra_write_scope: Option<PathBuf>,
     /// 每步向服务要记忆上下文；None = 这个会话不注入。
     pub memory_context: Option<MemoryContextProvider>,
     /// 记忆送达落账回调；None = 不记（CLI/测试）。
@@ -252,6 +256,7 @@ impl Default for AgentConfig {
         // 没有 HOME（或不是绝对路径）时用户级根为空：不能把相对路径交给 validate。
         let home = home_dir().map(|home| home.join(".agents"));
         Self {
+            plugin_switches: None,
             max_parallel_tool_calls: 10,
             compaction_threshold_ratio: 0.8,
             compaction_retain_ratio: 0.16,
@@ -275,6 +280,7 @@ impl Default for AgentConfig {
             fixed_block: None,
             dynamic_block: None,
             write_scope: None,
+            extra_write_scope: None,
             memory_context: None,
             memory_delivery: None,
             memory_flashback: None,
@@ -696,6 +702,17 @@ impl Agent {
     /// 追加一条只属于会话日志的事件（程序写的记忆小卡等）：不投给模型，只落日志/广播。
     pub async fn append_event(&self, kind: session::EventKind) -> Result<(), AgentError> {
         self.inner.append(&[kind]).await
+    }
+
+    /// 插件关掉的固定通知（SystemMessage；打开时不发）。只落日志/广播，等下一条请求带上。
+    pub async fn append_plugin_notice(&self, text: impl Into<String>) -> Result<(), AgentError> {
+        let turn = self.inner.current_or_last_turn().max(1);
+        self.append_event(session::EventKind::SystemMessage {
+            turn,
+            step: 1,
+            message: Message::system_prompt(text),
+        })
+        .await
     }
 
     /// 重启后领取 pending inbox（有排队输入就开一轮）；返回是否领取了东西。

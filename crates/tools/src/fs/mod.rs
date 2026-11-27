@@ -31,6 +31,11 @@ impl Target {
 
 /// D3：存在路径 canonicalize；缺失路径用最近存在祖先 canonicalize + 缺失后缀。
 /// 符号链接环、权限等 canonicalize 失败按 FS 错误返回，不静默退回绝对路径。
+/// 公开的只读路径解析：给服务里的其它只读工具（office_read）复用同一套 cwd/绝对路径规则。
+pub fn resolve_read_path(context: &ToolContext, requested: &str) -> Result<PathBuf, ToolFailure> {
+    Ok(resolve(context, requested)?.key)
+}
+
 pub(crate) fn resolve(context: &ToolContext, requested: &str) -> Result<Target, ToolFailure> {
     let path = Path::new(requested);
     let absolute = if path.is_absolute() {
@@ -103,8 +108,13 @@ pub fn check_write(context: &ToolContext, target: &Path) -> Result<(), ToolFailu
         return Ok(());
     };
     // 前缀按路径段比（`/a/bc` 不在 `/a/b` 下）；范围下的 .git 一律不放行，
-    // 目录和指针文件都算。
-    if !target.starts_with(scope) || target.starts_with(scope.join(".git")) {
+    // 目录和指针文件都算。Office 的 library 根是第二个受控根，仍走这里。
+    let extra = context.extra_write_scope();
+    let in_scope =
+        target.starts_with(scope) || extra.is_some_and(|extra| target.starts_with(extra));
+    let in_git = target.starts_with(scope.join(".git"))
+        || extra.is_some_and(|extra| target.starts_with(extra.join(".git")));
+    if !in_scope || in_git {
         return Err(ToolFailure::coded(
             "WRITE_OUT_OF_SCOPE",
             format!(

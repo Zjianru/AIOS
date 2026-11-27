@@ -10,6 +10,7 @@ pub mod diff;
 pub mod file_references;
 mod fs;
 mod jobs;
+pub mod plugins;
 mod session;
 mod skills;
 pub mod spill;
@@ -30,12 +31,13 @@ pub use builtin::{
     ReadTool, SkillTool, TodoWriteTool, WriteTool,
 };
 pub use diff::{DIFF_CONTEXT, FileDiff, compute_hunk_diffs};
-pub use fs::check_write;
+pub use fs::{check_write, resolve_read_path};
 pub use jobs::{
     JobCause, JobNotifyCallback, JobOutputRead, JobRead, JobRegistered, JobRegisteredCallback,
     JobSettled, JobSettledCallback, JobSpec, JobStatus, JobToolCall, JobView, KILL_GRACE,
     MAX_WAIT_MS, TaskRegistry, command_env, render_model_delta,
 };
+pub use plugins::{PluginId, PluginSwitches};
 pub use session::{
     FileVersion, ObservationPolicy, ObservedFile, SharedToolSession, SpillStore, ToolSessionState,
     WriteIntent,
@@ -98,6 +100,8 @@ pub struct ToolContext {
     /// 写入范围（已 canonicalize 的绝对路径）；None = 不限（Kind、CLI 照旧）。
     /// 写任务由服务按任务行填；写类工具在 resolve 之后用它核目标。
     write_scope: Option<PathBuf>,
+    /// 第二个受控写入根（Office：<data>/library/office/<taskId>）；仍走同一 check_write。
+    extra_write_scope: Option<PathBuf>,
     /// 本步属于哪一轮（后台命令按轮杀）；单独驱动工具时是 0。
     turn: u64,
 }
@@ -121,6 +125,7 @@ impl ToolContext {
             enabled: None,
             session_events: Arc::new(Vec::new),
             write_scope: None,
+            extra_write_scope: None,
             turn: 0,
         }
     }
@@ -184,6 +189,15 @@ impl ToolContext {
     /// 写入范围；None = 不限。
     pub fn write_scope(&self) -> Option<&Path> {
         self.write_scope.as_deref()
+    }
+
+    pub fn with_extra_write_scope(mut self, scope: Option<PathBuf>) -> Self {
+        self.extra_write_scope = scope;
+        self
+    }
+
+    pub fn extra_write_scope(&self) -> Option<&Path> {
+        self.extra_write_scope.as_deref()
     }
 }
 
@@ -404,6 +418,11 @@ pub trait Tool: Send + Sync {
         ToolCondition::Always
     }
 
+    /// 归属的官方插件；None = 内置工具，总会按条件参与。
+    fn plugin(&self) -> Option<crate::PluginId> {
+        None
+    }
+
     /// 执行一次调用。实现方不 panic；失败用 is_error 表达。
     fn execute<'a>(
         &'a self,
@@ -418,6 +437,7 @@ pub trait Tool: Send + Sync {
 #[derive(Default)]
 pub struct ToolSet {
     tools: Vec<Arc<dyn Tool>>,
+    plugins: crate::PluginSwitches,
 }
 
 impl ToolSet {
@@ -428,7 +448,23 @@ impl ToolSet {
     pub fn new(tools: Vec<Box<dyn Tool>>) -> Self {
         Self {
             tools: tools.into_iter().map(Arc::from).collect(),
+            plugins: crate::PluginSwitches::new(),
         }
+    }
+
+    /// 装配层共享同一份开关；Agent 不需要重建就能当场变。
+    pub fn set_plugin_switches(&mut self, switches: crate::PluginSwitches) {
+        self.plugins = switches;
+    }
+
+    pub fn plugin_switches(&self) -> crate::PluginSwitches {
+        self.plugins.clone()
+    }
+
+    /// 这个工具归属的插件现在开着吗（没有插件归属=开）。
+    pub fn plugin_enabled(&self, tool: &dyn Tool) -> bool {
+        tool.plugin()
+            .is_none_or(|plugin| self.plugins.is_on(plugin))
     }
 
     /// 加一个装配层已经造好的工具（产品的额外工具，例如服务的查询工具）。
@@ -529,6 +565,7 @@ impl ToolSet {
     ) -> BTreeSet<String> {
         self.tools
             .iter()
+            .filter(|tool| self.plugin_enabled(tool.as_ref()))
             .filter(|tool| tool.condition().satisfied_by(loaded_skills, tool_keys))
             .map(|tool| tool.name().to_owned())
             .collect()

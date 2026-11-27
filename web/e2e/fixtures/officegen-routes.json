@@ -1,0 +1,13 @@
+{
+  "routes": [
+    {
+      "contains": "\"name\":\"task_accept\"",
+      "file": "officegen-kind.jsonl"
+    },
+    {
+      "contains": "\"name\":\"task_report\"",
+      "file": "officegen-thin.jsonl",
+      "paceMs": 60
+    }
+  ]
+}

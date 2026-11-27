@@ -375,6 +375,8 @@ pub(crate) struct CapabilityStates {
     pub bundled_skills: Vec<tools::BundledSkill>,
     /// Kind 无工作目录：skill 目录不扫项目 .agents/skills。
     pub workspace_context: bool,
+    /// 插件开关：Office skill 插件关着时整份不进目录。
+    pub plugin_switches: tools::PluginSwitches,
     pub fixed_block: Option<crate::fixed_block::FixedBlockState>,
     pub dynamic_block: Option<crate::dynamic_block::DynamicBlockState>,
     pub spill_max_inline_tokens: usize,
@@ -409,6 +411,7 @@ impl CapabilityRegistry {
                     states.skill_catalog,
                     states.skill_roots,
                     states.bundled_skills,
+                    states.plugin_switches,
                 ),
                 states.workspace_context,
             )),

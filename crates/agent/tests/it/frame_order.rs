@@ -38,6 +38,7 @@ async fn fixed_blocks_are_before_the_user_message_and_flashback_after() {
             tools: &[],
             read_only: false,
             unavailable_hint: "",
+            plugin: None,
         }],
         ..isolated_config(data_dir.path())
     };

@@ -95,6 +95,17 @@ impl RootHost {
     /// 配置了 model_factory 时先解析当前 Keyring 连接；解析失败（空库/读不出）
     /// 仍返回宿主，状态报 Other，设置/首次使用方法照常可读。
     pub async fn open(mut options: RootSessionOptions, fallback_window: u64) -> Self {
+        // 启动时把 settings 里的插件开关写进共享开关，Agent 打开时按它过滤工具表。
+        let settings = crate::settings::load(&options.data_dir);
+        let plugin_switches = tools::plugins::switches_for(&options.data_dir);
+        plugin_switches.set(
+            settings
+                .plugins
+                .office
+                .then_some(tools::PluginId::Office)
+                .into_iter(),
+        );
+        options.config.plugin_switches = Some(plugin_switches);
         if options.web_listen.is_none() {
             options.web_listen = Some(Arc::new(std::sync::OnceLock::new()));
         }

@@ -164,9 +164,14 @@ async fn accept_freezes_the_task_and_the_launch_uses_it() {
         .expect("加载 web 后的请求");
     let mut names = tool_names(loaded);
     names.sort();
-    let mut expected: Vec<String> = service::THIN_TOOLS.map(str::to_owned).to_vec();
+    // 插件默认关：冻结名单里有 office_*，实际请求工具表按开关过滤掉。
+    let mut expected: Vec<String> = service::THIN_TOOLS
+        .iter()
+        .filter(|name| !name.starts_with("office_"))
+        .map(|name| (*name).to_owned())
+        .collect();
     expected.sort();
-    assert_eq!(names, expected, "ThinAgent 的工具表正好 9 件");
+    assert_eq!(names, expected, "ThinAgent 的工具表正好 11 件（插件关）");
     let first_names = tool_names(&thin_bodies[0]);
     assert!(!first_names.contains(&"bash".to_owned()), "{first_names:?}");
     assert!(
