@@ -68,8 +68,8 @@ export interface ObjectRefView {
   kind: 'task' | 'report' | 'project' | string;
   id: string;
   title: string;
-  version?: number;
-  taskId?: string;
+  version?: number | null;
+  taskId?: string | null;
 }
 
 /** 消息里的一段选中引用。 */

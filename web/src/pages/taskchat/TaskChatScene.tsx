@@ -77,6 +77,7 @@ export function TaskChatScene() {
       pastes: string[];
       attachments: SendAttachmentRef[];
       quotes: { text: string; source?: { kind: string; id: string; title: string; version?: number | null; taskId?: string | null } | null }[];
+      objectRefs: { kind: string; id: string; title: string; version?: number | null; taskId?: string | null }[];
     }[]
   >([]);
   const composerRef = useRef<ComposerHandle | null>(null);
@@ -425,7 +426,7 @@ export function TaskChatScene() {
       // 说了以后（尤其新 Attempt）等它真的跑起来再接回实时帧。
       if (!socketRef.current) void reopenTaskStream(requestToken.current);
       setQueued((current) =>
-        current.concat({ inputId: response.inputId, text, pastes, attachments, quotes }),
+        current.concat({ inputId: response.inputId, text, pastes, attachments, quotes, objectRefs }),
       );
       if (typeof response.newAttempt === 'number') {
         const attempt = response.newAttempt;
@@ -879,14 +880,17 @@ export function TaskChatScene() {
           )}
           {queuedVisible.map((item) => {
             const hasCards =
-              item.pastes.length > 0 || item.attachments.length > 0 || item.quotes.length > 0;
+              item.pastes.length > 0 ||
+              item.attachments.length > 0 ||
+              item.quotes.length > 0 ||
+              item.objectRefs.length > 0;
             const user: TurnUserView = {
               text: '',
               elements: [],
               pastes: item.pastes,
               files: item.attachments,
               images: [],
-              objectRefs: [],
+              objectRefs: item.objectRefs,
               quotes: item.quotes,
               canvas: null,
               resultCard: null,

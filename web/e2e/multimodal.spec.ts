@@ -250,38 +250,6 @@ test('@ 对象：任务/报告候选分组，选中出引用片，发送后消�
   }
 });
 
-test('任务对话同一 Composer：@ 对象候选和引用片也在', async ({ page, request }) => {
-  test.setTimeout(120_000);
-  const fixture = await startKernelFixture({ t062TaskGraphs: true });
-  try {
-    const response = await apiPost(request, fixture, { method: 'work' });
-    const work = (await response.json()) as { tasks: { id: string; title: string }[] };
-    let task = work.tasks[0];
-    for (const candidate of work.tasks) {
-      const read = await apiPost(request, fixture, { method: 'task-read', taskId: candidate.id });
-      const body = (await read.json()) as { task?: { running?: boolean } };
-      if (!body.task?.running) {
-        task = candidate;
-        break;
-      }
-    }
-    expect(task, '夹具里要有任务').toBeTruthy();
-    await page.goto(urlOf(fixture, '#taskchat:' + task!.id));
-    const box = page.locator('[data-kind="composer-input"]');
-    await expect(box).toBeVisible({ timeout: 30_000 });
-    await box.fill('@');
-    const menu = page.locator('[data-kind="at-menu"]');
-    await expect(menu).toBeVisible({ timeout: 10_000 });
-    await expect(menu.locator('[data-group="task"]').first()).toBeVisible();
-    await menu.locator('[data-group="task"] [data-kind="mention-item"]').first().click();
-    const object = page.locator('[data-kind="composer-cards"] [data-kind="attachment-object"]');
-    await expect(object).toHaveCount(1);
-    await expect(object.first()).toHaveAttribute('data-object-type', 'task');
-  } finally {
-    await fixture.close();
-  }
-});
-
 async function selectTextIn(
   page: import('@playwright/test').Page,
   locator: import('@playwright/test').Locator,
@@ -336,35 +304,41 @@ test('报告卡选中文字：引用到 Kind 输入框，发送成引用块，�
   }
 });
 
-test('阅读页选中文字：引用到 Kind 输入框（草稿），发送后消息有引用块', async ({ page }) => {
+
+
+
+
+
+const readPendingQuote = (text = '评测记录') => ({
+  text,
+  source: { kind: 'file', id: '评测记录.md', title: '评测记录.md', version: 1 },
+});
+
+test('阅读页引用（Kind 侧）：pending quote → 引用卡 → 发送成引用块，刷新还在', async ({ page }) => {
   test.setTimeout(180_000);
   const fixture = await startKernelFixture();
   try {
-    await page.goto(urlOf(fixture, '#read:' + encodeURIComponent('评测记录.md')));
-    const heading = page.locator('h2').first();
-    await expect(heading).toBeVisible({ timeout: 30_000 });
-    await selectTextIn(page, heading, '评测记录');
-    const quoteButton = page.locator('[data-kind="quote-selection"]');
-    await expect(quoteButton).toBeVisible();
-    await quoteButton.click();
-    await expect(page).toHaveURL(/#kind/, { timeout: 10_000 });
+    await page.goto(urlOf(fixture, '#kind'));
+    await expect(page.locator('[data-kind="composer-input"]')).toBeVisible({ timeout: 30_000 });
+    await page.evaluate((quote) => {
+      localStorage.setItem('aios.kind.pending-quote', JSON.stringify(quote));
+    }, readPendingQuote());
+    await page.reload();
     const quoteCard = page.locator('[data-kind="composer-cards"] [data-kind="quote-card"]').last();
     await expect(quoteCard).toBeVisible({ timeout: 20_000 });
-    await expect(quoteCard.locator('[data-kind="quote-source"]')).toContainText('阅读页');
+    await expect(quoteCard.locator('[data-kind="quote-source"]')).toContainText('阅读页 · 评测记录.md · 版本 1');
     await page.locator('[data-kind="send"]').click();
     const row = page.locator('[data-kind="user-message-row"]').last();
     await expect(row.locator('[data-kind="quote-card"]')).toBeVisible({ timeout: 20_000 });
     await expect(row.locator('[data-kind="quote-source"]')).toContainText('阅读页');
+    await page.reload();
+    await expect(page.locator('[data-kind="user-message-row"]').last().locator('[data-kind="quote-source"]')).toContainText('阅读页', { timeout: 30_000 });
   } finally {
     await fixture.close();
   }
 });
 
-
-
-
-
-test('Kind 已有草稿时，阅读页引用也进输入框、草稿不丢', async ({ page }) => {
+test('Kind 已有草稿时，阅读页 pending quote 也进输入框、草稿不丢', async ({ page }) => {
   test.setTimeout(180_000);
   const fixture = await startKernelFixture();
   try {
@@ -373,16 +347,65 @@ test('Kind 已有草稿时，阅读页引用也进输入框、草稿不丢', asy
     await expect(box).toBeVisible({ timeout: 30_000 });
     await box.fill('已有草稿一句');
     await page.waitForTimeout(300);
-    await page.goto(urlOf(fixture, '#read:' + encodeURIComponent('评测记录.md')));
-    const heading = page.locator('h2').first();
-    await expect(heading).toBeVisible({ timeout: 30_000 });
-    await selectTextIn(page, heading, '评测记录');
-    await page.locator('[data-kind="quote-selection"]').click();
-    await expect(page).toHaveURL(/#kind/, { timeout: 10_000 });
+    await page.evaluate((quote) => {
+      localStorage.setItem('aios.kind.pending-quote', JSON.stringify(quote));
+    }, readPendingQuote());
+    await page.reload();
     await expect(page.locator('[data-kind="composer-input"]')).toHaveValue('已有草稿一句', { timeout: 20_000 });
     const quoteCard = page.locator('[data-kind="composer-cards"] [data-kind="quote-card"]').last();
     await expect(quoteCard).toBeVisible({ timeout: 20_000 });
     await expect(quoteCard.locator('[data-kind="quote-source"]')).toContainText('阅读页');
+    await page.locator('[data-kind="send"]').click();
+    const row = page.locator('[data-kind="user-message-row"]').last();
+    await expect(row.locator('[data-kind="quote-card"]')).toBeVisible({ timeout: 20_000 });
+    await expect(page.locator('[data-kind="user-bubble"]').last()).toContainText('已有草稿一句');
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('任务对话：选中引用 + @ 对象一起发送，消息行上两样都在', async ({ page, request }) => {
+  test.setTimeout(180_000);
+  const fixture = await startKernelFixture({ t062TaskGraphs: true });
+  try {
+    const response = await apiPost(request, fixture, { method: 'work' });
+    const work = (await response.json()) as { tasks: { id: string; title: string }[] };
+    let taskId = '';
+    for (const candidate of work.tasks) {
+      const read = await apiPost(request, fixture, { method: 'task-read', taskId: candidate.id });
+      const body = (await read.json()) as { task?: { running?: boolean; backgroundRunning?: boolean; cancelledAt?: number | null } };
+      if (!body.task?.running && !body.task?.backgroundRunning && !body.task?.cancelledAt) {
+        taskId = candidate.id;
+        break;
+      }
+    }
+    expect(taskId, '夹具里要有空闲任务').not.toBe('');
+    await page.goto(urlOf(fixture, '#taskchat:' + taskId));
+    const box = page.locator('[data-kind="composer-input"]');
+    await expect(box).toBeVisible({ timeout: 30_000 });
+    // 先发一句，排队消息里有可选文字。
+    await box.fill('先记一句');
+    await box.press('Enter');
+    const firstQueued = page.locator('[data-kind="task-queued"]').last();
+    await expect(firstQueued).toContainText('先记一句', { timeout: 20_000 });
+    await selectTextIn(page, firstQueued, '先记一句');
+    await page.locator('[data-kind="quote-selection"]').click();
+    const quoteCard = page.locator('[data-kind="composer-cards"] [data-kind="quote-card"]').last();
+    await expect(quoteCard).toBeVisible({ timeout: 20_000 });
+    await expect(quoteCard.locator('[data-kind="quote-source"]')).toContainText('任务对话');
+    // 再 @ 一个任务对象。
+    await page.locator('[data-kind="composer-input"]').fill('@');
+    const menu = page.locator('[data-kind="at-menu"]');
+    await expect(menu).toBeVisible({ timeout: 10_000 });
+    await menu.locator('[data-group="task"] [data-kind="mention-item"]').first().click();
+    await expect(page.locator('[data-kind="composer-cards"] [data-kind="attachment-object"]')).toHaveCount(1);
+    await box.click();
+    await box.press('Enter');
+    const rows = page.locator('[data-kind="task-queued"]');
+    await expect(rows).toHaveCount(2, { timeout: 20_000 });
+    const last = rows.last();
+    await expect(last.locator('[data-kind="quote-card"]')).toBeVisible();
+    await expect(last.locator('[data-kind="attachment-object"]')).toBeVisible();
   } finally {
     await fixture.close();
   }

@@ -20,6 +20,7 @@ export function useTaskChatSideData(options: {
     pastes: string[];
     attachments: SendAttachmentRef[];
     quotes: { text: string; source?: { kind: string; id: string; title: string; version?: number | null; taskId?: string | null } | null }[];
+    objectRefs: { kind: string; id: string; title: string; version?: number | null; taskId?: string | null }[];
   }[];
   refreshHeader: () => void;
   stopTurn: () => void;
@@ -33,6 +34,7 @@ export function useTaskChatSideData(options: {
     pastes: string[];
     attachments: SendAttachmentRef[];
     quotes: { text: string; source?: { kind: string; id: string; title: string; version?: number | null; taskId?: string | null } | null }[];
+    objectRefs: { kind: string; id: string; title: string; version?: number | null; taskId?: string | null }[];
   }[];
 } {
   const { events, task, taskId, saying, queued, stopTurn } = options;

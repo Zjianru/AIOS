@@ -66,8 +66,7 @@ export function AppShell() {
       scene !== 'now' &&
       scene !== 'memory' &&
       scene !== 'monitor' &&
-      scene !== 'project' &&
-      scene !== 'read'
+      scene !== 'project'
     ) {
       go('kind');
     }
