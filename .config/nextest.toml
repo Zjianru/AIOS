@@ -2,7 +2,7 @@
 [profile.default]
 # 全量测试固定 4 个测试进程：restart/stop 等任务测试会起多个宿主和真实计时等待，
 # 默认按 CPU 起并发时它们的计时路径互相拖长；4 个测试进程仍覆盖顺序/并发，
-# 4 线程全量已作为支持配置（见 T101 handback 的 CI 说明）。不要只把这句藏在默认值里。
+# 4 线程全量已作为支持配置（见交接里的 CI 说明）。不要只把这句藏在默认值里。
 test-threads = 4
 slow-timeout = { period = "5s", terminate-after = 6 }
 
