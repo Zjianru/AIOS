@@ -1274,6 +1274,28 @@ impl RootHost {
         }
     }
 
+    /// 包状态：设置页/安装卡读同一份。
+    pub(crate) async fn package_status(
+        &self,
+        _request: crate::protocol::PackageStatusRequest,
+    ) -> Result<crate::protocol::PackageStatusResponse, crate::error::ServiceError> {
+        let statuses = crate::installer::Installer::new(self.options.data_dir.clone()).statuses();
+        Ok(crate::protocol::PackageStatusResponse {
+            packages: statuses.iter().map(crate::installer::status_view).collect(),
+        })
+    }
+
+    /// 卸载只删包目录；清单外 id 拒绝。
+    pub(crate) async fn package_uninstall(
+        &self,
+        request: crate::protocol::PackageUninstallRequest,
+    ) -> Result<crate::protocol::PackageUninstallResponse, crate::error::ServiceError> {
+        let removed = crate::installer::Installer::new(self.options.data_dir.clone())
+            .uninstall(&request.id)
+            .map_err(crate::error::ServiceError::SettingsInvalid)?;
+        Ok(crate::protocol::PackageUninstallResponse { removed })
+    }
+
     /// 读/再查一次屏幕录制权限；只读，不弹系统框。
     pub(crate) async fn screen_permission(
         &self,

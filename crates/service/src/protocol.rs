@@ -104,6 +104,10 @@ pub enum Call {
     VisionTest(VisionTestRequest),
     /// 读/再查一次屏幕录制权限（不弹框）。
     ScreenPermission(ScreenPermissionRequest),
+    /// 安装包状态（设置页与安装卡同一份事实）。
+    PackageStatus(PackageStatusRequest),
+    /// 卸载清单内包，只删包目录。
+    PackageUninstall(PackageUninstallRequest),
     /// 存一份文字附件（只读副本），返回 id。
     AttachmentPut(AttachmentPutRequest),
     /// 按 id 读回附件（卡片「点开看全文」）。
@@ -194,6 +198,8 @@ pub enum Response {
     SettingsUpdate(SettingsUpdateResponse),
     VisionTest(VisionTestResponse),
     ScreenPermission(ScreenPermissionResponse),
+    PackageStatus(PackageStatusResponse),
+    PackageUninstall(PackageUninstallResponse),
     AvailableModels(AvailableModelsResponse),
     KeyringRelocate(KeyringRelocateResponse),
     KeyringReopen(KeyringReopenResponse),

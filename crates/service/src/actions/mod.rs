@@ -9,6 +9,7 @@ mod calendar_actions;
 mod cancel_tasks;
 mod confirm_write_scope;
 mod create_project;
+mod install_package;
 mod mask;
 mod memory_actions;
 mod plugin_set;
@@ -147,6 +148,9 @@ impl ActionRegistry {
             update_gate_commands::UpdateGateCommandsAction::new(data_dir.clone()),
         ));
         registry.register(Arc::new(create_project::CreateProjectAction::new(
+            data_dir.clone(),
+        )));
+        registry.register(Arc::new(install_package::InstallPackageAction::new(
             data_dir.clone(),
         )));
         registry.register(Arc::new(task_actions::TaskInterruptAction::new(

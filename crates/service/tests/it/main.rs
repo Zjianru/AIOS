@@ -19,6 +19,7 @@ mod legacy_root_session;
 mod memory;
 mod memory_index;
 mod office_create;
+mod package_installer;
 mod plugins;
 mod rewind;
 mod root;

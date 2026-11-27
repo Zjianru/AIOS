@@ -63,6 +63,14 @@ impl RootHost {
                 .screen_permission(request)
                 .await
                 .map(Response::ScreenPermission),
+            Call::PackageStatus(request) => self
+                .package_status(request)
+                .await
+                .map(Response::PackageStatus),
+            Call::PackageUninstall(request) => self
+                .package_uninstall(request)
+                .await
+                .map(Response::PackageUninstall),
             Call::ModelSettings(_) => self.model_settings().await.map(Response::ModelSettings),
             Call::DisabledModelsSet(request) => self
                 .disabled_models_set(request)

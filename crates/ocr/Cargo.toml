@@ -1,0 +1,17 @@
+[package]
+name = "ocr"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+pure-onnx-ocr = "0.3.2"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -1,6 +1,6 @@
 //! 本机图像操作：所有几何都在原始像素坐标上做，不经过模型。
 
-use image::{DynamicImage, GenericImageView, ImageFormat, Rgba, RgbaImage};
+use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
 use std::io::Cursor;
 
 /// 解码图片（png/jpeg/webp 由 image 特性决定）。

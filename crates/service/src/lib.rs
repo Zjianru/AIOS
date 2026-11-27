@@ -79,6 +79,7 @@ mod exa;
 mod executor;
 mod file_bytes;
 mod input;
+mod installer;
 pub(crate) mod kind_output;
 mod ledger;
 mod plugins;

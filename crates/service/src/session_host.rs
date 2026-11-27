@@ -185,6 +185,8 @@ impl ServiceHost {
             | Call::SettingsUpdate(_)
             | Call::VisionTest(_)
             | Call::ScreenPermission(_)
+            | Call::PackageStatus(_)
+            | Call::PackageUninstall(_)
             | Call::PluginList(_)
             | Call::PluginSet(_)
             | Call::FileReadBytes(_)

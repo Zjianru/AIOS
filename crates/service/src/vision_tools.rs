@@ -293,10 +293,7 @@ impl VisionTools {
             "vision_materialize" => self.materialize(&call, &args, &call.id, context),
             "vision_html_screenshot" => self.html_screenshot(&call, &args),
             "vision_screenshot" => self.desktop_screenshot(&call.id),
-            "vision_ocr" | "vision_long_screenshot_ocr" => Err(ToolFailure::coded(
-                "OCR_MODEL_MISSING",
-                "本机 OCR 还在下一张票里；这张图可以先走看图模型描述。",
-            )),
+            "vision_ocr" | "vision_long_screenshot_ocr" => self.local_ocr(&call, &args),
             "vision_trace" | "vision_extract_foreground" => Err(ToolFailure::coded(
                 "VISION_BACKEND_UNAVAILABLE_THIS_TURN",
                 "这个本机图片操作还在下一张票里。",
@@ -307,6 +304,50 @@ impl VisionTools {
             Ok(result) => result,
             Err(failure) => ToolResult::error(call.id, failure),
         }
+    }
+
+    fn local_ocr(&self, call: &ToolCall, args: &Value) -> Result<ToolResult, ToolFailure> {
+        let id = Self::arg_string(args, "attachment_id")?;
+        let (bytes, stored) = self.read_image(&id)?;
+        let Some(dir) = crate::installer::installed_dir(&self.data_dir, "pp-ocrv6-small") else {
+            return Err(ToolFailure::coded(
+                "OCR_MODEL_MISSING",
+                "本机 OCR 模型还没装。让 Kind 出安装卡（pp-ocrv6-small），点确认下载后再读。",
+            ));
+        };
+        let engine = ocr::load_from_package_dir(&dir)
+            .map_err(|error| ToolFailure::coded("OCR_MODEL_MISSING", error.to_string()))?;
+        let output = engine
+            .recognize_bytes(&bytes)
+            .map_err(|error| ToolFailure::coded("OCR_RUN_FAILED", error.to_string()))?;
+        if output.text.trim().is_empty() {
+            return Err(ToolFailure::coded(
+                "OCR_EMPTY",
+                "本机 OCR 没读到文字；可以交给看图模型再试。",
+            ));
+        }
+        let lines: Vec<Value> = output
+            .lines
+            .iter()
+            .map(|line| {
+                json!({
+                    "text": line.text,
+                    "confidence": line.confidence,
+                    "bbox": line.bbox,
+                })
+            })
+            .collect();
+        Ok(ToolResult::success_with_meta(
+            &call.id,
+            output.text,
+            json!({
+                "attachmentId": id,
+                "attachmentName": stored.name,
+                "confidence": output.confidence,
+                "lines": lines,
+                "local": true,
+            }),
+        ))
     }
 
     fn bootstrap(&self, call_id: &str) -> Result<ToolResult, ToolFailure> {
@@ -1033,6 +1074,53 @@ mod tests {
                 "临时 Chrome profile 要删掉"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn local_ocr_tool_reads_mixed_fixture_or_reports_missing_package() {
+        let (dir, tools, session) = setup(ScreenPermissionState::Denied);
+        let context = tool_context(&dir, session);
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../web/e2e/fixtures/ocr-mixed.png");
+        let stored =
+            tools::attachments::store(dir.path(), "ocr.png", &std::fs::read(&fixture).unwrap())
+                .unwrap();
+        let tool = tools
+            .readonly()
+            .into_iter()
+            .find(|tool| tool.name() == "vision_ocr")
+            .unwrap();
+        let missing = execute(
+            tool.clone(),
+            &context,
+            json!({"attachment_id": stored.id.clone()}),
+        )
+        .await;
+        assert_eq!(missing.error_code.as_deref(), Some("OCR_MODEL_MISSING"));
+        let Some(models) = std::env::var_os("AIOS_OCR_MODELS").map(std::path::PathBuf::from) else {
+            return;
+        };
+        let installer = crate::installer::Installer::new(dir.path().to_path_buf());
+        let spec = crate::installer::find("pp-ocrv6-small").unwrap();
+        let root = installer.version_root(spec);
+        std::fs::create_dir_all(&root).unwrap();
+        for (from, to) in [
+            (models.join("det.onnx"), root.join("det.onnx")),
+            (models.join("rec.onnx"), root.join("rec.onnx")),
+            (models.join("dict.txt"), root.join("dict.txt")),
+        ] {
+            std::fs::copy(from, to).unwrap();
+        }
+        let result = execute(tool, &context, json!({"attachment_id": stored.id})).await;
+        assert!(!result.is_error, "{}", result.content);
+        for expected in ["订单", "A-1024", "已发货", "Total", "1,280.50"] {
+            assert!(
+                result.content.contains(expected),
+                "缺 {expected}：{}",
+                result.content
+            );
+        }
+        assert_eq!(result.meta.unwrap()["local"], true);
     }
 
     #[test]
