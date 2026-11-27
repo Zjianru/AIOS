@@ -77,8 +77,10 @@ test('G1 文字模型发图→卡提醒→设置加 M3→回来看图', async ({
     const presented = page.locator('[data-kind="presented-images"]').last();
     await expect(presented).toBeVisible({ timeout: 30_000 });
     await expect(presented.locator('[data-kind="vision-image"]')).toHaveCount(2);
-    const noteAfter = page.locator('[data-kind="image-omitted-note"]').last();
-    await expect(noteAfter).toHaveText(noteBefore ?? '');
+    // 第一轮可能已经被虚拟列表滚出 DOM：滚回顶部再核历史那条。
+    await page.locator('[data-turn]').first().scrollIntoViewIfNeeded();
+    const noteAfter = page.locator('[data-kind="image-omitted-note"]').first();
+    await expect(noteAfter).toHaveText(noteBefore ?? '', { timeout: 20_000 });
     await expect(page.locator('[data-kind="assistant-answer"], [data-kind="answer"]').last()).toContainText(/订单|A-1024|Total|1,280/);
   } finally {
     await fixture.close();
