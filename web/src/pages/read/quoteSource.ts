@@ -1,4 +1,4 @@
-/** T093：阅读页引用到对话的来源形状（kind=file；id/title/version 一处拼）。 */
+/** 阅读页引用到对话的来源形状（kind=file；id/title/version 一处拼）。 */
 export interface ReadQuoteSource {
   kind: 'file';
   id: string;

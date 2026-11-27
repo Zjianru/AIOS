@@ -1,4 +1,4 @@
-// T093：阅读页引用来源形状一处拼；node --experimental-strip-types 跑。
+// 阅读页引用来源形状一处拼；node --experimental-strip-types 跑。
 import assert from 'node:assert/strict';
 import { readQuoteSource } from '../src/pages/read/quoteSource.ts';
 
