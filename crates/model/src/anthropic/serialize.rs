@@ -1407,7 +1407,7 @@ mod image_block_serialize_tests {
             .filter(|block| {
                 block["type"] == "text"
                     && block["text"].as_str().is_some_and(|text| {
-                        text.starts_with("(image omitted: model does not support images)")
+                        text.starts_with("(image omitted: model does not support images")
                     })
             })
             .collect();
