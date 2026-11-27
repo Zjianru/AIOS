@@ -141,3 +141,39 @@ async fn file_read_bytes_rejects_file_over_preview_limit() {
     assert!(matches!(error, ServiceError::InvalidPath(_)));
     assert!(error.to_string().contains("太大"), "{error}");
 }
+
+#[tokio::test]
+async fn file_read_bytes_allows_office_library_when_cwd_differs_from_data_dir() {
+    let data = tempdir().unwrap();
+    let work = tempdir().unwrap();
+    std::fs::create_dir_all(data.path().join("library/office/task-1")).unwrap();
+    let target = data.path().join("library/office/task-1/水果表.xlsx");
+    std::fs::write(&target, b"PK\x03\x04fake").unwrap();
+    let mut options = crate::common::options(data.path());
+    options.cwd = work.path().to_path_buf();
+    let host = crate::common::open(options).await;
+
+    let response = host
+        .dispatch(Call::FileReadBytes(FileReadBytesRequest {
+            path: Some(target.display().to_string()),
+            attachment_id: None,
+        }))
+        .await
+        .expect("交付目录的绝对路径要允许");
+    let Response::FileReadBytes(bytes) = response else {
+        panic!("应回 file_read_bytes");
+    };
+    assert_eq!(bytes.size, 8);
+
+    // 同一 data-dir 下、library/office 之外的文件仍拒绝。
+    std::fs::write(data.path().join("secret.txt"), b"secret").unwrap();
+    let error = host
+        .dispatch(Call::FileReadBytes(FileReadBytesRequest {
+            path: Some(data.path().join("secret.txt").display().to_string()),
+            attachment_id: None,
+        }))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, ServiceError::InvalidPath(_)));
+    assert!(error.to_string().contains("Office 交付目录"));
+}

@@ -42,12 +42,19 @@ impl RootHost {
         let canonical = std::fs::canonicalize(&path).map_err(|error| {
             ServiceError::InvalidPath(format!("读不到 {}：{error}", path.display()))
         })?;
-        // 只读预览不越出根会话工作目录：绝对路径也必须在 cwd 内；符号链接按 canonical 后判。
+        // 只读预览不越出两处受控根：根会话工作目录，以及 <data>/library/office（交付物）。
+        // 绝对路径也必须在其中；符号链接按 canonical 后判，cwd 内指向外部的也拒绝。
         let cwd = std::fs::canonicalize(&self.options.cwd)
             .map_err(|error| ServiceError::InvalidPath(format!("工作目录读不出来：{error}")))?;
-        if !canonical.starts_with(&cwd) {
+        let library =
+            std::fs::canonicalize(self.options.data_dir.join("library").join("office")).ok();
+        let in_cwd = canonical.starts_with(&cwd);
+        let in_library = library
+            .as_ref()
+            .is_some_and(|root| canonical.starts_with(root));
+        if !in_cwd && !in_library {
             return Err(ServiceError::InvalidPath(format!(
-                "路径不在会话工作目录内：{}（工作目录：{}）",
+                "路径不在会话工作目录或 Office 交付目录内：{}（工作目录：{}）",
                 canonical.display(),
                 cwd.display()
             )));

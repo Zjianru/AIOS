@@ -5,7 +5,7 @@
  */
 export type FileReadBytesRequest = {
 /**
- * 根会话工作目录内的路径（相对 cwd；绝对路径也必须在 cwd 内）。
+ * 根会话工作目录或 <data>/library/office 内的路径（相对 cwd；绝对路径也必须在受控根内）。
  */
 path?: string | null,
 /**

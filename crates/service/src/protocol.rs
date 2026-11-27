@@ -2509,7 +2509,7 @@ pub struct PluginListResponse {
 /// 读一个 Office 文件字节；路径与附件 id 二选一。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct FileReadBytesRequest {
-    /// 根会话工作目录内的路径（相对 cwd；绝对路径也必须在 cwd 内）。
+    /// 根会话工作目录或 <data>/library/office 内的路径（相对 cwd；绝对路径也必须在受控根内）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     /// 附件仓库 id（sha256:...）。
