@@ -13,7 +13,7 @@ slow-timeout = { period = "180s", terminate-after = 2 }
 filter = 'package(service)'
 slow-timeout = { period = "10s", terminate-after = 6 }
 
-# T101：restart/stop 各起多个任务宿主、效果泵和真实计时等待；全量并发时和其他
+# restart/stop 各起多个任务宿主、效果泵和真实计时等待；全量并发时和其他
 # 测试抢同一台机器的调度，第二次 Attempt 的完成会被拖到 20 秒以上。各占满 16 个
 # 测试槽单独跑，隔开这个抢占源；其余测试仍按 nextest 默认并发。
 [[profile.default.overrides]]
