@@ -430,6 +430,7 @@ impl Describer for KeyringDescriber {
                 bytes: image.bytes.len() as u64,
                 mime: image.mime.clone(),
                 path: image.path.clone(),
+                sent_as: None,
             };
             let prompt = image
                 .prompt
@@ -560,6 +561,7 @@ mod tests {
             bytes: std::fs::metadata(path).map_or(0, |meta| meta.len()),
             mime: Some("image/png".to_owned()),
             path: Some(path.to_string_lossy().into_owned()),
+            sent_as: None,
         }])
     }
 
@@ -823,6 +825,7 @@ mod tests {
             bytes: 9,
             mime: Some("image/png".to_owned()),
             path: Some(path.to_string_lossy().into_owned()),
+            sent_as: None,
         }])
     }
 

@@ -210,6 +210,9 @@ pub enum ContentBlock {
         /// 只读副本的绝对路径（序列化图片请求时读它拿原始字节）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         path: Option<String>,
+        /// UI 记录：发出那一刻的转述状态（omitted / paraphrased:<model>）。
+        #[serde(rename = "sentAs", default, skip_serializing_if = "Option::is_none")]
+        sent_as: Option<String>,
     },
     /// 用户引用了一个 AIOS 对象（任务/报告/项目）；投给模型时换成一行身份+版本。
     ObjectRef {

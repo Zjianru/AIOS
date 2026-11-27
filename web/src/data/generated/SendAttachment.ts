@@ -7,4 +7,8 @@ export type SendAttachment = { id: string, name: string, bytes: number,
 /**
  * 附件原类型（旧页面/旧日志没有；按扩展名兜底）。
  */
-mime?: string | null, };
+mime?: string | null,
+/**
+ * UI 记录：发出那一刻是 omission 还是由谁转述；历史展示不随设置变。
+ */
+sentAs?: string | null, };

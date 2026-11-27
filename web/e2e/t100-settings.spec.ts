@@ -86,3 +86,38 @@ test('#9 截桌面默认关；假权限端口 denied 再查一次仍 denied', as
     await fixture.close();
   }
 });
+
+test('F4 测试看图按钮：normal/text-only/rate-limited/timeout/error 六态都画对', async ({ page, request }) => {
+  const fixture = await startD78KernelFixture();
+  try {
+    await configureModels(request, fixture);
+    await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#settings:model');
+    const section = page.locator('[data-settings="vision"]');
+    await expect(section).toBeVisible({ timeout: 60_000 });
+    await section.locator('[data-kind="vision-add"] select').selectOption('minimax-cn/MiniMax-M3');
+    await section.getByRole('button', { name: '添加看图模型' }).click();
+    const row = section.locator('[data-kind="vision-model"]').first();
+    await expect(row).toHaveCount(1);
+    const key = 'minimax-cn/MiniMax-M3';
+    const cases: [string, string][] = [
+      ['normal', 'ok'],
+      ['text-only', 'textOnly'],
+      ['rate-limited', 'rateLimited'],
+      ['timeout', 'timeout'],
+      ['error', 'error'],
+    ];
+    for (const [inject, state] of cases) {
+      await page.evaluate(
+        ([name, value]) => {
+          window.__AIOS_VISION_TEST__ = { [name]: value };
+        },
+        [key, inject],
+      );
+      await row.getByRole('button', { name: /测试看图|重新测试/ }).click();
+      await expect(row).toHaveAttribute('data-test-state', state);
+    }
+    await expect(row).toContainText(/只认文字|超时|太频繁|测试失败|看图正常/);
+  } finally {
+    await fixture.close();
+  }
+});

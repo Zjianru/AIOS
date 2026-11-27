@@ -190,6 +190,7 @@ impl RootHost {
                     bytes: attachment.bytes,
                     mime,
                     path,
+                    sent_as: attachment.sent_as.clone(),
                 });
             } else {
                 blocks.push(model::ContentBlock::File {

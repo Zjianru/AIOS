@@ -310,6 +310,9 @@ pub struct SendAttachment {
     /// 附件原类型（旧页面/旧日志没有；按扩展名兜底）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mime: Option<String>,
+    /// UI 记录：发出那一刻是 omission 还是由谁转述；历史展示不随设置变。
+    #[serde(rename = "sentAs", default, skip_serializing_if = "Option::is_none")]
+    pub sent_as: Option<String>,
 }
 
 /// 用户选中一段文字引用进对话（source 为空=普通引用）。

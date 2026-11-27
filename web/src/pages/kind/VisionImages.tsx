@@ -98,7 +98,10 @@ export function presentedImageIds(tools: { name: string; meta?: Record<string, u
       ground = idsOf(tool.meta);
     }
   }
-  if (present.length >= 2) return present;
+  // 数量够但 id 不是这一轮 ground 产出的（模型猜了文件名/旧图）：回落 ground。
+  if (present.length >= 2 && (ground.length === 0 || present.every((id) => ground.includes(id)))) {
+    return present;
+  }
   if (ground.length > 0) return ground;
   return present;
 }

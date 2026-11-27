@@ -36,7 +36,7 @@ import {
   pasteStats,
 } from './composer/AttachmentCard';
 import { attachmentGet } from '@/data/service';
-import { imageSentAs } from './visionSentAs';
+import { imageSentAs, parseImageSentAs } from './visionSentAs';
 import { PresentedImages, ToolImages, presentedImageIds } from './VisionImages';
 import type { CompactionView, TurnUserView, TurnViewData } from './kindStore';
 import type { CanvasViewDoc } from './turnViews';
@@ -89,7 +89,7 @@ export function UserCards({ user }: { user: TurnUserView }) {
         <ImageCard
           key={'image-' + file.id + '-' + file.name}
           file={file}
-          sentAs={imageSentAs(file.id)}
+          sentAs={parseImageSentAs(file.sentAs) ?? imageSentAs(file.id)}
         />
       ))}
       {user.files.map((file) => (

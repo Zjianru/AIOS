@@ -80,6 +80,31 @@ interface TestState {
   message?: string;
 }
 
+declare global {
+  interface Window {
+    /** e2e：按连接/模型注入测试看图状态，避免真请求。 */
+    __AIOS_VISION_TEST__?: Record<string, string>;
+  }
+}
+
+function injectedTest(link: VisionModelRefView): TestState | null {
+  const value = window.__AIOS_VISION_TEST__?.[link.connection + '/' + link.model];
+  switch (value) {
+    case 'normal':
+      return { kind: 'ok', elapsedMs: 123 };
+    case 'text-only':
+      return { kind: 'textOnly' };
+    case 'rate-limited':
+      return { kind: 'rateLimited' };
+    case 'timeout':
+      return { kind: 'timeout' };
+    case 'error':
+      return { kind: 'error', message: '后端出错' };
+    default:
+      return null;
+  }
+}
+
 function testLine(test: TestState): { text: string; tone: keyof typeof TONE } {
   switch (test.kind) {
     case 'idle':
@@ -130,7 +155,11 @@ function ChainRow({
   const row = connection ? modelsOf(connection).find((item) => item.id === link.model) : undefined;
   const line = testLine(test);
   return (
-    <div className={cn('flex items-center gap-3 px-4 py-3', index > 0 && 'border-t border-line')} data-kind="vision-model">
+    <div
+      className={cn('flex items-center gap-3 px-4 py-3', index > 0 && 'border-t border-line')}
+      data-kind="vision-model"
+      data-test-state={test.kind}
+    >
       <Dot tone={line.tone} pulse={test.kind === 'testing'} />
       <div className="min-w-0">
         <div className="flex items-center gap-2 text-3 text-ink">
@@ -182,6 +211,9 @@ function OcrRow({ onChanged }: { onChanged: () => void }) {
   }, []);
   useEffect(() => {
     void load();
+    const refresh = () => void load();
+    window.addEventListener('aios:vision-settings', refresh);
+    return () => window.removeEventListener('aios:vision-settings', refresh);
   }, [load]);
   useEffect(() => {
     if (!pkg || (pkg.state !== 'downloading' && pkg.state !== 'verifying')) return;
@@ -260,6 +292,9 @@ function OcrRow({ onChanged }: { onChanged: () => void }) {
 
 function ScreenRow({ view, onChanged }: { view: ModelSettingsView; onChanged: () => void }) {
   const [on, setOn] = useState(view.screenCapture);
+  useEffect(() => {
+    setOn(view.screenCapture);
+  }, [view.screenCapture]);
   const [permission, setPermission] = useState<ScreenPermissionResponse | null>(null);
   const [checking, setChecking] = useState(false);
   const check = useCallback(async () => {
@@ -380,6 +415,11 @@ export function VisionSection({ view, onChanged }: { view: ModelSettingsView; on
   const test = async (link: VisionModelRefView) => {
     const key = link.connection + '/' + link.model;
     setTests((current) => ({ ...current, [key]: { kind: 'testing' } }));
+    const injected = injectedTest(link);
+    if (injected) {
+      setTests((current) => ({ ...current, [key]: injected }));
+      return;
+    }
     try {
       const response = await visionTest({ connection: link.connection, model: link.model });
       setTests((current) => ({ ...current, [key]: testOf(response) }));

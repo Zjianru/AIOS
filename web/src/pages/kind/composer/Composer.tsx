@@ -761,7 +761,19 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     }
     const accepted = await onSend(value, {
       pastes,
-      attachments: attachments.map(({ id, name, bytes, mime }) => ({ id, name, bytes, mime: mime ?? null })),
+      attachments: attachments.map(({ id, name, bytes, mime }) => ({
+        id,
+        name,
+        bytes,
+        mime: mime ?? null,
+        sentAs: imageMimeSupported(mime)
+          ? modelSeesImages
+            ? undefined
+            : visionChain[0]
+              ? 'paraphrased:' + visionChain[0].model
+              : 'omitted'
+          : undefined,
+      })),
       objectRefs,
       quotes: sourcedQuotes,
       canvases: [...(fromCanvas ? [fromCanvas] : []), ...extraCanvases],

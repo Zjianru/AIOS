@@ -202,6 +202,8 @@ export interface SendAttachmentRef {
   bytes: number;
   /** 原类型（旧页面/旧日志没有）。 */
   mime?: string | null;
+  /** 发出那一刻的转述状态（omitted / paraphrased:<model>）；历史展示用。 */
+  sentAs?: string | null;
 }
 
 export interface SendOptions {

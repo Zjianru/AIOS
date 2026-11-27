@@ -23,6 +23,8 @@ fn request(id: &str, attachment_id: &str) -> SendRequest {
             name: "shot.png".to_owned(),
             bytes: 9,
             mime: Some("image/png".to_owned()),
+
+            sent_as: None,
         }],
         object_refs: Vec::new(),
         quotes: Vec::new(),

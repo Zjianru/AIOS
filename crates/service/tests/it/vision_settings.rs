@@ -199,6 +199,8 @@ async fn g1_filling_the_chain_appends_one_static_notice() {
             name: "shot.png".to_owned(),
             bytes: 9,
             mime: Some("image/png".to_owned()),
+
+            sent_as: None,
         }],
         object_refs: Vec::new(),
         quotes: Vec::new(),

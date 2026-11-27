@@ -1313,6 +1313,7 @@ mod image_block_serialize_tests {
             bytes: 4,
             mime: Some("image/png".to_owned()),
             path: Some(path.to_owned()),
+            sent_as: None,
         }
     }
 
@@ -1380,6 +1381,7 @@ mod image_block_serialize_tests {
                 bytes: 6,
                 mime: Some("image/svg+xml".to_owned()),
                 path: Some(path.to_str().unwrap().to_owned()),
+                sent_as: None,
             }],
         );
         let content = &value["messages"][0]["content"];

@@ -116,6 +116,7 @@ async fn send_builds_blocks_in_order_content_then_pastes_then_files() {
         name: "notes.txt".to_owned(),
         bytes: 5,
         mime: None,
+        sent_as: None,
     }];
     host.dispatch(Call::Send(send)).await.expect("send");
     let blocks = wait_user_blocks(&host, data.path()).await;
@@ -195,6 +196,7 @@ async fn attachment_name_and_bytes_use_the_request_values() {
         name: "b.txt".to_owned(),
         bytes: 99,
         mime: None,
+        sent_as: None,
     }];
     host.dispatch(Call::Send(send)).await.expect("send");
     let blocks = wait_user_blocks(&host, data.path()).await;
@@ -230,6 +232,7 @@ async fn unknown_attachment_is_rejected() {
         name: "missing.txt".to_owned(),
         bytes: 1,
         mime: None,
+        sent_as: None,
     }];
     let error = host
         .dispatch(Call::Send(send))
@@ -349,6 +352,8 @@ async fn send_appends_multi_markers_in_order_and_keeps_attachment_mime() {
         name: "pic.png".to_owned(),
         bytes: 5,
         mime: Some("image/png".to_owned()),
+
+        sent_as: None,
     }];
     host.dispatch(Call::Send(send)).await.expect("send");
     let blocks = wait_user_blocks(&host, data.path()).await;
@@ -425,6 +430,7 @@ async fn send_svg_attachment_stays_a_file_block_in_the_log() {
         name: "pic.svg".to_owned(),
         bytes: bytes.len() as u64,
         mime: None,
+        sent_as: None,
     }];
     host.dispatch(Call::Send(send)).await.expect("send");
     let blocks = wait_user_blocks(&host, data.path()).await;
@@ -466,6 +472,7 @@ async fn send_image_attachment_becomes_an_image_block_in_the_log() {
         name: "shot.png".to_owned(),
         bytes: bytes.len() as u64,
         mime: None,
+        sent_as: None,
     }];
     host.dispatch(Call::Send(send)).await.expect("send");
     let blocks = wait_user_blocks(&host, data.path()).await;

@@ -9,6 +9,7 @@ fn image(attachment_id: &str) -> ContentBlock {
         bytes: 3,
         mime: Some("image/png".to_owned()),
         path: Some("/tmp/pic.png".to_owned()),
+        sent_as: None,
     }
 }
 

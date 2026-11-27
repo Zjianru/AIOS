@@ -28,6 +28,7 @@ import { CURRENCIES, compactPrice, formatModelTokens } from '@/lib/numbers';
 import { formatLocalDateTime } from '@/lib/time';
 import { useSettingsState } from '@/lib/settingsState';
 import { VisionSection } from './VisionSection';
+import { SettingsPageKind } from './SettingsPageKind';
 import { PROTOCOL_LABEL } from '@/data/keyring';
 import type { ConnectionView, ModelRow, ModelSettingsView, ToolKeyView } from '@/data/keyring';
 import {
@@ -1581,6 +1582,8 @@ export function ModelSettings() {
       </p>
 
       {broken ? <KeyringBroken view={view} onView={setView} /> : null}
+
+      <SettingsPageKind view={view} onChanged={() => void load()} />
 
       <CurrencySection />
 

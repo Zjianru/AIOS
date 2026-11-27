@@ -1147,6 +1147,39 @@ mod tests {
         assert_eq!(result.meta.unwrap()["local"], true);
     }
 
+    #[tokio::test]
+    async fn present_wrong_ids_fall_back_to_last_ground_images() {
+        let (dir, tools, session) = setup(ScreenPermissionState::Denied);
+        let stored =
+            tools::attachments::store(dir.path(), "red.png", &vision::ops::test_image().unwrap())
+                .unwrap();
+        let context = tool_context(&dir, session);
+        let ground = tools
+            .readonly()
+            .into_iter()
+            .find(|tool| tool.name() == "vision_ground")
+            .unwrap();
+        let ground_result = execute(
+            ground,
+            &context,
+            json!({"attachment_id": stored.id, "query": "红色"}),
+        )
+        .await;
+        assert!(!ground_result.is_error, "{}", ground_result.content);
+        let present = tools
+            .readonly()
+            .into_iter()
+            .find(|tool| tool.name() == "vision_present")
+            .unwrap();
+        let result = execute(
+            present,
+            &context,
+            json!({"attachment_ids": ["missing-a.png", "missing-b.png"]}),
+        )
+        .await;
+        assert!(!result.is_error, "{}", result.content);
+        assert_eq!(result.meta.unwrap()["images"].as_array().unwrap().len(), 2);
+    }
     #[test]
     fn has_a_fake_permission_counter() {
         // 占位，确保静态检查看到测试端口确实可注入。

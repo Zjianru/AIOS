@@ -23,6 +23,13 @@ export function markImageSent(id: string, sentAs: ImageSentAs): void {
   }
 }
 
+export function parseImageSentAs(value: string | null | undefined): ImageSentAs | undefined {
+  if (!value) return undefined;
+  if (value === 'omitted') return { kind: 'omitted' };
+  if (value.startsWith('paraphrased:')) return { kind: 'paraphrased', model: value.slice('paraphrased:'.length) };
+  return undefined;
+}
+
 export function imageSentAs(id: string): ImageSentAs | undefined {
   return readMap()[id];
 }
