@@ -22,25 +22,11 @@ async fn a_write_task_freezes_the_scope_and_eleven_tools() {
 
     let mut tools = task.tools.clone();
     tools.sort();
-    let mut expected = vec![
-        "edit",
-        "glob",
-        "grep",
-        "office_create",
-        "office_read",
-        "read",
-        "skill",
-        "task_handback",
-        "task_ledger_history",
-        "task_ledger_note",
-        "task_report",
-        "todo_write",
-        "web_fetch",
-        "web_search",
-        "write",
-    ];
-    expected.sort();
-    assert_eq!(tools, expected, "写任务冻结 15 件工具");
+    assert_eq!(
+        tools,
+        sorted(WRITE_TOOLS),
+        "写任务冻结 30 件工具（15 基础 + 15 看图）"
+    );
 
     let kind_body = fixture.router.bodies(false).remove(0);
     let request: Value = serde_json::from_str(&kind_body).unwrap();
@@ -102,12 +88,19 @@ async fn kind_has_no_write_shell_or_background_tools() {
         "task_update",
         "ask_user_question",
         "canvas",
+        "vision_describe",
+        "vision_ground",
+        "vision_present",
     ] {
         assert!(
             names.iter().any(|name| name == required),
             "Kind 要有 {required}：{names:?}"
         );
     }
+    assert!(
+        !names.iter().any(|name| name == "vision_materialize"),
+        "Kind 不该有 vision_materialize：{names:?}"
+    );
 }
 
 /// 写入范围外的写被拒：错误码和原文固定、文件内容与 mtime 都没变，之后能交回 Kind。

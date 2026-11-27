@@ -58,6 +58,11 @@ impl RootHost {
                     )),
                 }
             }
+            Call::VisionTest(request) => self.vision_test(request).await.map(Response::VisionTest),
+            Call::ScreenPermission(request) => self
+                .screen_permission(request)
+                .await
+                .map(Response::ScreenPermission),
             Call::ModelSettings(_) => self.model_settings().await.map(Response::ModelSettings),
             Call::DisabledModelsSet(request) => self
                 .disabled_models_set(request)

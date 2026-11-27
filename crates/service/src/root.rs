@@ -168,7 +168,7 @@ impl RootSession {
 ///
 /// 写、改、跑命令和三件后台任务不在里面；这些活派给 ThinAgent。任务工具看
 /// `task_runtime` 有没有装配，由 `kind_tool_policy` 追加。
-pub(crate) const KIND_TOOLS: [&str; 24] = [
+pub(crate) const KIND_TOOLS: [&str; 38] = [
     "read",
     "glob",
     "grep",
@@ -193,6 +193,20 @@ pub(crate) const KIND_TOOLS: [&str; 24] = [
     "memory_delete_note",
     "kind_react",
     "kind_say",
+    "vision_describe",
+    "vision_bootstrap",
+    "vision_ground",
+    "vision_detect",
+    "vision_crop",
+    "vision_pixel_diff",
+    "vision_colors",
+    "vision_ocr",
+    "vision_long_screenshot_ocr",
+    "vision_trace",
+    "vision_extract_foreground",
+    "vision_html_screenshot",
+    "vision_screenshot",
+    "vision_present",
 ];
 
 /// Kind 的身份（D117）：说一次；工作目录/编程助手底座不进系统提示。
@@ -326,6 +340,17 @@ pub async fn open_root_session_with(
         std::sync::Arc::new(office::OfficeReadTool) as std::sync::Arc<dyn tools::Tool>,
     ];
     extra_tools.extend(web_extra_tools(&options));
+    extra_tools.extend(
+        crate::vision_tools::VisionTools::new(
+            options.data_dir.clone(),
+            std::sync::Arc::new(crate::vision_runtime::VisionRuntime::new(
+                options.data_dir.clone(),
+                options.identity.clone(),
+            )),
+            std::sync::Arc::new(crate::vision_tools::SystemScreenPermission),
+        )
+        .readonly(),
+    );
     if let Some(runtime) = &options.task_runtime {
         extra_tools.push(std::sync::Arc::new(crate::executor::TaskAcceptTool::new(
             std::sync::Arc::clone(runtime),

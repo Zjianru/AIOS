@@ -106,7 +106,7 @@ fn expected_tool_lists(
 }
 
 /// ThinAgent 的只读工具名单（构造期 only 过滤；顺序就是名单顺序）。
-pub const THIN_TOOLS: [&str; 12] = [
+pub const THIN_TOOLS: [&str; 26] = [
     "read",
     "glob",
     "grep",
@@ -119,10 +119,24 @@ pub const THIN_TOOLS: [&str; 12] = [
     "task_handback",
     "task_ledger_note",
     "task_ledger_history",
+    "vision_describe",
+    "vision_bootstrap",
+    "vision_ground",
+    "vision_detect",
+    "vision_crop",
+    "vision_pixel_diff",
+    "vision_colors",
+    "vision_ocr",
+    "vision_long_screenshot_ocr",
+    "vision_trace",
+    "vision_extract_foreground",
+    "vision_html_screenshot",
+    "vision_screenshot",
+    "vision_present",
 ];
 
 /// 写任务的 ThinAgent 工具名单：只读 9 件加 write、edit（D85）。
-pub const THIN_WRITE_TOOLS: [&str; 15] = [
+pub const THIN_WRITE_TOOLS: [&str; 30] = [
     "read",
     "glob",
     "grep",
@@ -138,10 +152,25 @@ pub const THIN_WRITE_TOOLS: [&str; 15] = [
     "task_handback",
     "task_ledger_note",
     "task_ledger_history",
+    "vision_describe",
+    "vision_bootstrap",
+    "vision_ground",
+    "vision_detect",
+    "vision_crop",
+    "vision_pixel_diff",
+    "vision_colors",
+    "vision_ocr",
+    "vision_long_screenshot_ocr",
+    "vision_trace",
+    "vision_extract_foreground",
+    "vision_html_screenshot",
+    "vision_screenshot",
+    "vision_present",
+    "vision_materialize",
 ];
 
 /// 开了 bash 的写任务：写任务 11 件再加 bash 和后台任务三件（D85）。
-pub const THIN_WRITE_BASH_TOOLS: [&str; 19] = [
+pub const THIN_WRITE_BASH_TOOLS: [&str; 34] = [
     "read",
     "glob",
     "grep",
@@ -161,6 +190,21 @@ pub const THIN_WRITE_BASH_TOOLS: [&str; 19] = [
     "task_handback",
     "task_ledger_note",
     "task_ledger_history",
+    "vision_describe",
+    "vision_bootstrap",
+    "vision_ground",
+    "vision_detect",
+    "vision_crop",
+    "vision_pixel_diff",
+    "vision_colors",
+    "vision_ocr",
+    "vision_long_screenshot_ocr",
+    "vision_trace",
+    "vision_extract_foreground",
+    "vision_html_screenshot",
+    "vision_screenshot",
+    "vision_present",
+    "vision_materialize",
 ];
 
 /// 默认角色的规则（ThinAgent 的 policy_prompt，追加在系统提示末尾；Kind 不装）。
@@ -3406,6 +3450,17 @@ impl TaskRuntime {
             Arc::clone(self),
             task.id.clone(),
         )));
+        extra_tools.extend(
+            crate::vision_tools::VisionTools::new(
+                self.data_dir.clone(),
+                Arc::new(crate::vision_runtime::VisionRuntime::new(
+                    self.data_dir.clone(),
+                    self.options.identity.clone(),
+                )),
+                Arc::new(crate::vision_tools::SystemScreenPermission),
+            )
+            .writable(),
+        );
         let mut agent_config = self.options.config.clone();
         agent_config.plugin_switches = Some(tools::plugins::switches_for(&self.data_dir));
         agent_config.tool_keys = crate::root::tool_key_source(&self.options);

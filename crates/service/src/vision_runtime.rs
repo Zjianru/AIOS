@@ -30,6 +30,8 @@ pub struct DescribeImage {
     pub mime: Option<String>,
     pub path: Option<String>,
     pub bytes: Vec<u8>,
+    /// 自定义提示词；None = 自动描述默认提示。
+    pub prompt: Option<String>,
 }
 
 /// 一条看图后端的抽象；生产走 Keyring + model crate，测试可注入假实现。
@@ -121,6 +123,44 @@ impl VisionRuntime {
             .lock()
             .expect("看图冷却锁被毒化")
             .insert(Self::cooldown_key(row), now + extra);
+    }
+
+    /// 设置页「测试看图」：只问指定后端，不换备用，不写设置/会话；返回毫秒数。
+    pub async fn test_backend(
+        &self,
+        row: &vision::VisionModelRef,
+        image: &DescribeImage,
+    ) -> Result<u64, DescribeFailure> {
+        let started = std::time::Instant::now();
+        let text = self.describer.describe(row, image).await?;
+        if text.trim().is_empty() {
+            return Err(DescribeFailure::Other("看图模型没有返回文字".to_owned()));
+        }
+        Ok(started.elapsed().as_millis() as u64)
+    }
+
+    /// 显式看图：按设置链试一次，不写会话旁注（工具调用用）。
+    pub async fn describe_now(&self, image: &DescribeImage) -> Result<String, DescribeFailure> {
+        let settings = crate::settings::load(&self.data_dir).vision;
+        if settings.models.is_empty() {
+            return Err(DescribeFailure::Other("没有填看图模型".to_owned()));
+        }
+        let mut last = DescribeFailure::Other("没有可用的看图后端".to_owned());
+        for row in &settings.models {
+            if self.in_cooldown(row) {
+                last = DescribeFailure::Other("看图后端在冷却中".to_owned());
+                continue;
+            }
+            match self.describer.describe(row, image).await {
+                Ok(text) if !text.trim().is_empty() => return Ok(text.trim().to_owned()),
+                Ok(_) => last = DescribeFailure::Other("看图模型没有返回文字".to_owned()),
+                Err(failure) => {
+                    self.cool(row, &failure);
+                    last = failure;
+                }
+            }
+        }
+        Err(last)
     }
 
     /// 准备本会话所有图片的旁注；返回 None = 不投影（主模型能看图）。
@@ -234,6 +274,7 @@ impl VisionRuntime {
             mime: block.1,
             path: Some(path),
             bytes,
+            prompt: None,
         })
     }
 }
@@ -290,10 +331,11 @@ impl Describer for KeyringDescriber {
                 mime: image.mime.clone(),
                 path: image.path.clone(),
             };
-            let message = Message::new(
-                Role::User,
-                vec![image_block, ContentBlock::text(DESCRIBE_PROMPT.to_owned())],
-            );
+            let prompt = image
+                .prompt
+                .clone()
+                .unwrap_or_else(|| DESCRIBE_PROMPT.to_owned());
+            let message = Message::new(Role::User, vec![image_block, ContentBlock::text(prompt)]);
             let cancel = model::CancelToken::new(
                 Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 Arc::new(tokio::sync::Notify::new()),
@@ -807,5 +849,63 @@ mod tests {
             until >= now + 59_000 && until <= now + 61_000,
             "默认冷却 60 秒"
         );
+    }
+
+    #[tokio::test]
+    async fn test_backend_reports_elapsed_and_rate_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("pic.png");
+        std::fs::write(&image, b"png-bytes").unwrap();
+        let row = vision::VisionModelRef {
+            connection: "a".to_owned(),
+            model: "m1".to_owned(),
+        };
+        let runtime = VisionRuntime::with_describer(
+            dir.path().to_path_buf(),
+            None,
+            queue(vec![Ok("红色".to_owned())]),
+        );
+        let timeout = runtime
+            .test_backend(
+                &row,
+                &DescribeImage {
+                    attachment_id: "sha256:a".to_owned(),
+                    name: "pic.png".to_owned(),
+                    mime: Some("image/png".to_owned()),
+                    path: Some(image.to_string_lossy().into_owned()),
+                    bytes: b"png-bytes".to_vec(),
+                    prompt: None,
+                },
+            )
+            .await
+            .expect("normal");
+        assert!(timeout < 5_000);
+        let runtime2 = VisionRuntime::with_describer(
+            dir.path().to_path_buf(),
+            None,
+            queue(vec![Err(DescribeFailure::RateLimited {
+                retry_after_ms: Some(3_000),
+            })]),
+        );
+        let error = runtime2
+            .test_backend(
+                &row,
+                &DescribeImage {
+                    attachment_id: "sha256:a".to_owned(),
+                    name: "pic.png".to_owned(),
+                    mime: Some("image/png".to_owned()),
+                    path: Some(image.to_string_lossy().into_owned()),
+                    bytes: b"png-bytes".to_vec(),
+                    prompt: None,
+                },
+            )
+            .await
+            .expect_err("rate limited");
+        assert!(matches!(
+            error,
+            DescribeFailure::RateLimited {
+                retry_after_ms: Some(3_000)
+            }
+        ));
     }
 }

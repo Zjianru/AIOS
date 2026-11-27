@@ -14,6 +14,7 @@ use crate::protocol::{
 };
 use crate::root::{RootError, RootSessionOptions, open_root_session_with, session_model_selection};
 use crate::session_host::ServiceHost;
+use crate::vision_tools::ScreenPermissionProbe;
 
 impl RootState {
     /// 把打开根会话的错误分类成页面状态（只增：error 的 Debug/说明仍保留）。
@@ -88,7 +89,7 @@ pub struct RootHost {
     /// 测试钩子：根会话没开时也能模拟「Kind 说过这些路径」；生产走会话日志。
     local_paths: Mutex<std::collections::BTreeSet<String>>,
     /// 会话旁注/自动描述；每个根宿主一份。
-    vision_runtime: crate::vision_runtime::VisionRuntime,
+    vision_runtime: std::sync::Arc<crate::vision_runtime::VisionRuntime>,
 }
 
 impl RootHost {
@@ -195,10 +196,10 @@ impl RootHost {
                 task_runtime.clone(),
             ))
         });
-        let vision_runtime = crate::vision_runtime::VisionRuntime::new(
+        let vision_runtime = std::sync::Arc::new(crate::vision_runtime::VisionRuntime::new(
             options.data_dir.clone(),
             options.identity.clone(),
-        );
+        ));
         let host = Self {
             local_paths: Mutex::new(std::collections::BTreeSet::new()),
             inner,
@@ -1194,5 +1195,85 @@ impl RootHost {
         if let Some(host) = guard.as_ref() {
             host.agent().set_image_notes(notes);
         }
+    }
+}
+
+impl RootHost {
+    /// 设置页「测试看图」：只问指定的链内模型，不换备用，不写设置/会话。
+    pub(crate) async fn vision_test(
+        &self,
+        request: crate::protocol::VisionTestRequest,
+    ) -> Result<crate::protocol::VisionTestResponse, crate::error::ServiceError> {
+        let row = vision::VisionModelRef {
+            connection: request.connection,
+            model: request.model,
+        };
+        let bytes = vision::ops::test_image()
+            .map_err(|error| crate::error::ServiceError::SettingsInvalid(error))?;
+        let image = crate::vision_runtime::DescribeImage {
+            attachment_id: "builtin-test-image".to_owned(),
+            name: "vision-test.png".to_owned(),
+            mime: Some("image/png".to_owned()),
+            path: None,
+            bytes,
+            prompt: None,
+        };
+        match self.vision_runtime.test_backend(&row, &image).await {
+            Ok(elapsed_ms) => Ok(crate::protocol::VisionTestResponse {
+                state: "normal".to_owned(),
+                elapsed_ms: Some(elapsed_ms),
+                retry_after_ms: None,
+            }),
+            Err(crate::vision_runtime::DescribeFailure::RateLimited { retry_after_ms }) => {
+                Ok(crate::protocol::VisionTestResponse {
+                    state: "rate-limited".to_owned(),
+                    elapsed_ms: None,
+                    retry_after_ms,
+                })
+            }
+            Err(crate::vision_runtime::DescribeFailure::Timeout) => {
+                Ok(crate::protocol::VisionTestResponse {
+                    state: "timeout".to_owned(),
+                    elapsed_ms: None,
+                    retry_after_ms: None,
+                })
+            }
+            Err(crate::vision_runtime::DescribeFailure::Auth) => {
+                Ok(crate::protocol::VisionTestResponse {
+                    state: "text-only".to_owned(),
+                    elapsed_ms: None,
+                    retry_after_ms: None,
+                })
+            }
+            Err(crate::vision_runtime::DescribeFailure::Other(_)) => {
+                Ok(crate::protocol::VisionTestResponse {
+                    state: "text-only".to_owned(),
+                    elapsed_ms: None,
+                    retry_after_ms: None,
+                })
+            }
+        }
+    }
+
+    /// 读/再查一次屏幕录制权限；只读，不弹系统框。
+    pub(crate) async fn screen_permission(
+        &self,
+        _request: crate::protocol::ScreenPermissionRequest,
+    ) -> Result<crate::protocol::ScreenPermissionResponse, crate::error::ServiceError> {
+        let state = match crate::vision_tools::SystemScreenPermission.check() {
+            crate::vision_tools::ScreenPermissionState::Granted => {
+                crate::protocol::ScreenPermissionState::Granted
+            }
+            crate::vision_tools::ScreenPermissionState::Denied => {
+                crate::protocol::ScreenPermissionState::Denied
+            }
+            crate::vision_tools::ScreenPermissionState::Unknown => {
+                crate::protocol::ScreenPermissionState::Unknown
+            }
+        };
+        Ok(crate::protocol::ScreenPermissionResponse {
+            state,
+            settings_url: crate::vision_tools::SCREEN_SETTINGS_URL.to_owned(),
+        })
     }
 }

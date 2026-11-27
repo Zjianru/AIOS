@@ -183,6 +183,8 @@ impl ServiceHost {
             | Call::ExaKeyCheck(_)
             | Call::ExaKeyDelete(_)
             | Call::SettingsUpdate(_)
+            | Call::VisionTest(_)
+            | Call::ScreenPermission(_)
             | Call::PluginList(_)
             | Call::PluginSet(_)
             | Call::FileReadBytes(_)

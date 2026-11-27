@@ -4,6 +4,7 @@
 //! 文件，只用于第一次发送时选文字。两者都不改会话日志，也不进长期记忆。
 
 mod notes;
+pub mod ops;
 mod settings;
 mod text;
 

@@ -185,7 +185,7 @@ const RECOVERY_NOTE: &str = "AIOS 在这个任务进行中重启了。先看当�
 const BASH_JOB_TOOLS: [&str; 4] = ["bash", "job_output", "job_list", "job_kill"];
 
 /// 只读 9 件：开关打开也不能给只读任务加。
-const READ_ONLY_TOOLS: [&str; 12] = [
+const READ_ONLY_TOOLS: [&str; 26] = [
     "read",
     "glob",
     "grep",
@@ -198,10 +198,24 @@ const READ_ONLY_TOOLS: [&str; 12] = [
     "task_handback",
     "task_ledger_note",
     "task_ledger_history",
+    "vision_describe",
+    "vision_bootstrap",
+    "vision_ground",
+    "vision_detect",
+    "vision_crop",
+    "vision_pixel_diff",
+    "vision_colors",
+    "vision_ocr",
+    "vision_long_screenshot_ocr",
+    "vision_trace",
+    "vision_extract_foreground",
+    "vision_html_screenshot",
+    "vision_screenshot",
+    "vision_present",
 ];
 
 /// 写任务 15 件（关着 bash；含 office_read/office_create）。
-const WRITE_TOOLS: [&str; 15] = [
+const WRITE_TOOLS: [&str; 30] = [
     "read",
     "glob",
     "grep",
@@ -217,10 +231,25 @@ const WRITE_TOOLS: [&str; 15] = [
     "task_handback",
     "task_ledger_note",
     "task_ledger_history",
+    "vision_describe",
+    "vision_bootstrap",
+    "vision_ground",
+    "vision_detect",
+    "vision_crop",
+    "vision_pixel_diff",
+    "vision_colors",
+    "vision_ocr",
+    "vision_long_screenshot_ocr",
+    "vision_trace",
+    "vision_extract_foreground",
+    "vision_html_screenshot",
+    "vision_screenshot",
+    "vision_present",
+    "vision_materialize",
 ];
 
 /// 写任务 19 件（开着 bash：15 件加 bash 和后台任务三件）。
-const WRITE_BASH_TOOLS: [&str; 19] = [
+const WRITE_BASH_TOOLS: [&str; 34] = [
     "read",
     "glob",
     "grep",
@@ -240,6 +269,21 @@ const WRITE_BASH_TOOLS: [&str; 19] = [
     "task_handback",
     "task_ledger_note",
     "task_ledger_history",
+    "vision_describe",
+    "vision_bootstrap",
+    "vision_ground",
+    "vision_detect",
+    "vision_crop",
+    "vision_pixel_diff",
+    "vision_colors",
+    "vision_ocr",
+    "vision_long_screenshot_ocr",
+    "vision_trace",
+    "vision_extract_foreground",
+    "vision_html_screenshot",
+    "vision_screenshot",
+    "vision_present",
+    "vision_materialize",
 ];
 
 fn sorted(names: impl IntoIterator<Item = impl Into<String>>) -> Vec<String> {

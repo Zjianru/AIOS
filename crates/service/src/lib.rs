@@ -94,6 +94,7 @@ mod session_select;
 mod settings_surface;
 mod status;
 mod vision_runtime;
+mod vision_tools;
 mod web;
 pub mod work;
 mod worktree;
@@ -128,6 +129,8 @@ pub use root::{
 };
 pub use root_lifecycle::RootHost;
 pub use session_host::ServiceHost;
+#[doc(hidden)]
+pub use vision_tools::set_test_screen_permission;
 
 #[cfg(test)]
 #[path = "disabled_tests.rs"]

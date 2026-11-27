@@ -97,9 +97,10 @@ async fn no_chain_omitted_line_carries_the_attachment_id_and_stays_frozen() {
         first_text.contains("attachments: ") && first_text.contains(&id),
         "D120 行要带附件 id：{first_text}"
     );
+    let first_omitted = omitted_text(&first[0]);
     assert!(
-        !first_text.contains("vision_describe"),
-        "没填链时不要宣传工具：{first_text}"
+        !first_omitted.contains("vision_describe"),
+        "没填链时 D120 行不要宣传工具：{first_omitted}"
     );
     host.dispatch(Call::Send(request("vision-2", &id)))
         .await
@@ -109,7 +110,6 @@ async fn no_chain_omitted_line_carries_the_attachment_id_and_stays_frozen() {
         .await
         .expect("send3");
     let third = wait_request(&server, 3).await;
-    let first_omitted = omitted_text(&first[0]);
     let second_omitted = omitted_text(&second[1]);
     let third_omitted = omitted_text(&third[2]);
     assert_eq!(first_omitted, second_omitted, "第二次请求前缀要逐字不变");

@@ -100,6 +100,10 @@ pub enum Call {
     ExaKeyDelete(ExaKeyRequest),
     /// 写非密钥设置（currency；只写 settings.json）。
     SettingsUpdate(SettingsUpdateRequest),
+    /// 设置页「测试看图」：只测一个指定后端，不换备用。
+    VisionTest(VisionTestRequest),
+    /// 读/再查一次屏幕录制权限（不弹框）。
+    ScreenPermission(ScreenPermissionRequest),
     /// 存一份文字附件（只读副本），返回 id。
     AttachmentPut(AttachmentPutRequest),
     /// 按 id 读回附件（卡片「点开看全文」）。
@@ -188,6 +192,8 @@ pub enum Response {
     ExaKeyDelete(ExaKeyResponse),
     /// 写非密钥设置。
     SettingsUpdate(SettingsUpdateResponse),
+    VisionTest(VisionTestResponse),
+    ScreenPermission(ScreenPermissionResponse),
     AvailableModels(AvailableModelsResponse),
     KeyringRelocate(KeyringRelocateResponse),
     KeyringReopen(KeyringReopenResponse),
