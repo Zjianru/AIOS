@@ -77,7 +77,6 @@ mod error;
 mod events;
 mod exa;
 mod executor;
-mod file_bytes;
 mod input;
 pub(crate) mod kind_output;
 mod ledger;
