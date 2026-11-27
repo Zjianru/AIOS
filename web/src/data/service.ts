@@ -45,6 +45,8 @@ import type { ExecSettingsView } from './generated/ExecSettingsView';
 import type { SettingsUpdateRequest } from './generated/SettingsUpdateRequest';
 import type { SettingsUpdateResponse } from './generated/SettingsUpdateResponse';
 import type { PluginListResponse } from './generated/PluginListResponse';
+import type { FileReadBytesRequest } from './generated/FileReadBytesRequest';
+import type { FileReadBytesResponse } from './generated/FileReadBytesResponse';
 import type { PluginSetRequest } from './generated/PluginSetRequest';
 import type { StatusResponse } from './generated/StatusResponse';
 import type { StopMode } from './generated/StopMode';
@@ -649,6 +651,11 @@ export async function pluginList(): Promise<PluginListResponse> {
 /**  设置 › 插件：打开/关掉一个插件；返回同一份列表视图。 */
 export async function pluginSet(input: PluginSetRequest): Promise<PluginListResponse> {
   return post({ method: 'plugin_set', ...input });
+}
+
+/** T094.3：只读读一个文件的字节（路径或附件 id；预览用）。 */
+export async function fileReadBytes(input: FileReadBytesRequest): Promise<FileReadBytesResponse> {
+  return post({ method: 'file_read_bytes', ...input });
 }
 
 /** 只看一眼可用模型（打开选择器、补价格/窗口/档）：服务端不落盘，「新」的基准也不动。 */

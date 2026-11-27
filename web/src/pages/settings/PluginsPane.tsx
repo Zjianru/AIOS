@@ -10,6 +10,7 @@ import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { Switch } from '@/components/ui/switch';
 import { pluginList, pluginSet, ServiceHttpError, type PluginView } from '@/data/service';
+import { refreshOfficePlugin } from '@/office/plugin';
 
 function reasonOf(error: unknown): string {
   if (error instanceof ServiceHttpError && error.detail) return error.detail;
@@ -45,6 +46,7 @@ export function PluginsPane() {
     try {
       const response = await pluginSet({ id: plugin.id, enabled: next });
       setPlugins(response.plugins);
+      if (plugin.id === 'office') void refreshOfficePlugin();
       toast(next ? plugin.name + ' 已打开' : plugin.name + ' 已关掉', {
         description: next
           ? '下一轮起 Kind/任务能看到 Office 工具。'

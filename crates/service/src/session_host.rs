@@ -185,6 +185,7 @@ impl ServiceHost {
             | Call::SettingsUpdate(_)
             | Call::PluginList(_)
             | Call::PluginSet(_)
+            | Call::FileReadBytes(_)
             | Call::AttachmentPut(_)
             | Call::AttachmentGet(_)
             | Call::FileReferencesList(_)

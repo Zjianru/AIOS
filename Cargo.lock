@@ -2953,6 +2953,7 @@ name = "service"
 version = "0.0.0"
 dependencies = [
  "agent",
+ "base64 0.22.1",
  "calendar",
  "chrono",
  "chrono-tz",
