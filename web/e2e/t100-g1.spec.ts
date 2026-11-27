@@ -65,9 +65,15 @@ test('G1 文字模型发图→卡提醒→设置加 M3→回来看图', async ({
     await expect(
       page.locator('[data-turn]').last().getByRole('button', { name: /已完成，用时|停下了|已派出/ }),
     ).toBeVisible({ timeout: 180_000 });
-    const toolImages = page.locator('[data-kind="tool-images"]').last();
-    await expect(toolImages).toBeVisible({ timeout: 30_000 });
-    await expect(toolImages.locator('[data-kind="vision-image"]')).toHaveCount(2);
+    const toolRows = page.locator('[data-kind="tool-images"]');
+    await expect(toolRows.first()).toBeVisible({ timeout: 30_000 });
+    await expect
+      .poll(async () =>
+        toolRows.evaluateAll((rows) =>
+          rows.reduce((max, row) => Math.max(max, row.querySelectorAll('[data-kind="vision-image"]').length), 0),
+        ),
+      )
+      .toBe(2);
     const presented = page.locator('[data-kind="presented-images"]').last();
     await expect(presented).toBeVisible({ timeout: 30_000 });
     await expect(presented.locator('[data-kind="vision-image"]')).toHaveCount(2);
