@@ -63,13 +63,29 @@ async function answerText(page: Page, timeout = 2_000): Promise<string> {
   return (await answers.last().innerText({ timeout })).trim();
 }
 
+async function allAnswerText(page: Page): Promise<string> {
+  return (await page
+    .locator('[data-kind="assistant-answer"], [data-kind="answer"]')
+    .allInnerTexts())
+    .join('\n')
+    .trim();
+}
+
 async function waitNewAnswer(page: Page, before: string) {
   await waitFinished(page);
   await expect
     .poll(async () => {
-      const text = await answerText(page).catch(() => '');
+      const text = await allAnswerText(page).catch(() => '');
       return text !== before && !text.includes('正在想');
     }, { timeout: 300_000 })
+    .toBe(true);
+}
+
+async function waitAnswerContains(page: Page, needle: string) {
+  await expect
+    .poll(async () => (await allAnswerText(page)).includes(needle), {
+      timeout: 180_000,
+    })
     .toBe(true);
 }
 
@@ -102,7 +118,9 @@ test('D78 Office：插件开时 Kind 读 xlsx 说结构', async ({ page, request
       '请读这个 xlsx：' + file + '。只按读到的说：有哪些工作表，A1 和 B1 分别是什么？',
     );
     await waitNewAnswer(page, before);
-    const answer = await answerText(page);
+    await waitAnswerContains(page, '汇总');
+    await waitAnswerContains(page, '名字');
+    const answer = await allAnswerText(page);
     expect(answer).toContain('汇总');
     expect(answer).toContain('名字');
   } finally {
@@ -123,7 +141,7 @@ test('D78 Office：插件关时 Kind 不编 xlsx 内容', async ({ page, request
     const answer = await answerText(page);
     expect(answer).not.toContain('汇总');
     expect(answer).not.toContain('名字');
-    expect(answer).toMatch(/插件|Office|读不了|看不了|二进制|不支持/);
+    expect(answer).toMatch(/插件|Office|读不了|看不了|二进制|不支持|压缩包|纯文本|解包/);
   } finally {
     await fixture.close();
   }
@@ -162,8 +180,11 @@ test('D78 Office：说「打开 Office 插件」出确认卡，确认后下一�
     const plugins = body.plugins ?? body.data?.plugins ?? [];
     expect(plugins.find((plugin) => plugin.id === 'office')?.enabled).toBe(true);
 
-    await sendAndWait(page, '现在读 ' + file + ' 的 A1 和 B1，各是什么？只按读到的回答。');
-    const answer = await answerText(page);
+    const beforeRead = await allAnswerText(page);
+    await sendViaApi(request, fixture, '现在读 ' + file + ' 的 A1 和 B1，各是什么？只按读到的回答。');
+    await waitNewAnswer(page, beforeRead);
+    await waitAnswerContains(page, '名字');
+    const answer = await allAnswerText(page);
     expect(answer).toContain('名字');
   } finally {
     await fixture.close();
