@@ -30,6 +30,22 @@ test('设置页每个模型有「输入」列：跟目录/文字/文字+图片',
     await expect(reopened).toBeVisible();
     await reopened.getByText('自定义设置').click();
     await expect(reopened.locator('[data-settings="model-input"]').first()).toHaveValue('text+image');
+    // 「文字」覆盖与清空回「跟目录」也各有落点。
+    const reopenedInput = reopened.locator('[data-settings="model-input"]').first();
+    await reopenedInput.selectOption('text');
+    await reopened.getByRole('button', { name: '保存', exact: true }).click();
+    await expect(reopened).toHaveCount(0);
+    await page.getByRole('button', { name: '编辑', exact: true }).first().click();
+    const textOnly = page.locator('[data-settings="editor"]');
+    await textOnly.getByText('自定义设置').click();
+    await expect(textOnly.locator('[data-settings="model-input"]').first()).toHaveValue('text');
+    await textOnly.locator('[data-settings="model-input"]').first().selectOption('');
+    await textOnly.getByRole('button', { name: '保存', exact: true }).click();
+    await expect(textOnly).toHaveCount(0);
+    await page.getByRole('button', { name: '编辑', exact: true }).first().click();
+    const follow = page.locator('[data-settings="editor"]');
+    await follow.getByText('自定义设置').click();
+    await expect(follow.locator('[data-settings="model-input"]').first()).toHaveValue('');
   } finally {
     await fixture.close();
   }
@@ -66,7 +82,16 @@ test('输入框拖入图片：出图片卡（缩略图/名字/大小）', async 
     await expect(binary).toBeVisible({ timeout: 20_000 });
     await expect(binary).toContainText('report.pdf');
     await expect(binary).toContainText('PDF');
+    // 选文件按钮走 hidden input，同样出非文字卡。
+    await page.setInputFiles('[data-kind="composer-file-input"]', {
+      name: 'picked.zip',
+      mimeType: 'application/zip',
+      buffer: Buffer.from([80, 75, 3, 4]),
+    });
+    await expect(page.locator('[data-kind="attachment-binary"]')).toHaveCount(2);
+    await expect(page.locator('[data-kind="attachment-binary"]').last()).toContainText('picked.zip');
   } finally {
     await fixture.close();
   }
 });
+
