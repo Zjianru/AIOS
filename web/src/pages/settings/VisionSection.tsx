@@ -1,5 +1,5 @@
 /**
- * 设置 › 模型与连接 › 看图（T100）：看图模型链、本机读字、截桌面开关。
+ * 设置 › 模型与连接 › 看图：看图模型链、本机读字、截桌面开关。
  * 协议事实来自 ModelSettingsResponse 的 visionModels / screenCapture；动作走 settings-update、
  * vision-test、screen-permission、package-status、package-uninstall。
  */
