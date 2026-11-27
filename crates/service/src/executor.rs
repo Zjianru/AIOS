@@ -3309,7 +3309,7 @@ impl TaskRuntime {
             missing.push(missing_item("CodeMode（只读任务必须为否）"));
         }
         // 工具名单跟着任务的写入范围和 bash 开关走；旧任务冻结的旧名单仍要能接着做：
-        // 账本两件/T028.4 的 task_handback 之前各一版， 之前没有 office_* 的各一版。
+        // 账本两件/task_handback 之前各一版，以及 office_* 之前各一版。
         let (expected, legacy) = expected_tool_lists(task.write_scope.is_some(), task.bash);
         let actual: BTreeSet<&str> = task.tools.iter().map(String::as_str).collect();
         if actual != expected && !legacy.iter().any(|legacy| legacy == &actual) {
