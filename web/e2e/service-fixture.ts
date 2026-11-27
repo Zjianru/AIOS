@@ -152,7 +152,7 @@ export async function startKernelFixture(
     options.taskResult === 'pretext' ||
     options.t029Restart !== undefined ||
     options.t030 !== undefined ||
-    options.t094 !== undefined ||
+    options.officeGen !== undefined ||
     options.t054 === 'oldCard' ||
     options.t054 === 'update' ||
     options.t054 === 'updateWindow' ||

@@ -28,7 +28,7 @@ test('Office 生成：任务出 xlsx，结果卡和交付记录可点开预览�
   request,
 }) => {
   test.setTimeout(240_000);
-  const fixture = await startKernelFixture({ t094: 'office' });
+  const fixture = await startKernelFixture({ officeGen: 'office' });
   try {
     const enabled = await apiPost(request, fixture, {
       method: 'plugin_set',
