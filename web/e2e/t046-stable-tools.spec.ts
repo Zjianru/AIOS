@@ -26,6 +26,20 @@ const KIND_FULL = [
   'aios_query',
   'propose_action',
   'project_create',
+  'vision_describe',
+  'vision_bootstrap',
+  'vision_ground',
+  'vision_detect',
+  'vision_crop',
+  'vision_pixel_diff',
+  'vision_colors',
+  'vision_ocr',
+  'vision_long_screenshot_ocr',
+  'vision_trace',
+  'vision_extract_foreground',
+  'vision_html_screenshot',
+  'vision_screenshot',
+  'vision_present',
   'task_accept',
   'task_status',
   'task_delivery',
@@ -62,6 +76,20 @@ const KIND_FULL_WITH_KEY = [
   'project_create',
   'web_search',
   'web_fetch',
+  'vision_describe',
+  'vision_bootstrap',
+  'vision_ground',
+  'vision_detect',
+  'vision_crop',
+  'vision_pixel_diff',
+  'vision_colors',
+  'vision_ocr',
+  'vision_long_screenshot_ocr',
+  'vision_trace',
+  'vision_extract_foreground',
+  'vision_html_screenshot',
+  'vision_screenshot',
+  'vision_present',
   'task_accept',
   'task_status',
   'task_delivery',
@@ -92,6 +120,20 @@ const THIN_READ_FULL = [
   'task_handback',
   'task_ledger_note',
   'task_ledger_history',
+  'vision_describe',
+  'vision_bootstrap',
+  'vision_ground',
+  'vision_detect',
+  'vision_crop',
+  'vision_pixel_diff',
+  'vision_colors',
+  'vision_ocr',
+  'vision_long_screenshot_ocr',
+  'vision_trace',
+  'vision_extract_foreground',
+  'vision_html_screenshot',
+  'vision_screenshot',
+  'vision_present',
 ];
 
 const THIN_READ_WITH_KEY = [
@@ -106,6 +148,20 @@ const THIN_READ_WITH_KEY = [
   'task_handback',
   'task_ledger_note',
   'task_ledger_history',
+  'vision_describe',
+  'vision_bootstrap',
+  'vision_ground',
+  'vision_detect',
+  'vision_crop',
+  'vision_pixel_diff',
+  'vision_colors',
+  'vision_ocr',
+  'vision_long_screenshot_ocr',
+  'vision_trace',
+  'vision_extract_foreground',
+  'vision_html_screenshot',
+  'vision_screenshot',
+  'vision_present',
 ];
 
 const urlOf = (fixture: { baseUrl: string; token: string }, hash = '#kind') =>
@@ -121,7 +177,7 @@ async function lastToolNames(request: import('@playwright/test').APIRequestConte
   return (body.request?.tools ?? []).map((tool) => String(tool.name ?? ''));
 }
 
-test('Kind：无 Exa key 时全量 30（不含 web_* / write / edit / bash / job_*）', async ({ page, request }) => {
+test('Kind：无 Exa key 时全量 44（不含 web_* / write / edit / bash / job_*）', async ({ page, request }) => {
   test.setTimeout(120_000);
   const fixture = await startKernelFixture({ routeModel: 'replay-uncatalogued-model' });
   try {
@@ -142,7 +198,7 @@ test('Kind：无 Exa key 时全量 30（不含 web_* / write / edit / bash / job
   }
 });
 
-test('ThinAgent：无 Exa key 时只读全量 9（不含 web_*），跨请求一致', async ({ page, request }) => {
+test('ThinAgent：无 Exa key 时只读全量 23（不含 web_*），跨请求一致', async ({ page, request }) => {
   test.setTimeout(180_000);
   const fixture = await startKernelFixture({ taskResult: 'live', routeModel: 'replay-uncatalogued-model' });
   try {
@@ -175,7 +231,7 @@ test('ThinAgent：无 Exa key 时只读全量 9（不含 web_*），跨请求一
   }
 });
 
-test('存了 Exa key：Kind 32 / ThinAgent 11，含 web_*（D73 key 后出现）', async ({ page, request }) => {
+test('存了 Exa key：Kind 46 / ThinAgent 25，含 web_*（D73 key 后出现）', async ({ page, request }) => {
   test.setTimeout(180_000);
   const fixture = await startKernelFixture({
     taskResult: 'live',

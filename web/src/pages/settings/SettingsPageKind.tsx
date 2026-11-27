@@ -162,7 +162,7 @@ export function SettingsPageKind({ view, onChanged }: { view: ModelSettingsView;
         title="让 Kind 替你做这一页上的事：它出卡，你点了才改"
       >
         <Sparkles className="size-3.5" />
-        Kind
+        页 Kind
       </button>
       {open ? (
         <aside
