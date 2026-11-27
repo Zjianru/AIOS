@@ -1,4 +1,4 @@
-//! T094.5 D78：真 key（MiniMax）读 xlsx 结构、插件关/开、插件开关卡。
+//! D78：真 key（MiniMax）读 xlsx 结构、插件关/开、插件开关卡。
 //! 无 key 时跳过；key 从环境取，不落文件/命令行/证据。
 import { copyFile } from 'node:fs/promises';
 import path from 'node:path';
