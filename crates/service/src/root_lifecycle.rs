@@ -87,7 +87,7 @@ pub struct RootHost {
     dream: Option<Arc<crate::memory::DreamRuntime>>,
     /// 测试钩子：根会话没开时也能模拟「Kind 说过这些路径」；生产走会话日志。
     local_paths: Mutex<std::collections::BTreeSet<String>>,
-    /// T100：会话旁注/自动描述；每个根宿主一份。
+    /// 会话旁注/自动描述；每个根宿主一份。
     vision_runtime: crate::vision_runtime::VisionRuntime,
 }
 
@@ -1171,7 +1171,7 @@ impl RootHost {
 }
 
 impl RootHost {
-    /// T100：发消息前准备本会话图片的冻结旁注，交给 Agent 投影。
+    /// 发消息前准备本会话图片的冻结旁注，交给 Agent 投影。
     pub(crate) async fn prepare_vision_notes(&self, message: &model::UserMessage) {
         let session_id = self.session_id.lock().expect("根会话 id 锁被毒化").clone();
         let Some(session_id) = session_id else {

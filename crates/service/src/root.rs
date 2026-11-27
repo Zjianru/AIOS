@@ -231,7 +231,7 @@ pub(crate) const PAGE_LIST: &str = concat!(
 );
 
 /// T078.3：Kind 的分条/表情规则，和页面清单一同进 FixedBlock。
-/// 看图固定说明（T100；静态前缀，随下一次重排生效，不每轮追加）。
+/// 看图固定说明：静态前缀，随下一次重排生效，不每轮追加。
 pub(crate) const KIND_VISION_RULES: &str = "When an image placeholder says the model cannot see it, say plainly that you cannot see the image; never invent its content. If no vision model is configured, tell the user to add one in Settings › Models & Connections › Vision.
 ";
 

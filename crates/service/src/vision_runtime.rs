@@ -1,4 +1,4 @@
-//! 看图运行时：会话旁注、首次自动描述、后端冷却（T100.1）。
+//! 看图运行时：会话旁注、首次自动描述、后端冷却。
 //!
 //! 这里只做「请求前准备」：把本次以及本会话历史图片的冻结文字交给 Agent 投影。
 //! 会话日志里的原图不动；描述链按 settings 里填的顺序试，失败按 DSH 冷却。
@@ -616,12 +616,17 @@ mod tests {
             until >= now + 12_000 && until <= now + 13_000,
             "retry-after 400ms 优先"
         );
-        // 冷却中第二次不再调后端。
-        let notes = runtime
-            .prepare("session-rl", &image_message_id(&image, &second_id()), false)
+        // 冷却中第二/三次（同一附件）不再调后端，旁注逐字相等。
+        let second = runtime
+            .prepare("session-rl", &image_message_id(&image, &first_id()), false)
             .await
             .unwrap();
-        assert!(notes[&second_id()].contains("没有给出描述"));
+        let third = runtime
+            .prepare("session-rl", &image_message_id(&image, &first_id()), false)
+            .await
+            .unwrap();
+        assert_eq!(notes[&first_id()], second[&first_id()]);
+        assert_eq!(notes[&first_id()], third[&first_id()]);
         assert_eq!(describer.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
@@ -663,7 +668,16 @@ mod tests {
             )
             .await
             .unwrap();
+        let third = runtime
+            .prepare(
+                "session-auth",
+                &image_message_id(&image, &first_id()),
+                false,
+            )
+            .await
+            .unwrap();
         assert_eq!(first[&first_id()], second[&first_id()]);
+        assert_eq!(first[&first_id()], third[&first_id()]);
         assert_eq!(describer.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
@@ -757,7 +771,7 @@ mod tests {
             retry_after_ms: None,
         })]);
         let runtime = VisionRuntime::with_describer(dir.path().to_path_buf(), None, describer);
-        runtime
+        let first = runtime
             .prepare(
                 "session-default",
                 &image_message_id(&image, &first_id()),
@@ -765,6 +779,24 @@ mod tests {
             )
             .await
             .unwrap();
+        let second = runtime
+            .prepare(
+                "session-default",
+                &image_message_id(&image, &first_id()),
+                false,
+            )
+            .await
+            .unwrap();
+        let third = runtime
+            .prepare(
+                "session-default",
+                &image_message_id(&image, &first_id()),
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(first[&first_id()], second[&first_id()]);
+        assert_eq!(first[&first_id()], third[&first_id()]);
         let row = vision::VisionModelRef {
             connection: "a".to_owned(),
             model: "m1".to_owned(),
