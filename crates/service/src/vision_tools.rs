@@ -150,13 +150,76 @@ impl VisionTools {
 
     fn read_image(
         &self,
-        id: &str,
+        reference: &str,
     ) -> Result<(Vec<u8>, tools::attachments::StoredAttachment), ToolFailure> {
-        let stored = tools::attachments::read(&self.data_dir, id)
-            .map_err(|error| ToolFailure::coded("ATTACHMENT_NOT_FOUND", error.to_string()))?;
-        let bytes = std::fs::read(&stored.path)
-            .map_err(|error| ToolFailure::plain(format!("读附件失败：{error}")))?;
-        Ok((bytes, stored))
+        // 标准附件 id；其次同内容裸 hex；再按文件名/绝对路径找最新只读副本（模型常拿名字）。
+        if let Ok(stored) = tools::attachments::read(&self.data_dir, reference) {
+            let bytes = std::fs::read(&stored.path)
+                .map_err(|error| ToolFailure::plain(format!("读附件失败：{error}")))?;
+            return Ok((bytes, stored));
+        }
+        let direct = std::path::Path::new(reference);
+        if direct.is_file() {
+            let bytes = std::fs::read(direct)
+                .map_err(|error| ToolFailure::plain(format!("读图片失败：{error}")))?;
+            return Ok((
+                bytes,
+                tools::attachments::StoredAttachment {
+                    id: reference.to_owned(),
+                    name: direct.file_name().map_or_else(
+                        || reference.to_owned(),
+                        |name| name.to_string_lossy().into_owned(),
+                    ),
+                    bytes: 0,
+                    path: direct.to_path_buf(),
+                    mime: tools::attachments::mime_for_name(reference),
+                },
+            ));
+        }
+        let name = direct
+            .file_name()
+            .map_or(reference, |name| name.to_str().unwrap_or(reference));
+        let files = self.data_dir.join("attachments").join("v1").join("files");
+        let mut matches = Vec::new();
+        if let Ok(prefixes) = std::fs::read_dir(&files) {
+            for prefix in prefixes.flatten() {
+                if let Ok(hashes) = std::fs::read_dir(prefix.path()) {
+                    for hash in hashes.flatten() {
+                        let candidate = hash.path().join(name);
+                        if candidate.is_file() {
+                            matches.push(candidate);
+                        }
+                    }
+                }
+            }
+        }
+        let path = matches
+            .into_iter()
+            .max_by_key(|path| {
+                std::fs::metadata(path)
+                    .and_then(|meta| meta.modified())
+                    .ok()
+            })
+            .ok_or_else(|| {
+                ToolFailure::coded("ATTACHMENT_NOT_FOUND", format!("找不到附件：{reference}"))
+            })?;
+        let bytes = std::fs::read(&path)
+            .map_err(|error| ToolFailure::plain(format!("读图片失败：{error}")))?;
+        let id = path
+            .parent()
+            .and_then(std::path::Path::file_name)
+            .map(|hex| format!("sha256:{}", hex.to_string_lossy()))
+            .unwrap_or_else(|| reference.to_owned());
+        Ok((
+            bytes,
+            tools::attachments::StoredAttachment {
+                id,
+                name: name.to_owned(),
+                bytes: 0,
+                mime: tools::attachments::mime_for_name(name),
+                path,
+            },
+        ))
     }
 
     fn store_png(
@@ -913,6 +976,33 @@ mod tests {
                 result.error_code.as_deref(),
                 Some("VISION_CHROME_UNAVAILABLE")
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn tools_accept_attachment_file_names_and_paths() {
+        let (dir, tools, session) = setup(ScreenPermissionState::Denied);
+        let stored =
+            tools::attachments::store(dir.path(), "红块.png", &vision::ops::test_image().unwrap())
+                .unwrap();
+        let context = tool_context(&dir, session);
+        let crop = tools
+            .readonly()
+            .into_iter()
+            .find(|tool| tool.name() == "vision_crop")
+            .unwrap();
+        for reference in [
+            stored.name.clone(),
+            stored.path.to_string_lossy().into_owned(),
+        ] {
+            let result = execute(
+                crop.clone(),
+                &context,
+                json!({"attachment_id": reference, "bbox": [0, 0, 500, 500]}),
+            )
+            .await;
+            assert!(!result.is_error, "{}", result.content);
+            assert_eq!(result.meta.unwrap()["images"].as_array().unwrap().len(), 1);
         }
     }
 }
