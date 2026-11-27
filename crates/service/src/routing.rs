@@ -45,6 +45,8 @@ impl RootHost {
                         host.agent().set_supports_images(supports);
                     }
                 }
+                // T100：生成本会话图片的冻结旁注；Agent 投影只读这份旁注。
+                self.prepare_vision_notes(&message).await;
                 let guard = self.inner.lock().await;
                 match guard.as_ref() {
                     Some(host) => host

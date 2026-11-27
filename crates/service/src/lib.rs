@@ -93,6 +93,7 @@ mod session_host;
 mod session_select;
 mod settings_surface;
 mod status;
+mod vision_runtime;
 mod web;
 pub mod work;
 mod worktree;

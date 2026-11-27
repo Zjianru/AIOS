@@ -245,6 +245,21 @@ pub(super) fn request_body(
                         unreachable!("上面已单独处理")
                     }
                 };
+                let omitted_ids: Vec<String> = if config.supports_images {
+                    Vec::new()
+                } else {
+                    message
+                        .content
+                        .iter()
+                        .filter_map(|block| match block {
+                            ContentBlock::Image { attachment_id, .. } => {
+                                Some(attachment_id.clone())
+                            }
+                            _ => None,
+                        })
+                        .collect()
+                };
+                let omitted_text = crate::image_omitted_text(&omitted_ids);
                 let mut omitted_image = false;
                 let content: Vec<WireBlock> = message
                     .content
@@ -269,7 +284,7 @@ pub(super) fn request_body(
                                 }
                                 omitted_image = true;
                                 return Ok(Some(WireBlock::Text {
-                                    text: image_omitted_text().to_owned(),
+                                    text: omitted_text.clone(),
                                 }));
                             }
                             other => other,

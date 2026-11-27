@@ -1150,6 +1150,110 @@ pub struct ModelSettingsResponse {
     pub disabled_hits: Vec<Vec<String>>,
     /// 每个连接现在存下的厂商列表，键是连接 id（没存过的连接不出现）。
     pub listed: std::collections::BTreeMap<String, ListedModels>,
+    /// 看图模型链（顺序即尝试顺序）；空表 = 没填。
+    #[serde(rename = "visionModels", default)]
+    pub vision_models: Vec<VisionModelRefView>,
+    /// 截桌面隐私开关；默认关。
+    #[serde(rename = "screenCapture", default)]
+    pub screen_capture: bool,
+}
+
+/// 设置页的一个看图后端；只带页面需要的连接 id + 模型 id。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct VisionModelRefView {
+    pub connection: String,
+    pub model: String,
+}
+
+/// 测试看图：对一个链内模型发一张内置测试图，不走备用（协议 36）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct VisionTestRequest {
+    pub connection: String,
+    pub model: String,
+}
+
+/// 测试看图结果：正常（带秒数）/只认文字/限流/超时；不写设置、不写会话。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct VisionTestResponse {
+    /// normal | text-only | rate-limited | timeout
+    pub state: String,
+    #[serde(rename = "elapsedMs", default, skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<u64>,
+    #[serde(
+        rename = "retryAfterMs",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub retry_after_ms: Option<u64>,
+}
+
+/// 录屏权限状态（协议 36 只读；打开开关时的请求走同一形状）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "kebab-case")]
+pub enum ScreenPermissionState {
+    Granted,
+    Denied,
+    Unknown,
+}
+
+/// 读/再查一次录屏权限；不弹系统框。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ScreenPermissionRequest {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ScreenPermissionResponse {
+    pub state: ScreenPermissionState,
+    /// 打开系统设置隐私页的深链。
+    #[serde(rename = "settingsUrl")]
+    pub settings_url: String,
+}
+
+/// 包状态（没装/下载/核对/已装/失败）；设置页和安装卡读同一份。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct PackageStatusView {
+    pub id: String,
+    pub version: String,
+    /// not-installed | downloading | verifying | installed | failed
+    pub state: String,
+    #[serde(rename = "doneBytes", default)]
+    pub done_bytes: u64,
+    #[serde(rename = "totalBytes", default)]
+    pub total_bytes: u64,
+    #[serde(
+        rename = "installedAt",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub installed_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct PackageStatusRequest {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct PackageStatusResponse {
+    pub packages: Vec<PackageStatusView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct PackageUninstallRequest {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct PackageUninstallResponse {
+    pub removed: bool,
+}
+
+/// 确认卡动作的进度（协议 36：ActionOutcome 的 note/progress 走这里）。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+pub struct ActionProgress {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<f64>,
 }
 
 /// 一个连接存下的厂商模型列表（获取时按连接存；页面小标签用它）。
@@ -1365,6 +1469,20 @@ pub struct SettingsUpdateRequest {
     /// 默认角色的 bash 开关（D85）；None = 不改。只影响之后派的任务。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bash: Option<bool>,
+    /// 看图模型链；None = 不改，空表 = 清空。
+    #[serde(
+        default,
+        rename = "visionModels",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub vision_models: Option<Vec<VisionModelRefView>>,
+    /// 截桌面开关；None = 不改。
+    #[serde(
+        default,
+        rename = "screenCapture",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub screen_capture: Option<bool>,
 }
 
 /// 设置 › 执行 的当前值（页面读回用；席位已夹在 1–16）。
@@ -1381,6 +1499,10 @@ pub struct SettingsUpdateResponse {
     pub currency: String,
     #[serde(rename = "exec")]
     pub exec: ExecSettingsView,
+    #[serde(rename = "visionModels", default)]
+    pub vision_models: Vec<VisionModelRefView>,
+    #[serde(rename = "screenCapture", default)]
+    pub screen_capture: bool,
 }
 
 /// 页面异常 / 事件流重连上报：只记 web 的 ops，不进会话日志；正文限长由载体截。
@@ -1979,7 +2101,7 @@ pub struct ActionActResponse {
 ///
 /// 连接上的旧价格乘数后来整条删掉，不升版本：两个请求里的这个字段本来就可省略，旧页再发
 /// 由 serde 当未知字段忽略；响应里少了它，旧页读到 undefined 也不会拿去定价。
-pub const PROTOCOL_VERSION: u64 = 35;
+pub const PROTOCOL_VERSION: u64 = 36;
 
 /// 日历读取：不带 appointmentId 读全部；带 week 时额外给那周的计划点。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]

@@ -34,6 +34,9 @@ pub struct Settings {
     /// 插件开关；文件里缺这一节按默认全关读。
     #[serde(default)]
     pub plugins: PluginsSettings,
+    /// 看图设置；文件里缺这一节按空链/关读。
+    #[serde(default)]
+    pub vision: vision::VisionSettings,
 }
 
 /// 插件开关：官方插件默认全关。
@@ -101,6 +104,7 @@ impl Default for Settings {
             disabled_models: Vec::new(),
             exec: ExecSettings::default(),
             plugins: PluginsSettings::default(),
+            vision: vision::VisionSettings::default(),
         }
     }
 }

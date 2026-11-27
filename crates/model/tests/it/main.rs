@@ -6,6 +6,7 @@ mod common;
 mod credential_source;
 mod disabled_admit;
 mod http_proxy;
+mod image_projection;
 mod learning;
 mod model_select;
 mod tool_projection;

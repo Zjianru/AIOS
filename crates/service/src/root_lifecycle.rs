@@ -87,6 +87,8 @@ pub struct RootHost {
     dream: Option<Arc<crate::memory::DreamRuntime>>,
     /// 测试钩子：根会话没开时也能模拟「Kind 说过这些路径」；生产走会话日志。
     local_paths: Mutex<std::collections::BTreeSet<String>>,
+    /// T100：会话旁注/自动描述；每个根宿主一份。
+    vision_runtime: crate::vision_runtime::VisionRuntime,
 }
 
 impl RootHost {
@@ -193,6 +195,10 @@ impl RootHost {
                 task_runtime.clone(),
             ))
         });
+        let vision_runtime = crate::vision_runtime::VisionRuntime::new(
+            options.data_dir.clone(),
+            options.identity.clone(),
+        );
         let host = Self {
             local_paths: Mutex::new(std::collections::BTreeSet::new()),
             inner,
@@ -212,6 +218,7 @@ impl RootHost {
             root_connection: Mutex::new(None),
             memory,
             dream,
+            vision_runtime,
         };
         // 做梦开始/结束时推 memory/changed，记忆页收到就重读（不靠轮询）。
         if let (Some(dream), Some(memory)) = (&host.dream, &host.memory) {
@@ -1160,5 +1167,32 @@ impl RootHost {
             .as_ref()
             .map(|host| host.agent().session_events_from(0))
             .unwrap_or_default()
+    }
+}
+
+impl RootHost {
+    /// T100：发消息前准备本会话图片的冻结旁注，交给 Agent 投影。
+    pub(crate) async fn prepare_vision_notes(&self, message: &model::UserMessage) {
+        let session_id = self.session_id.lock().expect("根会话 id 锁被毒化").clone();
+        let Some(session_id) = session_id else {
+            return;
+        };
+        let main_supports = {
+            let guard = self.inner.lock().await;
+            guard
+                .as_ref()
+                .is_some_and(|host| host.agent().supports_images())
+        };
+        let notes = if main_supports {
+            None
+        } else {
+            self.vision_runtime
+                .prepare(&session_id, message, false)
+                .await
+        };
+        let guard = self.inner.lock().await;
+        if let Some(host) = guard.as_ref() {
+            host.agent().set_image_notes(notes);
+        }
     }
 }

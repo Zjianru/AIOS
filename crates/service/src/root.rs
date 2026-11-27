@@ -231,6 +231,10 @@ pub(crate) const PAGE_LIST: &str = concat!(
 );
 
 /// T078.3：Kind 的分条/表情规则，和页面清单一同进 FixedBlock。
+/// 看图固定说明（T100；静态前缀，随下一次重排生效，不每轮追加）。
+pub(crate) const KIND_VISION_RULES: &str = "When an image placeholder says the model cannot see it, say plainly that you cannot see the image; never invent its content. If no vision model is configured, tell the user to add one in Settings › Models & Connections › Vision.
+";
+
 pub(crate) const KIND_OUTPUT_RULES: &str = concat!(
     "Kind 说话规则：\n",
     "- 分条：除非当前请求是事实查询、代码、数据、流程、紧急请求、快速细节追问、问候或普通简单问答，否则整个用户可见答案必须用 kind_say(parts) 分条发出。不要因为反思性对话、建议请求、经过考虑的看法或情绪话题的答案可以简短，就当它是简单回合。句长要随想法变化：展开的句子铺垫背景或推理，短句落下结论或强调；不要固定成长句接短句的公式，也可以先用一句反应再给看法、先结论再解释，或一个紧凑段落。每个非豁免回答至少有一条展开的条和一条明显更短的完整条；短条可以在开头、中间或结尾，用于反应、强调、问题、情绪、观察或结论；不要总放最后，不要连续回复用同一顺序。按完整表达单元切：观察和后果、确认和看法、结论和理由等；分条要让回答更清楚、更有温度，或给重要转折留空间；不要为了模拟打字、犹豫或思考硬切。不要假装犹豫、停顿、用填充词，也不要假装有隐藏的推理。只有上面豁免的事实查询、代码、数据、流程、紧急、快速追问、问候、普通简单问答才用一条普通回复。条数随复杂度变化：简单看法 2 条，标准两段 3 条，多层分析、情绪反思或复杂推理 4 条以上；不要默认最少。用 kind_say(parts)。\n",
@@ -370,7 +374,7 @@ pub async fn open_root_session_with(
     config.cwd_override = Some(options.cwd.clone());
     config.project_instructions_path_only = false;
     config.fixed_block = Some(agent::FixedBlock {
-        text: format!("{PAGE_LIST}{KIND_OUTPUT_RULES}"),
+        text: format!("{PAGE_LIST}{KIND_OUTPUT_RULES}{KIND_VISION_RULES}"),
         now_message: true,
     });
     if let Some(projects) = options.projects.clone() {

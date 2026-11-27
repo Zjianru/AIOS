@@ -1907,6 +1907,8 @@ async fn task_read_reports_interrupted_and_restart_pending_until_kind_is_told() 
         paused: Some(false),
         seats: None,
         bash: None,
+        vision_models: None,
+        screen_capture: None,
     }))
     .await
     .expect("开闸");

@@ -30,5 +30,7 @@ mod settings;
 mod status;
 mod task_read;
 mod tasks;
+mod vision_notes;
+mod vision_settings;
 mod work_graph_fixture;
 mod work_snapshot_measure;

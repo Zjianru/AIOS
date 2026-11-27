@@ -630,6 +630,16 @@ impl Agent {
         self.inner.model.set_supports_images(supports);
     }
 
+    /// 当前主模型能不能看图（装配/运行时覆盖后的值）。
+    pub fn supports_images(&self) -> bool {
+        self.inner.model.config().supports_images
+    }
+
+    /// 设置/清空本轮图片投影的会话旁注；服务在发消息前按会话旁注文件准备。
+    pub fn set_image_notes(&self, notes: Option<std::collections::BTreeMap<String, String>>) {
+        *self.inner.image_notes.lock().expect("看图旁注锁被毒化") = notes;
+    }
+
     /// 新会话上启动 agent（会话日志由 store 建好，尚无事件）。
     ///
     /// 配置非法时在建之前返回 Err（不清理 spill、不动工具集、不留下驱动任务）。

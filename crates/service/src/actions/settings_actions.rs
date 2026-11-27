@@ -137,6 +137,8 @@ impl ActionKind for SettingsUpdateAction {
                 paused: None,
                 seats,
                 bash,
+                vision_models: None,
+                screen_capture: None,
             })
             .await
             .map_err(|error| error.to_string())?;

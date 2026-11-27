@@ -80,6 +80,8 @@ pub(crate) struct Inner {
 
     pub(crate) model: DeepSeek,
     pub(crate) tools: ToolSet,
+    /// 本轮图片投影用的会话旁注（attachmentId → 冻结文字）；None = 不投影。
+    pub(crate) image_notes: Mutex<Option<std::collections::BTreeMap<String, String>>>,
     /// 加载记录的状态（已经记过的工具名）；续接时从日志重建。
     pub(crate) tool_gate: Mutex<crate::tool_gate::ToolRegistryState>,
     /// 会话级工具状态（观察表/spill/任务注册表）；续接时新建，不继承上一次。
@@ -502,6 +504,7 @@ impl Inner {
             stop_after_report: AtomicBool::new(false),
             model,
             tools,
+            image_notes: Mutex::new(None),
             tool_gate,
             tool_session,
             max_parallel_tool_calls: config.max_parallel_tool_calls,
