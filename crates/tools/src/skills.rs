@@ -1019,7 +1019,9 @@ mod guide_tests {
             "取消要走登记的 cancel_tasks"
         );
         assert!(parsed.body.contains("不要扩 task_stop"), "不能扩 task_stop");
-        for page in ["现在", "Kind", "工作", "任务", "监控", "记忆", "设置"] {
+        for page in [
+            "现在", "Kind", "工作", "任务", "项目", "阅读", "插件", "监控", "记忆", "设置",
+        ] {
             assert!(parsed.body.contains(page), "说明书漏页 {page}");
         }
         for card in ["结果卡", "确认卡", "提问卡", "接续卡", "约定到点条"] {
@@ -1038,6 +1040,9 @@ mod guide_tests {
         assert!(parsed.body.contains("这是你的判断"), "判断卡要写对象");
         assert!(parsed.body.contains("key 值"), "key 例外要写清");
         assert!(parsed.body.contains("要先加载对应 skill"), "先加载 skill");
+        assert!(parsed.body.contains("设置 › 插件"), "插件页写进指南");
+        assert!(parsed.body.contains("set_plugin"), "插件开关走登记动作");
+        assert!(parsed.body.contains("打开/关掉影响"), "卡上写影响");
         assert!(
             !parsed
                 .body

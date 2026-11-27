@@ -61,7 +61,7 @@ fn bundled_skills_follow_the_assembled_tools() {
     }
     let skills = bundled_skills_for(&root);
     let names: Vec<&str> = skills.iter().map(|skill| skill.name).collect();
-    assert_eq!(names, vec!["aios-settings", "web"]);
+    assert_eq!(names, vec!["aios-settings", "aios-guide", "web"]);
     let web = skills.iter().find(|skill| skill.name == "web").unwrap();
     assert!(
         web.unavailable_hint
