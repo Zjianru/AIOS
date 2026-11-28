@@ -8,7 +8,6 @@
 //! 按职责分：`search`（模型面与结果排版）、`exa`（Exa 请求与响应）、`fetch`（读网页）、
 //! `url_policy`（URL/地址/重定向规则）。
 
-mod exa;
 mod fetch;
 pub(crate) mod providers;
 mod resolver;

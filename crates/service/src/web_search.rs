@@ -153,14 +153,6 @@ impl RootHost {
         }))
     }
 
-    /// 工具门：选中那家能不能开工；读不出/没选都算不开。
-    pub(crate) fn web_search_ready(&self) -> bool {
-        self.selected_search()
-            .ok()
-            .flatten()
-            .is_some_and(|selected| selected.missing.is_none())
-    }
-
     /// 设置页读状态（不含 key 正文）。
     pub(crate) async fn web_search_read(&self) -> Result<WebSearchReadResponse, ServiceError> {
         let settings = self.web_settings();

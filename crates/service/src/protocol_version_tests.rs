@@ -1,10 +1,10 @@
 use super::*;
 
 #[test]
-fn protocol_version_is_37() {
+fn protocol_version_is_38() {
     assert_eq!(
-        PROTOCOL_VERSION, 37,
-        "协议 37：去币种，设置/搜索/规则/通知接口面"
+        PROTOCOL_VERSION, 38,
+        "协议 38：搜索服务商协议面"
     );
 }
 

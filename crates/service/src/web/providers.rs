@@ -287,7 +287,7 @@ fn source(
     }
 }
 
-async fn response_json(response: reqwest::Response, provider: &str) -> Result<Value, SearchError> {
+async fn response_json(response: reqwest::Response) -> Result<Value, SearchError> {
     let status = response.status();
     if !status.is_success() {
         return Err(SearchError::Http(status.as_u16()));
@@ -401,7 +401,7 @@ async fn exa(
         .send()
         .await
         .map_err(map_transport)?;
-    let value = response_json(response, "Exa").await?;
+    let value = response_json(response).await?;
     Ok(collect(array(&value, "results").iter().map(|item| {
         let summary = item
             .get("highlights")
@@ -440,7 +440,7 @@ async fn brave(
         .send()
         .await
         .map_err(map_transport)?;
-    let value = response_json(response, "Brave Search").await?;
+    let value = response_json(response).await?;
     let rows = value
         .get("web")
         .map(|web| array(web, "results"))
@@ -472,7 +472,7 @@ async fn serper(
         .send()
         .await
         .map_err(map_transport)?;
-    let value = response_json(response, "Serper").await?;
+    let value = response_json(response).await?;
     Ok(collect(array(&value, "organic").iter().map(|item| {
         Some(source(
             js(item, "link"),
@@ -576,7 +576,7 @@ async fn searxng(
         request = request.basic_auth(user, Some(password));
     }
     let response = request.send().await.map_err(map_transport)?;
-    let value = response_json(response, "SearXNG").await?;
+    let value = response_json(response).await?;
     Ok(collect(array(&value, "results").iter().map(|item| {
         let summary = optional(item.get("content").unwrap_or(&Value::Null)).unwrap_or_default();
         Some(source(
@@ -602,7 +602,7 @@ async fn tavily(
         .send()
         .await
         .map_err(map_transport)?;
-    let value = response_json(response, "Tavily").await?;
+    let value = response_json(response).await?;
     Ok(collect(array(&value, "results").iter().map(|item| {
         Some(source(
             js(item, "url"),
@@ -628,7 +628,7 @@ async fn exa_mcp(
         request = request.bearer_auth(key);
     }
     let response = request.json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"web_search","arguments":{"query":query}}})).send().await.map_err(map_transport)?;
-    let value = response_json(response, "Exa MCP").await?;
+    let value = response_json(response).await?;
     let text = value
         .get("result")
         .and_then(|result| result.get("content"))
@@ -674,7 +674,7 @@ async fn bocha(
         .send()
         .await
         .map_err(map_transport)?;
-    let value = response_json(response, "博查").await?;
+    let value = response_json(response).await?;
     let rows = value
         .get("data")
         .map(|data| data.get("webPages"))
@@ -700,7 +700,7 @@ async fn zhipu(
     timeout: Duration,
 ) -> Result<Vec<SearchSource>, SearchError> {
     let response = client.post(base).timeout(timeout).bearer_auth(key.unwrap_or("")).json(&serde_json::json!({"search_query":query,"search_engine":"search_std","search_intent":false})).send().await.map_err(map_transport)?;
-    let value = response_json(response, "智谱").await?;
+    let value = response_json(response).await?;
     Ok(collect(array(&value, "search_result").iter().map(|item| {
         Some(source(
             js(item, "link"),
@@ -725,7 +725,7 @@ async fn deepseek(
         .send()
         .await
         .map_err(map_transport)?;
-    let value = response_json(response, "DeepSeek").await?;
+    let value = response_json(response).await?;
     Ok(collect(array(&value, "results").iter().map(|item| {
         Some(source(
             js(item, "url"),
@@ -753,7 +753,7 @@ async fn yuanbao(
         .send()
         .await
         .map_err(map_transport)?;
-    let value = response_json(response, "腾讯元宝").await?;
+    let value = response_json(response).await?;
     let pages = value
         .get("Response")
         .and_then(|response| response.get("Pages"))
@@ -792,7 +792,7 @@ async fn stepfun(
         .send()
         .await
         .map_err(map_transport)?;
-    let value = response_json(response, "阶跃星辰").await?;
+    let value = response_json(response).await?;
     Ok(collect(array(&value, "results").iter().map(|item| {
         Some(source(
             js(item, "url"),
@@ -819,7 +819,7 @@ async fn jina(
         .send()
         .await
         .map_err(map_transport)?;
-    let value = response_json(response, "Jina").await?;
+    let value = response_json(response).await?;
     let rows = value
         .get("data")
         .or_else(|| value.get("results"))
@@ -845,7 +845,7 @@ async fn firecrawl(
     timeout: Duration,
 ) -> Result<Vec<SearchSource>, SearchError> {
     let response = client.post(format!("{base}/v2/search")).timeout(timeout).bearer_auth(key.unwrap_or("")).json(&serde_json::json!({"query":query,"limit":WEB_SEARCH_MAX_RESULTS,"scrapeOptions":{"formats":["markdown"]}})).send().await.map_err(map_transport)?;
-    let value = response_json(response, "Firecrawl").await?;
+    let value = response_json(response).await?;
     let rows = value
         .get("data")
         .map(|data| array(data, "web"))
@@ -869,7 +869,7 @@ async fn parallel(
     timeout: Duration,
 ) -> Result<Vec<SearchSource>, SearchError> {
     let response = client.post(format!("{base}/v1/search")).timeout(timeout).header("x-api-key", key.unwrap_or("")).json(&serde_json::json!({"objective":query,"search_queries":[query],"advanced_settings":{"max_results":WEB_SEARCH_MAX_RESULTS}})).send().await.map_err(map_transport)?;
-    let value = response_json(response, "Parallel").await?;
+    let value = response_json(response).await?;
     Ok(collect(array(&value, "results").iter().map(|item| {
         let summary = item
             .get("excerpts")
@@ -906,7 +906,7 @@ async fn querit(
         .send()
         .await
         .map_err(map_transport)?;
-    let value = response_json(response, "Querit").await?;
+    let value = response_json(response).await?;
     let rows = value
         .get("results")
         .map(|results| array(results, "result"))
@@ -936,7 +936,7 @@ async fn searchapi(
         .send()
         .await
         .map_err(map_transport)?;
-    let value = response_json(response, "SearchApi").await?;
+    let value = response_json(response).await?;
     Ok(collect(array(&value, "organic_results").iter().map(
         |item| {
             Some(source(
@@ -964,7 +964,7 @@ async fn serpkite(
         .send()
         .await
         .map_err(map_transport)?;
-    let value = response_json(response, "SerpKite").await?;
+    let value = response_json(response).await?;
     let rows = array(&value, "results");
     Ok(collect(rows.iter().map(|item| {
         Some(source(
@@ -991,7 +991,7 @@ async fn serply(
         .send()
         .await
         .map_err(map_transport)?;
-    let value = response_json(response, "Serply").await?;
+    let value = response_json(response).await?;
     Ok(collect(array(&value, "results").iter().map(|item| {
         Some(source(
             js(item, "link"),
@@ -1017,7 +1017,7 @@ async fn desearch(
         .send()
         .await
         .map_err(map_transport)?;
-    let value = response_json(response, "Desearch").await?;
+    let value = response_json(response).await?;
     Ok(collect(array(&value, "data").iter().map(|item| {
         Some(source(
             js(item, "link"),
@@ -1321,4 +1321,133 @@ async fn live_smoke_five_real_channels() {
         !failures.contains(&"duckduckgo"),
         "DuckDuckGo 不许 key，必须真跑通；失败：{failures:?}"
     );
+}
+
+#[cfg(test)]
+mod recorded_contract_tests {
+    use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    struct Case {
+        id: &'static str,
+        method: &'static str,
+        path: &'static str,
+        success: serde_json::Value,
+    }
+
+    async fn server_for(case: &Case, status: u16, body: serde_json::Value) -> MockServer {
+        let server = MockServer::start().await;
+        let response = if status == 200 {
+            if body == serde_json::json!("not-json") {
+                ResponseTemplate::new(200).set_body_string(body.as_str().unwrap_or_default())
+            } else {
+                ResponseTemplate::new(200).set_body_json(body)
+            }
+        } else {
+            ResponseTemplate::new(status)
+        };
+        Mock::given(method(case.method))
+            .and(path(case.path))
+            .respond_with(response)
+            .mount(&server)
+            .await;
+        server
+    }
+
+    fn recorded_cases() -> [Case; 15] {
+        [
+            Case { id: "tavily", method: "POST", path: "/search", success: serde_json::json!({"results":[{"url":"https://example.com/t","title":"T","content":"摘要 T"}]}) },
+            Case { id: "exa-mcp", method: "POST", path: "/", success: serde_json::json!({"result":{"content":[{"text":"{\"results\":[{\"url\":\"https://example.com/m\",\"title\":\"M\",\"content\":\"摘要 M\"}]}"}]}}) },
+            Case { id: "bocha", method: "POST", path: "/v1/web-search", success: serde_json::json!({"code":0,"data":{"webPages":{"value":[{"url":"https://example.com/bc","name":"BC","summary":"摘要 BC"}]}}}) },
+            Case { id: "zhipu", method: "POST", path: "/", success: serde_json::json!({"search_result":[{"link":"https://example.com/z","title":"Z","content":"摘要 Z"}]}) },
+            Case { id: "deepseek", method: "POST", path: "/v1/tools/search", success: serde_json::json!({"results":[{"url":"https://example.com/ds","title":"DS","content":"摘要 DS"}]}) },
+            Case { id: "yuanbao", method: "POST", path: "/SearchPro", success: serde_json::json!({"Response":{"Pages":["{\"url\":\"https://example.com/y\",\"title\":\"Y\",\"content\":\"摘要 Y\"}"]}}) },
+            Case { id: "stepfun", method: "POST", path: "/v1/search", success: serde_json::json!({"results":[{"url":"https://example.com/st","title":"ST","content":"摘要 ST"}]}) },
+            Case { id: "jina", method: "GET", path: "/q", success: serde_json::json!({"data":[{"url":"https://example.com/j","title":"J","content":"摘要 J"}]}) },
+            Case { id: "firecrawl", method: "POST", path: "/v2/search", success: serde_json::json!({"data":{"web":[{"url":"https://example.com/f","title":"F","markdown":"摘要 F"}]}}) },
+            Case { id: "parallel", method: "POST", path: "/v1/search", success: serde_json::json!({"results":[{"url":"https://example.com/p","title":"P","excerpts":["摘要 P"]}]}) },
+            Case { id: "querit", method: "POST", path: "/v1/search", success: serde_json::json!({"results":{"result":[{"url":"https://example.com/q","title":"Q","snippet":"摘要 Q"}]}}) },
+            Case { id: "searchapi", method: "GET", path: "/api/v1/search", success: serde_json::json!({"organic_results":[{"link":"https://example.com/sa","title":"SA","snippet":"摘要 SA"}]}) },
+            Case { id: "serpkite", method: "GET", path: "/v1/search", success: serde_json::json!({"results":[{"link":"https://example.com/sk","title":"SK","snippet":"摘要 SK"}]}) },
+            Case { id: "serply", method: "GET", path: "/v1/search/q=q&num=8", success: serde_json::json!({"results":[{"link":"https://example.com/sp","title":"SP","description":"摘要 SP"}]}) },
+            Case { id: "desearch", method: "GET", path: "/web", success: serde_json::json!({"data":[{"link":"https://example.com/de","title":"DE","snippet":"摘要 DE"}]}) },
+        ]
+    }
+
+    #[tokio::test]
+    async fn fifteen_recorded_providers_parse_success_auth_rate_limit_bad_json_and_timeout() {
+        for case in recorded_cases() {
+            let spec = provider(case.id).unwrap();
+            let server = server_for(&case, 200, case.success.clone()).await;
+            let rows = search_one_with_timeout(
+                spec,
+                &server.uri(),
+                Some("k"),
+                None,
+                "q",
+                Duration::from_secs(2),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{} success: {error:?}", case.id));
+            assert!(!rows.is_empty(), "{} 要有结果", case.id);
+
+            for status in [401, 429] {
+                let server = server_for(&case, status, serde_json::Value::Null).await;
+                let error = search_one_with_timeout(
+                    spec,
+                    &server.uri(),
+                    Some("k"),
+                    None,
+                    "q",
+                    Duration::from_secs(2),
+                )
+                .await
+                .expect_err("非 2xx 必须失败");
+                assert!(
+                    matches!(error, SearchError::Http(got) if got == status),
+                    "{} 期望 HTTP {status}，实际 {error:?}",
+                    case.id
+                );
+            }
+
+            let server = server_for(&case, 200, serde_json::json!("not-json")).await;
+            assert!(
+                matches!(
+                    search_one_with_timeout(
+                        spec,
+                        &server.uri(),
+                        Some("k"),
+                        None,
+                        "q",
+                        Duration::from_secs(2)
+                    )
+                    .await,
+                    Err(SearchError::Body)
+                ),
+                "{} 坏 JSON 要报 Body",
+                case.id
+            );
+
+            let server = MockServer::start().await;
+            Mock::given(method(case.method))
+                .and(path(case.path))
+                .respond_with(
+                    ResponseTemplate::new(200).set_delay(Duration::from_millis(200)),
+                )
+                .mount(&server)
+                .await;
+            let error = search_one_with_timeout(
+                spec,
+                &server.uri(),
+                Some("k"),
+                None,
+                "q",
+                Duration::from_millis(30),
+            )
+            .await
+            .expect_err("超时");
+            assert!(matches!(error, SearchError::Timeout), "{} 超时要映射 Timeout", case.id);
+        }
+    }
 }

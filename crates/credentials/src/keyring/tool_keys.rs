@@ -9,8 +9,6 @@ use super::{
     now_seconds,
 };
 
-/// 签发记录里 Exa 的名字（设置页的签发记录表读它）。
-const EXA_ISSUE_CONNECTION: &str = "Exa";
 /// 验证 Exa key 的签发用途。
 pub const EXA_CHECK_PURPOSE: &str = "设置 · 验证 key";
 
