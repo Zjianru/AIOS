@@ -100,7 +100,10 @@ impl ServiceHost {
     pub async fn dispatch(&self, call: Call) -> Result<Response, ServiceError> {
         match call {
             Call::Send(request) => self.send(request).await.map(Response::Send),
-            Call::WebSearchRead(_)
+            Call::RulesRead(_)
+            | Call::RuleSave(_)
+            | Call::RuleDelete(_)
+            | Call::WebSearchRead(_)
             | Call::WebSearchOpen(_)
             | Call::WebSearchClose(_)
             | Call::WebSearchPrioritySet(_)

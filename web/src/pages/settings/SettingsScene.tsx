@@ -14,10 +14,11 @@ import { ModelSettings } from './ModelSettings';
 import { ExecSettings } from './ExecSettings';
 import { PluginsPane } from './PluginsPane';
 import { AppearanceSettings } from './AppearanceSettings';
+import { RulesSettings } from './RulesSettings';
 import { PageKind } from '@/components/kind/PageKind';
 
 /** 已经做出来的分组；其余仍是第 3 期。 */
-const BUILT = new Set(['look', 'model', 'exec', 'plugins']);
+const BUILT = new Set(['look', 'model', 'exec', 'plugins', 'rules']);
 const GROUPS = SETTINGS_GROUPS.map((group) => ({ ...group, built: BUILT.has(group.id) }));
 
 export function SettingsScene() {
@@ -56,6 +57,8 @@ export function SettingsScene() {
             <ExecSettings />
           ) : current.id === 'look' ? (
             <AppearanceSettings />
+          ) : current.id === 'rules' ? (
+            <RulesSettings />
           ) : current.id === 'plugins' ? (
             <PluginsPane />
           ) : (

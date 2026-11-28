@@ -1,5 +1,7 @@
 //! 规则数据与严格度冲突（T103.3 起步：数据/版本/纯函数；注入与页面待接）。
 
+use crate::ServiceError;
+use crate::root_lifecycle::RootHost;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -153,4 +155,91 @@ mod tests {
         save(dir.path(), &file).unwrap();
         assert_eq!(load(dir.path()), file);
     }
+}
+
+impl RootHost {
+    pub(crate) async fn rules_read(
+        &self,
+    ) -> Result<crate::protocol::RulesReadResponse, ServiceError> {
+        let file = load(&self.options.data_dir);
+        Ok(crate::protocol::RulesReadResponse {
+            version: file.version,
+            conflicts: conflicts(&file.rules),
+            rules: file.rules,
+        })
+    }
+
+    fn rules_write(
+        &self,
+        change: impl FnOnce(&mut RulesFile),
+    ) -> Result<crate::protocol::RulesReadResponse, ServiceError> {
+        let mut file = load(&self.options.data_dir);
+        change(&mut file);
+        file.version = file.version.saturating_add(1);
+        validate(&file.rules)?;
+        save(&self.options.data_dir, &file).map_err(ServiceError::SettingsInvalid)?;
+        Ok(crate::protocol::RulesReadResponse {
+            version: file.version,
+            conflicts: conflicts(&file.rules),
+            rules: file.rules,
+        })
+    }
+
+    pub(crate) async fn rule_save(
+        &self,
+        request: crate::protocol::RuleSaveRequest,
+    ) -> Result<crate::protocol::RulesReadResponse, ServiceError> {
+        let response = self.rules_write(|file| {
+            let mut rule = request.rule.clone();
+            rule.rev = file.version.saturating_add(1);
+            if rule.source.trim().is_empty() {
+                rule.source = "用户".to_owned();
+            }
+            if let Some(existing) = file.rules.iter_mut().find(|item| item.id == rule.id) {
+                *existing = rule;
+            } else {
+                file.rules.push(rule);
+            }
+        })?;
+        self.emit_settings_changed();
+        Ok(response)
+    }
+
+    pub(crate) async fn rule_delete(
+        &self,
+        request: crate::protocol::RulesDeleteRequest,
+    ) -> Result<crate::protocol::RulesReadResponse, ServiceError> {
+        let response = self.rules_write(|file| file.rules.retain(|rule| rule.id != request.id))?;
+        self.emit_settings_changed();
+        Ok(response)
+    }
+}
+
+fn validate(rules: &[Rule]) -> Result<(), ServiceError> {
+    for rule in rules {
+        if rule.id.trim().is_empty()
+            || rule.category.trim().is_empty()
+            || rule.text.trim().is_empty()
+        {
+            return Err(ServiceError::SettingsInvalid(
+                "规则 id/类别/内容不能为空".to_owned(),
+            ));
+        }
+        let scope_ok = rule.scope == "global"
+            || rule
+                .scope
+                .strip_prefix("project:")
+                .is_some_and(|id| !id.trim().is_empty());
+        if !scope_ok {
+            return Err(ServiceError::SettingsInvalid(
+                "规则范围只能是 global 或 project:<id>".to_owned(),
+            ));
+        }
+        if strictness_rank(&rule.strictness).is_none() {
+            return Err(ServiceError::SettingsInvalid(
+                "规则严格度只能是 deny/ask/allow".to_owned(),
+            ));
+        }
+    }
+    Ok(())
 }

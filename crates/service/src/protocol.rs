@@ -98,6 +98,12 @@ pub enum Call {
     ExaKeyCheck(ExaKeyRequest),
     /// 删 Exa 的 key。
     ExaKeyDelete(ExaKeyRequest),
+    /// 读规则（含版本与冲突）。
+    RulesRead(RulesReadRequest),
+    /// 新建/修改一条规则。
+    RuleSave(RuleSaveRequest),
+    /// 删除一条规则。
+    RuleDelete(RulesDeleteRequest),
     /// 读联网搜索服务商状态（不返回 key 正文）。
     WebSearchRead(WebSearchReadRequest),
     /// 开一家服务商（保留 key/地址）。
@@ -214,6 +220,9 @@ pub enum Response {
     ExaKeySave(ExaKeyResponse),
     ExaKeyCheck(ExaKeyResponse),
     ExaKeyDelete(ExaKeyResponse),
+    RulesRead(RulesReadResponse),
+    RuleSave(RulesReadResponse),
+    RuleDelete(RulesReadResponse),
     WebSearchRead(WebSearchReadResponse),
     WebSearchOpen(WebSearchReadResponse),
     WebSearchClose(WebSearchReadResponse),
@@ -1502,6 +1511,31 @@ pub struct ExaKeySaveRequest {
 /// Exa 凭证的视图：存没存、保存时间、上次验证结果。没有 key 正文。
 pub type ExaKeyResponse = credentials::ToolKeyView;
 
+/// 规则只读请求。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct RulesReadRequest {}
+
+/// 新建/修改一条规则；id 为空时客户端应自己给稳定 id。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct RuleSaveRequest {
+    pub rule: crate::rules::Rule,
+}
+
+/// 删除一条规则。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct RulesDeleteRequest {
+    pub id: String,
+}
+
+/// 规则读回：版本、全部规则、当前冲突。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RulesReadResponse {
+    pub version: u64,
+    pub rules: Vec<crate::rules::Rule>,
+    pub conflicts: Vec<crate::rules::RuleConflict>,
+}
+
 /// 联网搜索的只读请求（读状态/检测都只带空体）。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct WebSearchReadRequest {}
@@ -2257,7 +2291,7 @@ pub struct ActionActResponse {
 ///
 /// 连接上的旧价格乘数后来整条删掉，不升版本：两个请求里的这个字段本来就可省略，旧页再发
 /// 由 serde 当未知字段忽略；响应里少了它，旧页读到 undefined 也不会拿去定价。
-pub const PROTOCOL_VERSION: u64 = 39;
+pub const PROTOCOL_VERSION: u64 = 40;
 
 /// 日历读取：不带 appointmentId 读全部；带 week 时额外给那周的计划点。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]

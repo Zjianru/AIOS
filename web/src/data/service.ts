@@ -37,6 +37,8 @@ import type { ProjectUpdateResponse } from './generated/ProjectUpdateResponse';
 import type { TaskSetProjectResponse } from './generated/TaskSetProjectResponse';
 import type { Response } from './generated/Response';
 import type { RewindResponse } from './generated/RewindResponse';
+import type { Rule } from './generated/Rule';
+import type { RulesReadResponse } from './generated/RulesReadResponse';
 import type { RootState } from './generated/RootState';
 import type { ServiceAnswer } from './generated/ServiceAnswer';
 import type { SessionModelSelectRequest } from './generated/SessionModelSelectRequest';
@@ -484,6 +486,21 @@ export async function saveExaKey(key: string): Promise<ToolKeyView> {
 /** 用已存的 key 向 Exa 发一次最小搜索，结果写回 Keyring。 */
 export async function checkExaKey(): Promise<ToolKeyView> {
   return post({ method: 'exa-key-check' });
+}
+
+/** 读规则（含版本与冲突）。 */
+export async function rulesRead(): Promise<RulesReadResponse> {
+  return post({ method: 'rules-read' });
+}
+
+/** 新建/修改一条规则。 */
+export async function ruleSave(rule: Rule): Promise<RulesReadResponse> {
+  return post({ method: 'rule-save', rule });
+}
+
+/** 删除一条规则。 */
+export async function ruleDelete(id: string): Promise<RulesReadResponse> {
+  return post({ method: 'rule-delete', id });
 }
 
 /** 读联网搜索设置（每家的 key 存没存/地址/认证/检查状态；没有 key 正文）。 */

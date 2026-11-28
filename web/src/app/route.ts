@@ -106,6 +106,7 @@ export const SETTINGS_GROUPS: { id: string; name: string }[] = [
   { id: 'kind', name: 'Kind' },
   { id: 'exec', name: '执行' },
   { id: 'plugins', name: '插件' },
+  { id: 'rules', name: '规则' },
   { id: 'notify', name: '通知' },
   { id: 'privacy', name: '隐私与更新' },
   { id: 'monitor', name: '监控' },

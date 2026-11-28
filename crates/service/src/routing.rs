@@ -147,6 +147,9 @@ impl RootHost {
             Call::ExaKeySave(request) => self.exa_key_save(request).await.map(Response::ExaKeySave),
             Call::ExaKeyCheck(_) => self.exa_key_check().await.map(Response::ExaKeyCheck),
             Call::ExaKeyDelete(_) => self.exa_key_delete().await.map(Response::ExaKeyDelete),
+            Call::RulesRead(_) => self.rules_read().await.map(Response::RulesRead),
+            Call::RuleSave(request) => self.rule_save(request).await.map(Response::RuleSave),
+            Call::RuleDelete(request) => self.rule_delete(request).await.map(Response::RuleDelete),
             Call::WebSearchRead(_) => self.web_search_read().await.map(Response::WebSearchRead),
             Call::WebSearchOpen(request) => self
                 .web_search_open(request)
