@@ -74,6 +74,7 @@ const KIND_FULL_WITH_KEY = [
   'aios_query',
   'propose_action',
   'project_create',
+  'web_search_sources',
   'web_search',
   'web_fetch',
   'vision_describe',
@@ -142,6 +143,7 @@ const THIN_READ_WITH_KEY = [
   'grep',
   'skill',
   'todo_write',
+  'web_search_sources',
   'web_search',
   'web_fetch',
   'task_report',
@@ -242,7 +244,7 @@ test('ThinAgent：无 Exa key 时只读全量 23（不含 web_*），跨请求�
   }
 });
 
-test('存了 Exa key：Kind 46 / ThinAgent 25，含 web_*（D73 key 后出现）', async ({ page, request }) => {
+test('存了 Exa key：Kind 47 / ThinAgent 26，含 web_*（D73 key 后出现）', async ({ page, request }) => {
   test.setTimeout(180_000);
   const fixture = await startKernelFixture({
     taskResult: 'live',
@@ -252,12 +254,13 @@ test('存了 Exa key：Kind 46 / ThinAgent 25，含 web_*（D73 key 后出现）
   try {
     // 先存假 Exa key（设置页真实走的同一个服务方法）；下一轮起两件联网工具才进表。
     const saved = await apiPost(request, fixture, {
-      method: 'exa-key-save',
+      method: 'web-search-key-save',
+      id: 'exa',
       key: 'exa-t050-e2e-key',
     });
     expect(saved.ok()).toBe(true);
     const selected = await apiPost(request, fixture, {
-      method: 'web-search-select',
+      method: 'web-search-open',
       id: 'exa',
     });
     expect(selected.ok()).toBe(true);

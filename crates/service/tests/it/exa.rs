@@ -284,11 +284,11 @@ async fn web_skill_and_tools_follow_the_exa_key_in_the_root_session() {
     )
     .await;
     assert!(responses.key.saved);
-    host.dispatch(Call::WebSearchSelect(service::WebSearchSelectRequest {
-        id: Some("exa".to_owned()),
+    host.dispatch(Call::WebSearchOpen(service::WebSearchOpenRequest {
+        id: "exa".to_owned(),
     }))
     .await
-    .expect("选 Exa 作为搜索服务商");
+    .expect("开 Exa 作为搜索服务商");
 
     host.dispatch(Call::Send(service::SendRequest {
         request_id: "t2".to_owned(),

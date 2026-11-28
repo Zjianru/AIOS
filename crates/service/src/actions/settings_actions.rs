@@ -652,3 +652,262 @@ impl ActionKind for ExaKeyDeleteAction {
         })
     }
 }
+pub(crate) struct WebSearchUpdateAction {
+    data_dir: PathBuf,
+}
+
+impl WebSearchUpdateAction {
+    pub(crate) fn new(data_dir: PathBuf) -> Self {
+        Self { data_dir }
+    }
+
+    fn details_object(raw: &Value) -> Result<&serde_json::Map<String, Value>, String> {
+        reject_key_fields(raw)?;
+        raw.as_object()
+            .ok_or_else(|| "details 必须是 JSON 对象".to_owned())
+    }
+
+    fn ids(object: &serde_json::Map<String, Value>, name: &str) -> Result<Vec<String>, String> {
+        let Some(value) = object.get(name) else {
+            return Ok(Vec::new());
+        };
+        let rows = value
+            .as_array()
+            .ok_or_else(|| format!("details.{name} 必须是数组"))?;
+        let mut ids = Vec::new();
+        for row in rows {
+            let id = row
+                .as_str()
+                .ok_or_else(|| format!("details.{name} 里的 id 必须是字符串"))?;
+            if crate::web::providers::provider(id).is_none() {
+                return Err(format!("没有这个搜索服务商：{id}"));
+            }
+            ids.push(id.to_owned());
+        }
+        Ok(ids)
+    }
+}
+
+impl ActionKind for WebSearchUpdateAction {
+    fn name(&self) -> &str {
+        "web_search_update"
+    }
+
+    fn skill(&self) -> &str {
+        "aios-settings"
+    }
+
+    fn details(&self, raw: &Value) -> Result<Value, String> {
+        let object = Self::details_object(raw)?;
+        let mut out = serde_json::Map::new();
+        if object.contains_key("enabled") {
+            out.insert(
+                "enabled".to_owned(),
+                Value::Array(
+                    Self::ids(object, "enabled")?
+                        .into_iter()
+                        .map(Value::String)
+                        .collect(),
+                ),
+            );
+        }
+        if object.contains_key("priority") {
+            out.insert(
+                "priority".to_owned(),
+                Value::Array(
+                    Self::ids(object, "priority")?
+                        .into_iter()
+                        .map(Value::String)
+                        .collect(),
+                ),
+            );
+        }
+        if let Some(schedule) = object.get("schedule") {
+            let schedule = schedule
+                .as_object()
+                .ok_or_else(|| "details.schedule 必须是对象".to_owned())?;
+            let mode = schedule
+                .get("mode")
+                .and_then(Value::as_str)
+                .unwrap_or("balanced");
+            if !matches!(mode, "balanced" | "quality" | "cheap") {
+                return Err("调度只能是 balanced、quality 或 cheap".to_owned());
+            }
+            let per_provider = schedule
+                .get("perProvider")
+                .and_then(Value::as_u64)
+                .unwrap_or(5);
+            if !matches!(per_provider, 3 | 5 | 10) {
+                return Err("每家取几条只能是 3、5 或 10".to_owned());
+            }
+            out.insert(
+                "schedule".to_owned(),
+                json!({"mode": mode, "perProvider": per_provider}),
+            );
+        }
+        if out.is_empty() {
+            return Err("details 至少要带 enabled、priority 或 schedule".to_owned());
+        }
+        Ok(Value::Object(out))
+    }
+
+    fn describe(&self, details: &Value, _env: &ActionEnv<'_>) -> Result<Vec<CardFact>, String> {
+        let mut facts = Vec::new();
+        if let Some(enabled) = details.get("enabled") {
+            let current = crate::settings::load(&self.data_dir).web_search.enabled;
+            let names = |ids: &[String]| {
+                ids.iter()
+                    .map(|id| {
+                        crate::web::providers::provider(id)
+                            .map(|spec| spec.name)
+                            .unwrap_or(id.as_str())
+                    })
+                    .collect::<Vec<_>>()
+                    .join("、")
+            };
+            if current
+                != enabled
+                    .as_array()
+                    .map(|rows| {
+                        rows.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_owned)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            {
+                facts.push(CardFact {
+                    name: "开着的联网来源".to_owned(),
+                    value: format!(
+                        "{} → {}",
+                        if current.is_empty() {
+                            "没有".to_owned()
+                        } else {
+                            names(&current)
+                        },
+                        {
+                            let next: Vec<String> = enabled
+                                .as_array()
+                                .map(|rows| {
+                                    rows.iter()
+                                        .filter_map(Value::as_str)
+                                        .map(str::to_owned)
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            if next.is_empty() {
+                                "没有".to_owned()
+                            } else {
+                                names(&next)
+                            }
+                        }
+                    ),
+                });
+            }
+        }
+        if let Some(priority) = details.get("priority") {
+            let names = priority
+                .as_array()
+                .map(|rows| {
+                    rows.iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join(" > ")
+                })
+                .unwrap_or_default();
+            facts.push(CardFact {
+                name: "优先顺序".to_owned(),
+                value: names,
+            });
+        }
+        if let Some(schedule) = details.get("schedule") {
+            let mode = schedule
+                .get("mode")
+                .and_then(Value::as_str)
+                .unwrap_or("balanced");
+            let per = schedule
+                .get("perProvider")
+                .and_then(Value::as_u64)
+                .unwrap_or(5);
+            facts.push(CardFact {
+                name: "调度".to_owned(),
+                value: format!(
+                    "{}，每家取 {per} 条",
+                    match mode {
+                        "quality" => "质量",
+                        "cheap" => "省钱",
+                        _ => "平衡",
+                    }
+                ),
+            });
+        }
+        Ok(facts)
+    }
+
+    fn act<'a>(
+        &'a self,
+        details: &'a Value,
+        host: &'a RootHost,
+    ) -> ActionFuture<'a, Result<ActionOutcome, String>> {
+        Box::pin(async move {
+            let object = details.as_object().ok_or("details 必须是对象")?;
+            if let Some(enabled) = object.get("enabled") {
+                let next: Vec<String> = enabled
+                    .as_array()
+                    .map(|rows| {
+                        rows.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let current = crate::settings::load(&self.data_dir).web_search.enabled;
+                for id in current.iter().filter(|id| !next.contains(id)) {
+                    host.web_search_close(crate::protocol::WebSearchOpenRequest { id: id.clone() })
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                for id in next.iter().filter(|id| !current.contains(id)) {
+                    host.web_search_open(crate::protocol::WebSearchOpenRequest { id: id.clone() })
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+            }
+            if let Some(priority) = object.get("priority") {
+                let ids = priority
+                    .as_array()
+                    .map(|rows| {
+                        rows.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                host.web_search_priority_set(crate::protocol::WebSearchPrioritySetRequest { ids })
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
+            if let Some(schedule) = object.get("schedule") {
+                let mode = schedule
+                    .get("mode")
+                    .and_then(Value::as_str)
+                    .unwrap_or("balanced")
+                    .to_owned();
+                let per_provider = schedule
+                    .get("perProvider")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(5) as u8;
+                host.web_search_schedule_set(crate::protocol::WebSearchScheduleSetRequest {
+                    mode,
+                    per_provider,
+                })
+                .await
+                .map_err(|error| error.to_string())?;
+            }
+            Ok(ActionOutcome {
+                summary: "联网搜索设置改好了".to_owned(),
+                data: json!({}),
+            })
+        })
+    }
+}

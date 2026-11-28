@@ -6,7 +6,8 @@
 use crate::ServiceError;
 use crate::protocol::{
     WebSearchAuthSetRequest, WebSearchHostSetRequest, WebSearchKeyRequest, WebSearchKeySaveRequest,
-    WebSearchProviderView, WebSearchReadResponse, WebSearchSelectRequest,
+    WebSearchOpenRequest, WebSearchPrioritySetRequest, WebSearchProviderView,
+    WebSearchReadResponse, WebSearchScheduleSetRequest, WebSearchScheduleView,
 };
 use crate::root_lifecycle::RootHost;
 use crate::settings_surface::now_seconds;
@@ -79,78 +80,14 @@ impl RootHost {
         }
     }
 
-    /// 选中的服务商 + 地址/凭据；工具门和检测共用这一份判断。
+    /// 开着的服务商，按优先顺序；工具门/搜索/检测共用。
+    pub(crate) fn enabled_searches(&self) -> Result<Vec<SelectedSearch>, ServiceError> {
+        enabled_for(&self.options.data_dir, self.options.identity.as_deref())
+    }
+
+    /// 优先顺序里第一家；兼容检测/旧调用。
     pub(crate) fn selected_search(&self) -> Result<Option<SelectedSearch>, ServiceError> {
-        let settings = self.web_settings();
-        let Some(id) = settings.web_search.selected.as_deref() else {
-            return Ok(None);
-        };
-        let spec = self.spec(id)?;
-        let keyring = self.keyring()?;
-        let host = settings
-            .web_search
-            .hosts
-            .get(spec.id)
-            .map(String::as_str)
-            .map(|value| providers::host(spec, Some(value)))
-            .unwrap_or_else(|| providers::host(spec, None));
-        let mut missing = None;
-        if host.trim().is_empty() {
-            missing = Some("地址还没填".to_owned());
-        }
-        let key = match spec.key_need {
-            KeyNeed::Required => {
-                if keyring.search_key_saved(spec.id) {
-                    Some(keyring.issue_search_key(spec.id, "网页搜索")?.into_secret())
-                } else {
-                    missing = Some("还没有 key".to_owned());
-                    None
-                }
-            }
-            KeyNeed::Optional => {
-                if keyring.search_key_saved(spec.id) {
-                    Some(keyring.issue_search_key(spec.id, "网页搜索")?.into_secret())
-                } else {
-                    None
-                }
-            }
-            KeyNeed::None => None,
-            KeyNeed::Llm => {
-                let Some(connection) = self.llm_connection(&keyring, spec) else {
-                    missing = Some("模型连接里没有可用的 key".to_owned());
-                    return Ok(Some(SelectedSearch {
-                        spec,
-                        host,
-                        key: None,
-                        basic: None,
-                        missing,
-                    }));
-                };
-                Some(
-                    keyring
-                        .issue(&connection, "网页搜索", None, None)?
-                        .into_secret(),
-                )
-            }
-        };
-        let basic = if spec.basic_auth && keyring.search_basic_saved() {
-            let user = settings
-                .web_search
-                .auth
-                .get(spec.id)
-                .map(|auth| auth.user.clone())
-                .unwrap_or_default();
-            Some((user, keyring.issue_search_basic("网页搜索")?.into_secret()))
-        } else {
-            None
-        };
-        Ok(Some(SelectedSearch {
-            spec,
-            host,
-            key,
-            basic,
-            missing,
-        }))
+        Ok(self.enabled_searches()?.into_iter().next())
     }
 
     /// 设置页读状态（不含 key 正文）。
@@ -204,15 +141,19 @@ impl RootHost {
                     basic_saved: spec.basic_auth
                         && basic.as_ref().is_some_and(|view| view.key.saved),
                     check: view.check,
+                    capabilities: providers::capability_labels(spec.id)
+                        .iter()
+                        .map(|value| (*value).to_owned())
+                        .collect(),
+                    price_per_search: providers::price_per_search(spec.id).to_owned(),
+                    domain_filter: providers::domain_filter(spec.id).is_some(),
                 }
             })
             .collect();
         Ok(WebSearchReadResponse {
-            selected: settings
-                .web_search
-                .selected
-                .clone()
-                .filter(|id| providers::provider(id).is_some()),
+            enabled: settings.web_search.enabled.clone(),
+            priority: settings.web_search.priority.clone(),
+            schedule: WebSearchScheduleView::from(&settings.web_search.schedule),
             providers,
         })
     }
@@ -223,18 +164,79 @@ impl RootHost {
         Ok(())
     }
 
-    pub(crate) async fn web_search_select(
+    fn write_web_settings(
         &self,
-        request: WebSearchSelectRequest,
-    ) -> Result<WebSearchReadResponse, ServiceError> {
-        let selected = request.id.filter(|id| !id.trim().is_empty());
-        if let Some(id) = &selected {
-            self.spec(id)?;
-        }
+        change: impl FnOnce(&mut crate::settings::WebSearchSettings),
+    ) -> Result<(), ServiceError> {
         let mut settings = crate::settings::load_for_write(&self.options.data_dir)
             .map_err(ServiceError::SettingsUnreadable)?;
-        settings.web_search.selected = selected;
-        self.save_web_settings(&settings)?;
+        change(&mut settings.web_search);
+        settings.web_search.normalize();
+        self.save_web_settings(&settings)
+    }
+
+    pub(crate) async fn web_search_open(
+        &self,
+        request: WebSearchOpenRequest,
+    ) -> Result<WebSearchReadResponse, ServiceError> {
+        let spec = self.spec(&request.id)?;
+        self.write_web_settings(|settings| {
+            if !settings.enabled.iter().any(|id| id == spec.id) {
+                settings.enabled.push(spec.id.to_owned());
+            }
+            if !settings.priority.iter().any(|id| id == spec.id) {
+                settings.priority.push(spec.id.to_owned());
+            }
+        })?;
+        self.after_web_change().await?;
+        self.web_search_read().await
+    }
+
+    pub(crate) async fn web_search_close(
+        &self,
+        request: WebSearchOpenRequest,
+    ) -> Result<WebSearchReadResponse, ServiceError> {
+        let spec = self.spec(&request.id)?;
+        self.write_web_settings(|settings| {
+            settings.enabled.retain(|id| id != spec.id);
+            settings.priority.retain(|id| id != spec.id);
+        })?;
+        self.after_web_change().await?;
+        self.web_search_read().await
+    }
+
+    pub(crate) async fn web_search_priority_set(
+        &self,
+        request: WebSearchPrioritySetRequest,
+    ) -> Result<WebSearchReadResponse, ServiceError> {
+        for id in &request.ids {
+            self.spec(id)?;
+        }
+        self.write_web_settings(|settings| {
+            settings.priority = request.ids.clone();
+        })?;
+        self.after_web_change().await?;
+        self.web_search_read().await
+    }
+
+    pub(crate) async fn web_search_schedule_set(
+        &self,
+        request: WebSearchScheduleSetRequest,
+    ) -> Result<WebSearchReadResponse, ServiceError> {
+        if !matches!(request.mode.as_str(), "balanced" | "quality" | "cheap") {
+            return Err(ServiceError::SettingsInvalid(
+                "调度只能是 balanced、quality 或 cheap".to_owned(),
+            ));
+        }
+        if !matches!(request.per_provider, 3 | 5 | 10) {
+            return Err(ServiceError::SettingsInvalid(
+                "每家取几条只能是 3、5 或 10".to_owned(),
+            ));
+        }
+        self.write_web_settings(|settings| {
+            settings.schedule.mode = request.mode.clone();
+            settings.schedule.per_provider = request.per_provider;
+        })?;
         self.after_web_change().await?;
         self.web_search_read().await
     }
@@ -323,9 +325,13 @@ impl RootHost {
     }
 
     pub(crate) async fn web_search_check(&self) -> Result<WebSearchReadResponse, ServiceError> {
-        let Some(selected) = self.selected_search()? else {
+        let Some(selected) = self
+            .enabled_searches()?
+            .into_iter()
+            .find(|selected| selected.missing.is_none())
+        else {
             return Err(ServiceError::SettingsInvalid(
-                "先选一家搜索服务商再检测".to_owned(),
+                "先开一家能用的搜索服务商再检测".to_owned(),
             ));
         };
         let at = now_seconds();
@@ -375,13 +381,13 @@ fn failure_reason(error: SearchError, name: &str) -> String {
     }
 }
 
-/// 不依赖 RootHost 的选中面：工具门和 web_search 执行都用它。
-pub(crate) fn selected_for(
+/// 不依赖 RootHost 的单家开工面；设置里按优先顺序挑一家。
+fn selected_from_settings(
+    settings: &crate::settings::Settings,
     data_dir: &std::path::Path,
     identity: Option<&std::path::Path>,
 ) -> Result<Option<SelectedSearch>, ServiceError> {
-    let settings = crate::settings::load(data_dir);
-    let Some(id) = settings.web_search.selected.as_deref() else {
+    let Some(id) = settings.web_search.priority.first().map(String::as_str) else {
         return Ok(None);
     };
     let spec = providers::provider(id)
@@ -472,10 +478,35 @@ pub(crate) fn selected_for(
     }))
 }
 
-/// 工具门用：选中且无缺项。
+/// 不依赖 RootHost 的单家面：优先顺序里第一家。
+pub(crate) fn selected_for(
+    data_dir: &std::path::Path,
+    identity: Option<&std::path::Path>,
+) -> Result<Option<SelectedSearch>, ServiceError> {
+    let settings = crate::settings::load(data_dir);
+    selected_from_settings(&settings, data_dir, identity)
+}
+
+/// 开着的每家，按优先顺序。
+pub(crate) fn enabled_for(
+    data_dir: &std::path::Path,
+    identity: Option<&std::path::Path>,
+) -> Result<Vec<SelectedSearch>, ServiceError> {
+    let settings = crate::settings::load(data_dir);
+    let mut rows = Vec::new();
+    for id in &settings.web_search.priority {
+        let mut one = settings.clone();
+        one.web_search.priority = vec![id.clone()];
+        if let Some(selected) = selected_from_settings(&one, data_dir, identity)? {
+            rows.push(selected);
+        }
+    }
+    Ok(rows)
+}
+
+/// 工具门用：至少一家开着且无缺项。
 pub(crate) fn ready_for(data_dir: &std::path::Path, identity: Option<&std::path::Path>) -> bool {
-    selected_for(data_dir, identity)
+    enabled_for(data_dir, identity)
         .ok()
-        .flatten()
-        .is_some_and(|selected| selected.missing.is_none())
+        .is_some_and(|rows| rows.iter().any(|selected| selected.missing.is_none()))
 }

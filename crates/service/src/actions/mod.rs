@@ -208,6 +208,9 @@ impl ActionRegistry {
         registry.register(Arc::new(settings_actions::SettingsUpdateAction::new(
             data_dir.clone(),
         )));
+        registry.register(Arc::new(settings_actions::WebSearchUpdateAction::new(
+            data_dir.clone(),
+        )));
         registry.register(Arc::new(settings_actions::ConnectionAction::new(
             data_dir.clone(),
             identity.clone(),

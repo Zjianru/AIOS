@@ -39,18 +39,97 @@ pub struct Settings {
     pub web_search: WebSearchSettings,
 }
 
-/// 联网搜索的设置：同一时间只选一家；地址与 Basic 用户名可覆盖；密码只进 Keyring。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+/// 联网搜索的设置：可开多家、优先顺序、调度；地址/Basic 用户名可覆盖；密码只进 Keyring。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WebSearchSettings {
-    /// 选中的服务商 id；None = 不选，web 整组不开。
+    /// 开着的服务商 id（顺序不表示优先，优先看 priority）。
     #[serde(default)]
-    pub selected: Option<String>,
+    pub enabled: Vec<String>,
+    /// 优先顺序；不在 enabled 里的忽略。
+    #[serde(default)]
+    pub priority: Vec<String>,
+    /// 没点名时怎么挑、每家取几条。
+    #[serde(default)]
+    pub schedule: WebSearchSchedule,
     /// 每家自己的根地址（用户可改；空 = 用内置默认）。
     #[serde(default)]
     pub hosts: std::collections::BTreeMap<String, String>,
     /// SearXNG Basic 认证的用户名（密码只存 Keyring）。
     #[serde(default)]
     pub auth: std::collections::BTreeMap<String, WebSearchAuth>,
+    /// 旧版单选字段：只用于迁移，写回时不再出现。
+    #[serde(default, rename = "selected", skip_serializing)]
+    pub legacy_selected: Option<String>,
+}
+
+impl Default for WebSearchSettings {
+    fn default() -> Self {
+        Self {
+            enabled: Vec::new(),
+            priority: Vec::new(),
+            schedule: WebSearchSchedule::default(),
+            hosts: std::collections::BTreeMap::new(),
+            auth: std::collections::BTreeMap::new(),
+            legacy_selected: None,
+        }
+    }
+}
+
+impl WebSearchSettings {
+    /// 旧数据（selected 一家）迁到 enabled/priority；清掉未知/重复 id，补齐优先顺序。
+    pub(crate) fn normalize(&mut self) {
+        if self.enabled.is_empty()
+            && let Some(selected) = self.legacy_selected.take()
+        {
+            self.enabled.push(selected);
+        }
+        self.legacy_selected = None;
+        self.enabled.retain(|id| !id.trim().is_empty());
+        self.enabled.sort();
+        self.enabled.dedup();
+        self.priority.retain(|id| self.enabled.contains(id));
+        let mut seen = std::collections::BTreeSet::new();
+        self.priority.retain(|id| seen.insert(id.clone()));
+        for id in &self.enabled {
+            if !seen.contains(id) {
+                self.priority.push(id.clone());
+                seen.insert(id.clone());
+            }
+        }
+        match self.schedule.mode.as_str() {
+            "balanced" | "quality" | "cheap" => {}
+            _ => self.schedule.mode = "balanced".to_owned(),
+        }
+        if !matches!(self.schedule.per_provider, 3 | 5 | 10) {
+            self.schedule.per_provider = 5;
+        }
+    }
+}
+
+/// 没点名时的调度：平衡/质量/省钱，每家取几条。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebSearchSchedule {
+    #[serde(default = "default_schedule_mode")]
+    pub mode: String,
+    #[serde(default = "default_per_provider")]
+    pub per_provider: u8,
+}
+
+impl Default for WebSearchSchedule {
+    fn default() -> Self {
+        Self {
+            mode: default_schedule_mode(),
+            per_provider: default_per_provider(),
+        }
+    }
+}
+
+fn default_schedule_mode() -> String {
+    "balanced".to_owned()
+}
+
+fn default_per_provider() -> u8 {
+    5
 }
 
 /// 一家搜索服务商的非密钥认证信息。
@@ -216,7 +295,10 @@ fn read_file(data_dir: &Path) -> Result<Settings, String> {
             if bytes.iter().all(u8::is_ascii_whitespace) {
                 return Ok(Settings::default());
             }
-            serde_json::from_slice(&bytes).map_err(|error| format!("{}：{error}", target.display()))
+            let mut settings: Settings = serde_json::from_slice(&bytes)
+                .map_err(|error| format!("{}：{error}", target.display()))?;
+            settings.web_search.normalize();
+            Ok(settings)
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Settings::default()),
         Err(error) => Err(format!("{}：{error}", target.display())),
@@ -225,7 +307,9 @@ fn read_file(data_dir: &Path) -> Result<Settings, String> {
 
 /// 原子写设置：临时文件 + fsync + rename + 目录 fsync，失败向上返回（credentials::atomic）。
 pub fn save(data_dir: &Path, settings: &Settings) -> Result<(), String> {
-    let mut json = serde_json::to_vec(settings).map_err(|error| error.to_string())?;
+    let mut settings = settings.clone();
+    settings.web_search.normalize();
+    let mut json = serde_json::to_vec(&settings).map_err(|error| error.to_string())?;
     json.push(b'\n');
     credentials::atomic::write(
         &path(data_dir),

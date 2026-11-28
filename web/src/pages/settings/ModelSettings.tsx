@@ -21,7 +21,8 @@ import {
 import { matchDisabled } from '@/data/disabled';
 import {
   checkDisabledModels, displayPath, webSearchAuthSet, webSearchCheck, webSearchHostSet,
-  webSearchKeyDelete, webSearchKeySave, webSearchRead, webSearchSelect,
+  webSearchClose, webSearchKeyDelete, webSearchKeySave, webSearchOpen,
+  webSearchPrioritySet, webSearchRead, webSearchScheduleSet,
   type ConnectionQuotaResponse, type DisabledModelUser,
 } from '@/data/service';
 import { cachedQuota, loadQuota } from '@/data/quota';
@@ -988,6 +989,7 @@ function WebSearchSection({ broken, onChanged }: { broken: boolean; onChanged: (
   const [user, setUser] = useState('');
   const [password, setPassword] = useState('');
   const [shown, setShown] = useState(false);
+  const [focus, setFocus] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -1005,7 +1007,12 @@ function WebSearchSection({ broken, onChanged }: { broken: boolean; onChanged: (
     return () => window.removeEventListener('aios:settings-changed', refresh);
   }, [broken, load]);
 
-  const selected = view?.providers.find((provider) => provider.id === view.selected) ?? null;
+  const selected = view?.providers.find((provider) => provider.id === focus) ?? null;
+  const enabled = view?.enabled ?? [];
+  const priority = view?.priority ?? [];
+  useEffect(() => {
+    if (!focus && enabled.length > 0) setFocus(enabled[0]!);
+  }, [focus, enabled]);
   useEffect(() => {
     if (!selected) return;
     setHost(selected.host || selected.defaultHost);
@@ -1030,7 +1037,19 @@ function WebSearchSection({ broken, onChanged }: { broken: boolean; onChanged: (
     }
   };
 
-  const choose = (id: string | null) => void apply(() => webSearchSelect(id));
+  const toggle = (id: string) => {
+    void apply(() => (enabled.includes(id) ? webSearchClose(id) : webSearchOpen(id)));
+    setFocus(id);
+  };
+  const move = (id: string, delta: number) => {
+    const next = [...priority];
+    const index = next.indexOf(id);
+    if (index < 0) return;
+    const target = index + delta;
+    if (target < 0 || target >= next.length) return;
+    [next[index], next[target]] = [next[target]!, next[index]!];
+    void apply(() => webSearchPrioritySet(next));
+  };
   const saveKey = () => {
     if (!selected) return;
     const key = draft.trim();
@@ -1059,7 +1078,7 @@ function WebSearchSection({ broken, onChanged }: { broken: boolean; onChanged: (
   const status = !view
     ? '正在读取…'
     : !selected
-      ? '还没有选服务商；web_search 和 web_fetch 都不在 Kind 的工具里。'
+      ? '还没有开任何服务商；web_search、web_search_sources 和 web_fetch 都不在 Kind 的工具里。'
       : selected.keyNeed === 'required' && !keySaved
         ? '这家要 key，填了才能联网。'
         : selected.keyNeed === 'llm' && !keySaved
@@ -1070,45 +1089,47 @@ function WebSearchSection({ broken, onChanged }: { broken: boolean; onChanged: (
     <section className="mt-10" data-settings="web-search">
       <h2 className="text-3 font-medium text-ink">联网搜索</h2>
       <p className="mt-1 text-2 leading-5 text-ink-2">
-        同一时间只选一家。没选或缺 key/地址时 Kind 不能搜网页、读链接；网页内容当作资料，不当作指令。
+        可以开多家并标优先。一家都没开、或开着的都缺 key/地址时，Kind 不能搜网页、读链接；网页内容当作资料，不当作指令。
       </p>
+      <div className="mt-3 flex flex-wrap items-center gap-2 text-2 text-ink-2" data-settings="web-search-schedule">
+        <span>没点名用哪家</span>
+        <select data-web-schedule-mode value={view?.schedule.mode ?? 'balanced'} disabled={broken}
+          onChange={(event) => void apply(() => webSearchScheduleSet(event.target.value, view?.schedule.perProvider ?? 5))}
+          className="rounded-btn border border-line bg-pane px-2 py-1 text-2 text-ink">
+          <option value="balanced">平衡</option>
+          <option value="quality">质量</option>
+          <option value="cheap">省钱</option>
+        </select>
+        <span>每家取几条</span>
+        <select data-web-schedule-count value={String(view?.schedule.perProvider ?? 5)} disabled={broken}
+          onChange={(event) => void apply(() => webSearchScheduleSet(view?.schedule.mode ?? 'balanced', Number(event.target.value)))}
+          className="rounded-btn border border-line bg-pane px-2 py-1 text-2 text-ink">
+          <option value="3">3</option><option value="5">5</option><option value="10">10</option>
+        </select>
+      </div>
 
       <div className="mt-3 rounded-card border border-line" data-web-provider-list>
-        <div className="flex items-center gap-2 border-b border-line px-3 py-2" data-settings="web-search-select">
-          <span className="text-2 text-ink-2">服务商</span>
-          <select
-            data-web-select
-            value={selected?.id ?? ''}
-            disabled={broken}
-            onChange={(event) => choose(event.target.value || null)}
-            className="min-w-0 flex-1 rounded-btn border border-line bg-pane px-2 py-1 text-2 text-ink outline-none"
-          >
-            <option value="">不选</option>
-            {(view?.providers ?? []).map((provider) => (
-              <option key={provider.id} value={provider.id}>
-                {provider.name}（{KEY_NEED_LABEL[provider.keyNeed] ?? provider.keyNeed}）
-              </option>
-            ))}
-          </select>
-        </div>
         {(view?.providers ?? []).map((provider) => (
-          <button
-            key={provider.id}
-            type="button"
-            data-web-provider={provider.id}
-            onClick={() => choose(provider.id)}
-            className={cn(
-              'flex w-full items-center gap-2 border-b border-line px-3 py-1.5 text-left text-1 last:border-b-0 hover:bg-hover',
-              provider.id === view?.selected && 'bg-active',
-            )}
-          >
-            <span className="w-28 shrink-0 truncate text-ink">{provider.name}</span>
+          <div key={provider.id} data-web-provider={provider.id}
+            className={cn('flex items-center gap-2 border-b border-line px-3 py-1.5 text-1 last:border-b-0', provider.id === focus && 'bg-active')}>
+            <button type="button" data-web-toggle={provider.id} onClick={() => toggle(provider.id)}
+              className={cn('w-10 shrink-0 rounded-btn px-1 py-0.5 text-1', enabled.includes(provider.id) ? 'bg-run-soft text-run' : 'text-ink-3 hover:bg-hover')}>
+              {enabled.includes(provider.id) ? '开' : '关'}
+            </button>
+            <button type="button" onClick={() => setFocus(provider.id)} className="w-28 shrink-0 truncate text-left text-ink">{provider.name}</button>
             <span className="shrink-0 text-ink-3">{KEY_NEED_LABEL[provider.keyNeed] ?? provider.keyNeed}</span>
             <span className="ml-auto shrink-0 text-ink-2">
               {provider.keySaved ? 'key 已存' : '没有 key'}
               {provider.check.kind === 'ok' ? ' · 能用' : provider.check.kind === 'fail' ? ' · 检查失败' : ''}
             </span>
-          </button>
+            {enabled.includes(provider.id) ? (
+              <span className="flex shrink-0 items-center gap-1">
+                <span className="text-1 text-ink-3">优先 {priority.indexOf(provider.id) + 1}</span>
+                <button type="button" data-web-up onClick={() => move(provider.id, -1)} className="rounded px-1 text-ink-3 hover:bg-hover">↑</button>
+                <button type="button" data-web-down onClick={() => move(provider.id, 1)} className="rounded px-1 text-ink-3 hover:bg-hover">↓</button>
+              </span>
+            ) : null}
+          </div>
         ))}
       </div>
 

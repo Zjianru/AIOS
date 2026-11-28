@@ -12,10 +12,14 @@ mod fetch;
 pub(crate) mod providers;
 mod resolver;
 mod search;
+mod sources;
 mod url_policy;
 
 pub(crate) use fetch::{WEB_FETCH_TIMEOUT, WebFetchConfig, WebFetchTool};
+#[cfg(test)]
+pub(crate) use search::reset_health;
 pub(crate) use search::{WebSearchConfig, WebSearchTool};
+pub(crate) use sources::WebSourcesTool;
 
 /// 一次网页工具调用的时间上限（和 Exa 请求、读网页共用 30 秒）。
 const WEB_TOOL_TIMEOUT_MS: u64 = 30_000;

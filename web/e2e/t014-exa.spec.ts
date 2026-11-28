@@ -58,9 +58,10 @@ test('联网搜索：选 Exa、填/换/删 key 与检测；有 key 时 skill web
     const detail = section.locator('[data-settings="web-search-detail"]');
     await expect(section).toBeVisible({ timeout: 20_000 });
     await expect(section.locator('[data-web-provider]')).toHaveCount(20);
-    await expect(status).toContainText('还没有选服务商');
+    await expect(status).toContainText('还没有开任何服务商');
 
-    await section.locator('[data-web-select]').selectOption('exa');
+    await section.locator('[data-web-toggle="exa"]').click();
+  await expect(section.locator('[data-web-toggle="exa"]')).toHaveText('开');
     await section.locator('[data-web-host]').fill(fixture.exa!.baseUrl);
     await section.locator('[data-web-host-save]').click();
     await expect(status).toContainText('这家要 key');
@@ -123,7 +124,7 @@ test('没填 key：web 不进目录、网页工具不进表；EXA_API_KEY 环境
     await openSettings(page, fixture);
     const section = page.locator('[data-settings="web-search"]');
     await expect(section.locator('[data-settings="web-search-status"]')).toContainText(
-      '还没有选服务商',
+      '还没有开任何服务商',
       { timeout: 20_000 },
     );
 

@@ -148,10 +148,22 @@ impl RootHost {
             Call::ExaKeyCheck(_) => self.exa_key_check().await.map(Response::ExaKeyCheck),
             Call::ExaKeyDelete(_) => self.exa_key_delete().await.map(Response::ExaKeyDelete),
             Call::WebSearchRead(_) => self.web_search_read().await.map(Response::WebSearchRead),
-            Call::WebSearchSelect(request) => self
-                .web_search_select(request)
+            Call::WebSearchOpen(request) => self
+                .web_search_open(request)
                 .await
-                .map(Response::WebSearchSelect),
+                .map(Response::WebSearchOpen),
+            Call::WebSearchClose(request) => self
+                .web_search_close(request)
+                .await
+                .map(Response::WebSearchClose),
+            Call::WebSearchPrioritySet(request) => self
+                .web_search_priority_set(request)
+                .await
+                .map(Response::WebSearchPrioritySet),
+            Call::WebSearchScheduleSet(request) => self
+                .web_search_schedule_set(request)
+                .await
+                .map(Response::WebSearchScheduleSet),
             Call::WebSearchKeySave(request) => self
                 .web_search_key_save(request)
                 .await

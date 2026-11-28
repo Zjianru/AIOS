@@ -2314,6 +2314,7 @@ fn settings_connections_keyring_actions_are_registered() {
     let registry = ActionRegistry::settings(data_dir.to_path_buf(), None);
     for (name, skill) in [
         ("settings_update", "aios-settings"),
+        ("web_search_update", "aios-settings"),
         ("connection_update", "aios-settings"),
         ("connection_delete", "aios-settings"),
         ("connection_revoke", "aios-settings"),
@@ -2331,6 +2332,51 @@ fn settings_connections_keyring_actions_are_registered() {
             "key 保存不能是 action：{forbidden}"
         );
     }
+}
+
+#[test]
+fn web_search_update_offers_provider_and_schedule_facts() {
+    let directory = tempfile::tempdir().unwrap();
+    let data_dir = directory.path();
+    let action = settings_action(data_dir, "web_search_update");
+    let details = action
+        .details(&json!({
+            "enabled": ["exa", "duckduckgo"],
+            "priority": ["duckduckgo", "exa"],
+            "schedule": {"mode": "cheap", "perProvider": 3}
+        }))
+        .expect("details");
+    let facts = action
+        .describe(
+            &details,
+            &action_env(data_dir, &data_dir.join("identity.txt")),
+        )
+        .expect("搜索卡");
+    assert!(
+        facts.iter().any(|fact| fact.name == "开着的联网来源"),
+        "{facts:?}"
+    );
+    assert!(
+        facts.iter().any(|fact| fact.name == "优先顺序"),
+        "{facts:?}"
+    );
+    assert!(
+        facts
+            .iter()
+            .any(|fact| fact.name == "调度" && fact.value.contains("省钱")),
+        "{facts:?}"
+    );
+    assert!(action.details(&json!({"enabled": ["no-such"]})).is_err());
+    assert!(
+        action
+            .details(&json!({"schedule": {"mode": "fast"}}))
+            .is_err()
+    );
+    assert!(
+        action
+            .details(&json!({"enabled": ["exa"], "key": "x"}))
+            .is_err()
+    );
 }
 
 #[test]

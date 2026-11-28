@@ -168,7 +168,7 @@ impl RootSession {
 ///
 /// 写、改、跑命令和三件后台任务不在里面；这些活派给 ThinAgent。任务工具看
 /// `task_runtime` 有没有装配，由 `kind_tool_policy` 追加。
-pub(crate) const KIND_TOOLS: [&str; 38] = [
+pub(crate) const KIND_TOOLS: [&str; 39] = [
     "read",
     "glob",
     "grep",
@@ -180,6 +180,7 @@ pub(crate) const KIND_TOOLS: [&str; 38] = [
     "aios_query",
     "propose_action",
     "project_create",
+    "web_search_sources",
     "web_search",
     "web_fetch",
     "memory_remember",
@@ -571,6 +572,7 @@ pub(crate) fn web_extra_tools(
         identity: options.identity.clone(),
     };
     vec![
+        std::sync::Arc::new(crate::web::WebSourcesTool::new(web_search_config.clone())),
         std::sync::Arc::new(crate::web::WebSearchTool::new(web_search_config)),
         std::sync::Arc::new(crate::web::WebFetchTool::new(crate::web::WebFetchConfig {
             data_dir: options.data_dir.clone(),

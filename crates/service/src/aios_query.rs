@@ -314,6 +314,21 @@ impl QueryTool {
                 })).collect::<Vec<_>>(),
                 "screenCapture": settings.vision.screen_capture,
             },
+            "webSearch": {
+                "enabled": settings.web_search.enabled,
+                "priority": settings.web_search.priority,
+                "schedule": {
+                    "mode": settings.web_search.schedule.mode,
+                    "perProvider": settings.web_search.schedule.per_provider,
+                },
+                "providers": crate::web::providers::PROVIDERS.iter().map(|spec| json!({
+                    "id": spec.id,
+                    "name": spec.name,
+                    "capabilities": crate::web::providers::capability_labels(spec.id),
+                    "price": crate::web::providers::price_per_search(spec.id),
+                    "domainFilter": crate::web::providers::domain_filter(spec.id).is_some(),
+                })).collect::<Vec<_>>(),
+            },
         }))
     }
 

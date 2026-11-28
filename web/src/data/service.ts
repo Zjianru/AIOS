@@ -491,9 +491,27 @@ export async function webSearchRead(): Promise<WebSearchReadResponse> {
   return post({ method: 'web-search-read' });
 }
 
-/** 选一家搜索服务商；null = 不选。 */
-export async function webSearchSelect(id: string | null): Promise<WebSearchReadResponse> {
-  return post({ method: 'web-search-select', id });
+/** 开一家搜索服务商（保留 key/地址）。 */
+export async function webSearchOpen(id: string): Promise<WebSearchReadResponse> {
+  return post({ method: 'web-search-open', id });
+}
+
+/** 关一家搜索服务商（保留 key/地址）。 */
+export async function webSearchClose(id: string): Promise<WebSearchReadResponse> {
+  return post({ method: 'web-search-close', id });
+}
+
+/** 改优先顺序。 */
+export async function webSearchPrioritySet(ids: string[]): Promise<WebSearchReadResponse> {
+  return post({ method: 'web-search-priority-set', ids });
+}
+
+/** 改调度（没点名用哪家、每家取几条）。 */
+export async function webSearchScheduleSet(
+  mode: string,
+  perProvider: number,
+): Promise<WebSearchReadResponse> {
+  return post({ method: 'web-search-schedule-set', mode, perProvider });
 }
 
 /** 存/换一家的 key；响应不回显。 */

@@ -2,8 +2,8 @@
 
 use service::{
     Call, ExaKeyRequest, ExaKeySaveRequest, Response, RootHost, WebSearchAuthSetRequest,
-    WebSearchHostSetRequest, WebSearchKeyRequest, WebSearchKeySaveRequest, WebSearchReadRequest,
-    WebSearchSelectRequest,
+    WebSearchHostSetRequest, WebSearchKeyRequest, WebSearchKeySaveRequest, WebSearchOpenRequest,
+    WebSearchReadRequest,
 };
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -29,7 +29,9 @@ async fn web_search_read_has_twenty_providers_and_never_returns_a_key() {
     let host = open(crate::common::options(&data)).await;
     let empty = read_view(&host).await;
     assert_eq!(empty.providers.len(), 20);
-    assert!(empty.selected.is_none(), "默认不选");
+    assert!(empty.enabled.is_empty(), "默认不开");
+    assert_eq!(empty.schedule.mode, "balanced");
+    assert_eq!(empty.schedule.per_provider, 5);
     assert!(
         empty
             .providers
@@ -60,16 +62,17 @@ async fn web_search_read_has_twenty_providers_and_never_returns_a_key() {
     }
 
     let selected = match host
-        .dispatch(Call::WebSearchSelect(WebSearchSelectRequest {
-            id: Some("duckduckgo".to_owned()),
+        .dispatch(Call::WebSearchOpen(WebSearchOpenRequest {
+            id: "duckduckgo".to_owned(),
         }))
         .await
-        .expect("select")
+        .expect("open")
     {
-        Response::WebSearchSelect(view) => view,
-        other => panic!("期望 WebSearchSelect：{other:?}"),
+        Response::WebSearchOpen(view) => view,
+        other => panic!("期望 WebSearchOpen：{other:?}"),
     };
-    assert_eq!(selected.selected.as_deref(), Some("duckduckgo"));
+    assert_eq!(selected.enabled, vec!["duckduckgo".to_owned()]);
+    assert_eq!(selected.priority, vec!["duckduckgo".to_owned()]);
     assert!(
         selected
             .providers
@@ -100,11 +103,11 @@ async fn exa_check_writes_ok_and_fail_and_host_is_stored() {
     }))
     .await
     .expect("save");
-    host.dispatch(Call::WebSearchSelect(WebSearchSelectRequest {
-        id: Some("exa".to_owned()),
+    host.dispatch(Call::WebSearchOpen(WebSearchOpenRequest {
+        id: "exa".to_owned(),
     }))
     .await
-    .expect("select");
+    .expect("open");
     host.dispatch(Call::WebSearchHostSet(WebSearchHostSetRequest {
         id: "exa".to_owned(),
         host: server.uri(),
@@ -147,11 +150,11 @@ async fn searxng_basic_password_is_saved_in_keyring_and_sent() {
         .mount(&server)
         .await;
     let host = open(crate::common::options(&data)).await;
-    host.dispatch(Call::WebSearchSelect(WebSearchSelectRequest {
-        id: Some("searxng".to_owned()),
+    host.dispatch(Call::WebSearchOpen(WebSearchOpenRequest {
+        id: "searxng".to_owned(),
     }))
     .await
-    .expect("select");
+    .expect("open");
     host.dispatch(Call::WebSearchHostSet(WebSearchHostSetRequest {
         id: "searxng".to_owned(),
         host: server.uri(),
@@ -249,4 +252,81 @@ async fn deleting_a_key_disables_only_that_provider() {
             .unwrap()
             .key_saved
     );
+}
+
+#[tokio::test]
+async fn web_search_open_close_priority_and_schedule_round_trip() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let host = open(crate::common::options(&data)).await;
+    for id in ["exa", "duckduckgo"] {
+        host.dispatch(Call::WebSearchOpen(service::WebSearchOpenRequest {
+            id: id.to_owned(),
+        }))
+        .await
+        .expect("open");
+    }
+    let view = match host
+        .dispatch(Call::WebSearchPrioritySet(
+            service::WebSearchPrioritySetRequest {
+                ids: vec!["duckduckgo".to_owned(), "exa".to_owned()],
+            },
+        ))
+        .await
+        .expect("priority")
+    {
+        Response::WebSearchPrioritySet(view) => view,
+        other => panic!("期望 priority：{other:?}"),
+    };
+    assert_eq!(
+        view.priority,
+        vec!["duckduckgo".to_owned(), "exa".to_owned()]
+    );
+    assert_eq!(view.schedule.mode, "balanced");
+    let cheap = match host
+        .dispatch(Call::WebSearchScheduleSet(
+            service::WebSearchScheduleSetRequest {
+                mode: "cheap".to_owned(),
+                per_provider: 3,
+            },
+        ))
+        .await
+        .expect("schedule")
+    {
+        Response::WebSearchScheduleSet(view) => view,
+        other => panic!("期望 schedule：{other:?}"),
+    };
+    assert_eq!(cheap.schedule.mode, "cheap");
+    assert_eq!(cheap.schedule.per_provider, 3);
+    let closed = match host
+        .dispatch(Call::WebSearchClose(service::WebSearchOpenRequest {
+            id: "exa".to_owned(),
+        }))
+        .await
+        .expect("close")
+    {
+        Response::WebSearchClose(view) => view,
+        other => panic!("期望 close：{other:?}"),
+    };
+    assert_eq!(closed.enabled, vec!["duckduckgo".to_owned()]);
+    assert_eq!(closed.priority, vec!["duckduckgo".to_owned()]);
+    let bad = host
+        .dispatch(Call::WebSearchScheduleSet(
+            service::WebSearchScheduleSetRequest {
+                mode: "fast".to_owned(),
+                per_provider: 5,
+            },
+        ))
+        .await;
+    assert!(bad.is_err(), "非法调度要拒");
+    let bad_count = host
+        .dispatch(Call::WebSearchScheduleSet(
+            service::WebSearchScheduleSetRequest {
+                mode: "balanced".to_owned(),
+                per_provider: 7,
+            },
+        ))
+        .await;
+    assert!(bad_count.is_err(), "每家取几条只收 3/5/10");
 }

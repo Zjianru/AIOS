@@ -333,6 +333,41 @@ pub(crate) async fn search_one(
     search_one_with_timeout(spec, base_url, key, basic, query, Duration::from_secs(30)).await
 }
 
+/// 一次搜索的网站/topic 条件；域名过滤有参数的服务商交服务商，其余拼 site:。
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SearchFilters {
+    pub(crate) sites: Vec<String>,
+    pub(crate) include: bool,
+    pub(crate) topic: String,
+    pub(crate) category: String,
+}
+
+/// 带网站/topic 条件的一路搜索。
+pub(crate) async fn search_one_filtered(
+    spec: &ProviderSpec,
+    base_url: &str,
+    key: Option<&str>,
+    basic: Option<(&str, &str)>,
+    query: &str,
+    filters: &SearchFilters,
+    timeout: Duration,
+) -> Result<Vec<SearchSource>, SearchError> {
+    let client = model::http::client_without_redirects().map_err(|_| SearchError::Client)?;
+    let base = base_url.trim_end_matches('/');
+    let effective_query = if domain_filter(spec.id).is_some() {
+        query.to_owned()
+    } else {
+        query_with_sites(query, &filters.sites, filters.include)
+    };
+    match spec.id {
+        "exa" => exa_filtered(&client, base, key, &effective_query, timeout, Some(filters)).await,
+        "tavily" => {
+            tavily_filtered(&client, base, key, &effective_query, timeout, Some(filters)).await
+        }
+        _ => search_one_with_timeout(spec, base, key, basic, &effective_query, timeout).await,
+    }
+}
+
 /// 带显式超时的请求；单测用短超时验证超时映射，产品只走上面 30 秒。
 pub(crate) async fn search_one_with_timeout(
     spec: &ProviderSpec,
@@ -389,7 +424,32 @@ async fn exa(
     query: &str,
     timeout: Duration,
 ) -> Result<Vec<SearchSource>, SearchError> {
+    exa_filtered(client, base, key, query, timeout, None).await
+}
+
+async fn exa_filtered(
+    client: &reqwest::Client,
+    base: &str,
+    key: Option<&str>,
+    query: &str,
+    timeout: Duration,
+    filters: Option<&SearchFilters>,
+) -> Result<Vec<SearchSource>, SearchError> {
     let key = key.unwrap_or("").to_owned();
+    let mut body = serde_json::json!({"query":query,"type":"auto","contents":{"highlights":{"highlightsPerUrl":1}},"numResults":WEB_SEARCH_MAX_RESULTS});
+    if let Some(filters) = filters {
+        if !filters.sites.is_empty() {
+            let key = if filters.include {
+                "includeDomains"
+            } else {
+                "excludeDomains"
+            };
+            body[key] = serde_json::json!(filters.sites);
+        }
+        if filters.topic == "news" {
+            body["category"] = serde_json::json!("news");
+        }
+    }
     let response = client
         .post(format!("{base}/search"))
         .timeout(timeout)
@@ -397,7 +457,7 @@ async fn exa(
         .header("x-api-key", &key)
         .header("content-type", "application/json")
         .header("accept", "application/json")
-        .body(serde_json::json!({"query":query,"type":"auto","contents":{"highlights":{"highlightsPerUrl":1}},"numResults":WEB_SEARCH_MAX_RESULTS}).to_string())
+        .body(body.to_string())
         .send()
         .await
         .map_err(map_transport)?;
@@ -594,11 +654,36 @@ async fn tavily(
     query: &str,
     timeout: Duration,
 ) -> Result<Vec<SearchSource>, SearchError> {
+    tavily_filtered(client, base, key, query, timeout, None).await
+}
+
+async fn tavily_filtered(
+    client: &reqwest::Client,
+    base: &str,
+    key: Option<&str>,
+    query: &str,
+    timeout: Duration,
+    filters: Option<&SearchFilters>,
+) -> Result<Vec<SearchSource>, SearchError> {
+    let mut body = serde_json::json!({"query":query,"max_results":WEB_SEARCH_MAX_RESULTS});
+    if let Some(filters) = filters {
+        if !filters.sites.is_empty() {
+            let key = if filters.include {
+                "include_domains"
+            } else {
+                "exclude_domains"
+            };
+            body[key] = serde_json::json!(filters.sites);
+        }
+        if filters.topic == "news" {
+            body["topic"] = serde_json::json!("news");
+        }
+    }
     let response = client
         .post(format!("{base}/search"))
         .timeout(timeout)
         .bearer_auth(key.unwrap_or(""))
-        .json(&serde_json::json!({"query":query,"max_results":WEB_SEARCH_MAX_RESULTS}))
+        .json(&body)
         .send()
         .await
         .map_err(map_transport)?;
@@ -1526,5 +1611,132 @@ mod recorded_contract_tests {
                 case.id
             );
         }
+    }
+}
+
+/// 域名过滤参数名（有这一对的服务商把条件交过去，不拼 site:）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DomainFilter {
+    pub(crate) include: &'static str,
+    pub(crate) exclude: &'static str,
+}
+
+pub(crate) fn domain_filter(id: &str) -> Option<DomainFilter> {
+    match id {
+        "tavily" => Some(DomainFilter {
+            include: "include_domains",
+            exclude: "exclude_domains",
+        }),
+        "exa" => Some(DomainFilter {
+            include: "includeDomains",
+            exclude: "excludeDomains",
+        }),
+        _ => None,
+    }
+}
+
+pub(crate) fn capability_labels(id: &str) -> &'static [&'static str] {
+    match id {
+        "exa" | "tavily" | "firecrawl" | "parallel" => &[
+            "网页",
+            "新闻",
+            "限制网站",
+            "限制时间",
+            "地区和语言",
+            "读正文",
+        ],
+        "brave" | "serper" | "searchapi" | "serpkite" | "serply" => {
+            &["网页", "新闻", "限制网站", "限制时间", "地区和语言"]
+        }
+        "bocha" | "zhipu" | "deepseek" | "yuanbao" | "stepfun" | "querit" | "desearch" => &["网页"],
+        "exa-mcp" | "jina" => &["网页", "读正文"],
+        "searxng" | "duckduckgo" => &["网页", "限制网站", "地区"],
+        _ => &["网页"],
+    }
+}
+
+pub(crate) fn price_per_search(id: &str) -> &'static str {
+    match id {
+        "duckduckgo" | "searxng" => "0",
+        _ => "unknown",
+    }
+}
+
+pub(crate) fn supports(id: &str, capability: &str) -> bool {
+    capability_labels(id).contains(&capability)
+}
+
+pub(crate) fn query_with_sites(query: &str, sites: &[String], include: bool) -> String {
+    let mut value = query.trim().to_owned();
+    for site in sites {
+        let site = site.trim().trim_start_matches("site:");
+        if site.is_empty() {
+            continue;
+        }
+        if include {
+            value.push_str(&format!(" site:{site}"));
+        } else {
+            value.push_str(&format!(" -site:{site}"));
+        }
+    }
+    value
+}
+
+pub(crate) fn site_matches(pattern: &str, url: &str) -> bool {
+    let host = url
+        .split("://")
+        .nth(1)
+        .unwrap_or(url)
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .trim_start_matches("www.");
+    let mut pattern = pattern
+        .trim()
+        .trim_start_matches("site:")
+        .trim_start_matches("www.");
+    if !pattern.contains('*') {
+        return host == pattern;
+    }
+    if let Some(rest) = pattern.strip_prefix('*') {
+        return host.ends_with(rest);
+    }
+    if let Some(rest) = pattern.strip_suffix('*') {
+        return host.starts_with(rest);
+    }
+    if let Some((left, right)) = pattern.split_once('*') {
+        return host.starts_with(left) && host.ends_with(right);
+    }
+    pattern = "";
+    let _ = pattern;
+    false
+}
+
+#[cfg(test)]
+mod capability_and_site_tests {
+    use super::*;
+
+    #[test]
+    fn domain_filter_names_and_capabilities_are_registered() {
+        assert_eq!(domain_filter("tavily").unwrap().include, "include_domains");
+        assert_eq!(domain_filter("exa").unwrap().exclude, "excludeDomains");
+        assert!(domain_filter("brave").is_none());
+        assert!(capability_labels("exa").contains(&"新闻"));
+        assert!(capability_labels("duckduckgo").contains(&"网页"));
+        assert!(!capability_labels("duckduckgo").contains(&"新闻"));
+        assert_eq!(price_per_search("exa"), "unknown");
+        assert_eq!(price_per_search("duckduckgo"), "0");
+    }
+
+    #[test]
+    fn site_clauses_and_wildcard_filtering_are_not_regex() {
+        let query = query_with_sites("AIOS", &["*.github.com".to_owned()], true);
+        assert_eq!(query, "AIOS site:*.github.com");
+        let query = query_with_sites("AIOS", &["example.com".to_owned()], false);
+        assert_eq!(query, "AIOS -site:example.com");
+        assert!(site_matches("*.github.com", "https://docs.github.com/x"));
+        assert!(!site_matches("*.github.com", "https://github.com/x"));
+        assert!(site_matches("example.com", "https://www.example.com/a"));
+        assert!(!site_matches("example.com", "https://evil-example.com/a"));
     }
 }

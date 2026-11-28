@@ -62,6 +62,20 @@ test('T103.1 设置页 Kind 加看图模型：卡确认后设置变、Kind 对�
     await screenCard.locator('[data-action="card-confirm"]').click();
     await expect(section.locator('[data-kind="screen-toggle"]')).toHaveAttribute('data-state', 'checked', { timeout: 30_000 });
 
+    await page.locator('[data-kind="page-kind-suggestion"]', { hasText: '打开 Exa 联网搜索' }).click();
+    const searchCard = page
+      .locator('[data-kind="confirm-card"]')
+      .filter({ hasText: '开着的联网来源' })
+      .last();
+    await expect(searchCard).toBeVisible({ timeout: 90_000 });
+    await expect(searchCard).toHaveAttribute('data-state', 'pending');
+    await searchCard.locator('[data-action="card-confirm"]').click();
+    await expect(page.locator('[data-kind="confirm-receipt"]').last()).toContainText(
+      '联网搜索设置改好了',
+      { timeout: 30_000 },
+    );
+    await expect(page.locator('[data-web-toggle="exa"]')).toHaveText('开', { timeout: 30_000 });
+
     // 回到 Kind：这句用户消息、卡和回执都在同一条根 Kind 对话里。
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind');
     await expect(page.locator('[data-kind="composer-input"]')).toBeVisible({ timeout: 60_000 });

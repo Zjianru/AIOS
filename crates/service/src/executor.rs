@@ -106,13 +106,14 @@ fn expected_tool_lists(
 }
 
 /// ThinAgent 的只读工具名单（构造期 only 过滤；顺序就是名单顺序）。
-pub const THIN_TOOLS: [&str; 26] = [
+pub const THIN_TOOLS: [&str; 27] = [
     "read",
     "glob",
     "grep",
     "office_read",
     "skill",
     "todo_write",
+    "web_search_sources",
     "web_search",
     "web_fetch",
     "task_report",
@@ -136,7 +137,7 @@ pub const THIN_TOOLS: [&str; 26] = [
 ];
 
 /// 写任务的 ThinAgent 工具名单：只读 9 件加 write、edit（D85）。
-pub const THIN_WRITE_TOOLS: [&str; 30] = [
+pub const THIN_WRITE_TOOLS: [&str; 31] = [
     "read",
     "glob",
     "grep",
@@ -146,6 +147,7 @@ pub const THIN_WRITE_TOOLS: [&str; 30] = [
     "edit",
     "skill",
     "todo_write",
+    "web_search_sources",
     "web_search",
     "web_fetch",
     "task_report",
@@ -170,7 +172,7 @@ pub const THIN_WRITE_TOOLS: [&str; 30] = [
 ];
 
 /// 开了 bash 的写任务：写任务 11 件再加 bash 和后台任务三件（D85）。
-pub const THIN_WRITE_BASH_TOOLS: [&str; 34] = [
+pub const THIN_WRITE_BASH_TOOLS: [&str; 35] = [
     "read",
     "glob",
     "grep",
@@ -184,6 +186,7 @@ pub const THIN_WRITE_BASH_TOOLS: [&str; 34] = [
     "job_kill",
     "skill",
     "todo_write",
+    "web_search_sources",
     "web_search",
     "web_fetch",
     "task_report",

@@ -101,7 +101,10 @@ impl ServiceHost {
         match call {
             Call::Send(request) => self.send(request).await.map(Response::Send),
             Call::WebSearchRead(_)
-            | Call::WebSearchSelect(_)
+            | Call::WebSearchOpen(_)
+            | Call::WebSearchClose(_)
+            | Call::WebSearchPrioritySet(_)
+            | Call::WebSearchScheduleSet(_)
             | Call::WebSearchKeySave(_)
             | Call::WebSearchKeyDelete(_)
             | Call::WebSearchHostSet(_)

@@ -13,9 +13,10 @@ test('T103.2 联网搜索：20 家目录、选 Exa、填 key、改地址、检�
     const section = page.locator('[data-settings="web-search"]');
     await expect(section).toBeVisible({ timeout: 30_000 });
     await expect(section.locator('[data-web-provider]')).toHaveCount(20, { timeout: 20_000 });
-    await expect(section.locator('[data-settings="web-search-status"]')).toContainText('还没有选服务商');
+    await expect(section.locator('[data-settings="web-search-status"]')).toContainText('还没有开任何服务商');
 
-    await section.locator('[data-web-select]').selectOption('exa');
+    await section.locator('[data-web-toggle="exa"]').click();
+    await expect(section.locator('[data-web-toggle="exa"]')).toHaveText('开');
     await expect(section.locator('[data-web-host]')).toHaveValue('https://api.exa.ai');
     await section.locator('[data-web-host]').fill(fixture.exa!.baseUrl);
     await section.locator('[data-web-host-save]').click();
@@ -26,6 +27,17 @@ test('T103.2 联网搜索：20 家目录、选 Exa、填 key、改地址、检�
     await expect(section.locator('[data-settings="web-search-status"]')).toContainText('能用', { timeout: 20_000 });
     await section.locator('[data-web-check]').click();
     await expect(section.locator('[data-settings="web-search-detail"]')).toContainText('上次检查', { timeout: 20_000 });
+
+    // 多开一家、标优先、改调度都能落库，关掉后 key/地址仍保留。
+    await section.locator('[data-web-toggle="duckduckgo"]').click();
+    await expect(section.locator('[data-web-toggle="duckduckgo"]')).toHaveText('开');
+    await section.locator('[data-web-provider="duckduckgo"]').locator('[data-web-up]').click();
+    await section.locator('[data-web-schedule-mode]').selectOption('cheap');
+    await expect(section.locator('[data-web-schedule-mode]')).toHaveValue('cheap', { timeout: 20_000 });
+    await section.locator('[data-web-schedule-count]').selectOption('3');
+    await expect(section.locator('[data-web-schedule-count]')).toHaveValue('3', { timeout: 20_000 });
+    await section.locator('[data-web-provider="exa"]').locator('button').nth(1).click();
+
 
     // key 写入后页面不回显；刷新后仍然只显示「key 已存」。
     const input = section.locator('[data-web-key-input]');

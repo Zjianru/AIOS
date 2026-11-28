@@ -100,8 +100,14 @@ pub enum Call {
     ExaKeyDelete(ExaKeyRequest),
     /// 读联网搜索服务商状态（不返回 key 正文）。
     WebSearchRead(WebSearchReadRequest),
-    /// 选一家服务商（null = 不选）；同一时间只注册一家。
-    WebSearchSelect(WebSearchSelectRequest),
+    /// 开一家服务商（保留 key/地址）。
+    WebSearchOpen(WebSearchOpenRequest),
+    /// 关一家服务商（保留 key/地址）。
+    WebSearchClose(WebSearchOpenRequest),
+    /// 改优先顺序。
+    WebSearchPrioritySet(WebSearchPrioritySetRequest),
+    /// 改调度（没点名用哪家、每家取几条）。
+    WebSearchScheduleSet(WebSearchScheduleSetRequest),
     /// 存/换一家的 key。
     WebSearchKeySave(WebSearchKeySaveRequest),
     /// 删一家的 key。
@@ -110,7 +116,7 @@ pub enum Call {
     WebSearchHostSet(WebSearchHostSetRequest),
     /// 改 SearXNG 的 Basic 用户/密码。
     WebSearchAuthSet(WebSearchAuthSetRequest),
-    /// 用选中那家发一次最小搜索，结果写回检查状态。
+    /// 用优先顺序里第一家能开工的发一次最小搜索，结果写回检查状态。
     WebSearchCheck(WebSearchReadRequest),
     /// 写非密钥设置（只写 settings.json）。
     SettingsUpdate(SettingsUpdateRequest),
@@ -209,7 +215,10 @@ pub enum Response {
     ExaKeyCheck(ExaKeyResponse),
     ExaKeyDelete(ExaKeyResponse),
     WebSearchRead(WebSearchReadResponse),
-    WebSearchSelect(WebSearchReadResponse),
+    WebSearchOpen(WebSearchReadResponse),
+    WebSearchClose(WebSearchReadResponse),
+    WebSearchPrioritySet(WebSearchReadResponse),
+    WebSearchScheduleSet(WebSearchReadResponse),
     WebSearchKeySave(WebSearchReadResponse),
     WebSearchKeyDelete(WebSearchReadResponse),
     WebSearchHostSet(WebSearchReadResponse),
@@ -1497,11 +1506,24 @@ pub type ExaKeyResponse = credentials::ToolKeyView;
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct WebSearchReadRequest {}
 
-/// 选一家服务商；id 为 None = 不选。
+/// 开/关一家服务商（保留 key/地址）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-pub struct WebSearchSelectRequest {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
+pub struct WebSearchOpenRequest {
+    pub id: String,
+}
+
+/// 优先顺序（只保留开着的 id；服务端补全没列的）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct WebSearchPrioritySetRequest {
+    pub ids: Vec<String>,
+}
+
+/// 没点名时的调度：mode=balanced|quality|cheap，perProvider=3|5|10。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct WebSearchScheduleSetRequest {
+    pub mode: String,
+    pub per_provider: u8,
 }
 
 /// 引用一家服务商（删 key/查地址等）。
@@ -1554,6 +1576,12 @@ pub struct WebSearchProviderView {
     pub basic_user: String,
     #[serde(default)]
     pub basic_saved: bool,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub price_per_search: String,
+    #[serde(default)]
+    pub domain_filter: bool,
     pub check: credentials::CheckState,
 }
 
@@ -1561,9 +1589,27 @@ pub struct WebSearchProviderView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct WebSearchReadResponse {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub selected: Option<String>,
+    pub enabled: Vec<String>,
+    pub priority: Vec<String>,
+    pub schedule: WebSearchScheduleView,
     pub providers: Vec<WebSearchProviderView>,
+}
+
+/// 没点名时的调度视图。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct WebSearchScheduleView {
+    pub mode: String,
+    pub per_provider: u8,
+}
+
+impl From<&crate::settings::WebSearchSchedule> for WebSearchScheduleView {
+    fn from(value: &crate::settings::WebSearchSchedule) -> Self {
+        Self {
+            mode: value.mode.clone(),
+            per_provider: value.per_provider,
+        }
+    }
 }
 
 /// 写非密钥设置（settings.json）；只碰非密钥设置，不碰 Keyring/连接。
@@ -2211,7 +2257,7 @@ pub struct ActionActResponse {
 ///
 /// 连接上的旧价格乘数后来整条删掉，不升版本：两个请求里的这个字段本来就可省略，旧页再发
 /// 由 serde 当未知字段忽略；响应里少了它，旧页读到 undefined 也不会拿去定价。
-pub const PROTOCOL_VERSION: u64 = 38;
+pub const PROTOCOL_VERSION: u64 = 39;
 
 /// 日历读取：不带 appointmentId 读全部；带 week 时额外给那周的计划点。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
