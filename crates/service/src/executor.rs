@@ -105,11 +105,12 @@ fn expected_tool_lists(
     (expected, legacy)
 }
 
-/// ThinAgent 的只读工具名单（D152：读/搜索/skill/待办 + 三件联网 + 上报/交回，共 10 件）。
-pub const THIN_TOOLS: [&str; 10] = [
+/// ThinAgent 的只读工具名单（构造期 only 过滤；顺序就是名单顺序）。
+pub const THIN_TOOLS: [&str; 27] = [
     "read",
     "glob",
     "grep",
+    "office_read",
     "skill",
     "todo_write",
     "web_search_sources",
@@ -117,29 +118,33 @@ pub const THIN_TOOLS: [&str; 10] = [
     "web_fetch",
     "task_report",
     "task_handback",
+    "task_ledger_note",
+    "task_ledger_history",
+    "vision_describe",
+    "vision_bootstrap",
+    "vision_ground",
+    "vision_detect",
+    "vision_crop",
+    "vision_pixel_diff",
+    "vision_colors",
+    "vision_ocr",
+    "vision_long_screenshot_ocr",
+    "vision_trace",
+    "vision_extract_foreground",
+    "vision_html_screenshot",
+    "vision_screenshot",
+    "vision_present",
 ];
 
-/// 写任务的 ThinAgent 工具名单：只读 10 件加 write、edit（共 12 件）。
-pub const THIN_WRITE_TOOLS: [&str; 12] = [
+/// 写任务的 ThinAgent 工具名单：只读 9 件加 write、edit（D85）。
+pub const THIN_WRITE_TOOLS: [&str; 31] = [
     "read",
     "glob",
     "grep",
-    "skill",
-    "todo_write",
-    "web_search_sources",
-    "web_search",
-    "web_fetch",
-    "task_report",
-    "task_handback",
+    "office_read",
+    "office_create",
     "write",
     "edit",
-];
-
-/// 开了 bash 的写任务：写任务 12 件再加 bash 和后台任务三件（共 16 件）。
-pub const THIN_WRITE_BASH_TOOLS: [&str; 16] = [
-    "read",
-    "glob",
-    "grep",
     "skill",
     "todo_write",
     "web_search_sources",
@@ -147,12 +152,62 @@ pub const THIN_WRITE_BASH_TOOLS: [&str; 16] = [
     "web_fetch",
     "task_report",
     "task_handback",
+    "task_ledger_note",
+    "task_ledger_history",
+    "vision_describe",
+    "vision_bootstrap",
+    "vision_ground",
+    "vision_detect",
+    "vision_crop",
+    "vision_pixel_diff",
+    "vision_colors",
+    "vision_ocr",
+    "vision_long_screenshot_ocr",
+    "vision_trace",
+    "vision_extract_foreground",
+    "vision_html_screenshot",
+    "vision_screenshot",
+    "vision_present",
+    "vision_materialize",
+];
+
+/// 开了 bash 的写任务：写任务 11 件再加 bash 和后台任务三件（D85）。
+pub const THIN_WRITE_BASH_TOOLS: [&str; 35] = [
+    "read",
+    "glob",
+    "grep",
+    "office_read",
+    "office_create",
     "write",
     "edit",
     "bash",
     "job_output",
     "job_list",
     "job_kill",
+    "skill",
+    "todo_write",
+    "web_search_sources",
+    "web_search",
+    "web_fetch",
+    "task_report",
+    "task_handback",
+    "task_ledger_note",
+    "task_ledger_history",
+    "vision_describe",
+    "vision_bootstrap",
+    "vision_ground",
+    "vision_detect",
+    "vision_crop",
+    "vision_pixel_diff",
+    "vision_colors",
+    "vision_ocr",
+    "vision_long_screenshot_ocr",
+    "vision_trace",
+    "vision_extract_foreground",
+    "vision_html_screenshot",
+    "vision_screenshot",
+    "vision_present",
+    "vision_materialize",
 ];
 
 /// 默认角色的规则（ThinAgent 的 policy_prompt，追加在系统提示末尾；Kind 不装）。
