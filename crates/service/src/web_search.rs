@@ -3,16 +3,15 @@
 //! 同一时间只选一家；没选或缺 key/地址（智谱/DeepSeek 要模型连接的 key）时 web 整组
 //! 不开。检测失败只写回检查状态，不挡工具门；key 永不回显。
 
-use credentials::CheckResult;
 use crate::ServiceError;
 use crate::protocol::{
-    WebSearchAuthSetRequest, WebSearchHostSetRequest, WebSearchKeyRequest,
-    WebSearchKeySaveRequest, WebSearchProviderView, WebSearchReadResponse,
-    WebSearchSelectRequest,
+    WebSearchAuthSetRequest, WebSearchHostSetRequest, WebSearchKeyRequest, WebSearchKeySaveRequest,
+    WebSearchProviderView, WebSearchReadResponse, WebSearchSelectRequest,
 };
 use crate::root_lifecycle::RootHost;
 use crate::settings_surface::now_seconds;
 use crate::web::providers::{self, KeyNeed, ProviderSpec, SearchError};
+use credentials::CheckResult;
 
 /// 页面上每家服务商的 key 需求文案。
 fn key_need_label(need: KeyNeed) -> &'static str {
@@ -39,18 +38,14 @@ impl RootHost {
         crate::settings::load(&self.options.data_dir)
     }
 
-    fn save_web_settings(
-        &self,
-        settings: &crate::settings::Settings,
-    ) -> Result<(), ServiceError> {
+    fn save_web_settings(&self, settings: &crate::settings::Settings) -> Result<(), ServiceError> {
         crate::settings::save(&self.options.data_dir, settings)
             .map_err(ServiceError::SettingsInvalid)
     }
 
     fn spec(&self, id: &str) -> Result<&'static ProviderSpec, ServiceError> {
-        providers::provider(id).ok_or_else(|| {
-            ServiceError::SettingsInvalid(format!("没有这个搜索服务商：{id}"))
-        })
+        providers::provider(id)
+            .ok_or_else(|| ServiceError::SettingsInvalid(format!("没有这个搜索服务商：{id}")))
     }
 
     fn llm_connection(
@@ -64,10 +59,7 @@ impl RootHost {
             "deepseek" => "deepseek",
             _ => return None,
         };
-        let synced = keyring
-            .search_sync_connection(spec.id)
-            .ok()
-            .flatten();
+        let synced = keyring.search_sync_connection(spec.id).ok().flatten();
         if let Some(id) = synced {
             return ids
                 .iter()
@@ -79,11 +71,7 @@ impl RootHost {
             .map(|connection| connection.id.clone())
     }
 
-    fn key_saved(
-        &self,
-        keyring: &credentials::Keyring,
-        spec: &ProviderSpec,
-    ) -> bool {
+    fn key_saved(&self, keyring: &credentials::Keyring, spec: &ProviderSpec) -> bool {
         match spec.key_need {
             KeyNeed::Required | KeyNeed::Optional => keyring.search_key_saved(spec.id),
             KeyNeed::None => true,
@@ -113,11 +101,7 @@ impl RootHost {
         let key = match spec.key_need {
             KeyNeed::Required => {
                 if keyring.search_key_saved(spec.id) {
-                    Some(
-                        keyring
-                            .issue_search_key(spec.id, "网页搜索")?
-                            .into_secret(),
-                    )
+                    Some(keyring.issue_search_key(spec.id, "网页搜索")?.into_secret())
                 } else {
                     missing = Some("还没有 key".to_owned());
                     None
@@ -125,11 +109,7 @@ impl RootHost {
             }
             KeyNeed::Optional => {
                 if keyring.search_key_saved(spec.id) {
-                    Some(
-                        keyring
-                            .issue_search_key(spec.id, "网页搜索")?
-                            .into_secret(),
-                    )
+                    Some(keyring.issue_search_key(spec.id, "网页搜索")?.into_secret())
                 } else {
                     None
                 }
@@ -138,9 +118,19 @@ impl RootHost {
             KeyNeed::Llm => {
                 let Some(connection) = self.llm_connection(&keyring, spec) else {
                     missing = Some("模型连接里没有可用的 key".to_owned());
-                    return Ok(Some(SelectedSearch { spec, host, key: None, basic: None, missing }));
+                    return Ok(Some(SelectedSearch {
+                        spec,
+                        host,
+                        key: None,
+                        basic: None,
+                        missing,
+                    }));
                 };
-                Some(keyring.issue(&connection, "网页搜索", None, None)?.into_secret())
+                Some(
+                    keyring
+                        .issue(&connection, "网页搜索", None, None)?
+                        .into_secret(),
+                )
             }
         };
         let basic = if spec.basic_auth && keyring.search_basic_saved() {
@@ -150,12 +140,7 @@ impl RootHost {
                 .get(spec.id)
                 .map(|auth| auth.user.clone())
                 .unwrap_or_default();
-            Some((
-                user,
-                keyring
-                    .issue_search_basic("网页搜索")?
-                    .into_secret(),
-            ))
+            Some((user, keyring.issue_search_basic("网页搜索")?.into_secret()))
         } else {
             None
         };
@@ -184,12 +169,15 @@ impl RootHost {
         let providers = providers::PROVIDERS
             .iter()
             .map(|spec| {
-                let view = keyring.search_key_view(spec.id).unwrap_or(
-                    credentials::ToolKeyView {
-                        key: credentials::ToolKeyInfo { saved: false, saved_at: None },
+                let view = keyring
+                    .search_key_view(spec.id)
+                    .unwrap_or(credentials::ToolKeyView {
+                        key: credentials::ToolKeyInfo {
+                            saved: false,
+                            saved_at: None,
+                        },
                         check: credentials::CheckState::Never,
-                    },
-                );
+                    });
                 let saved = self.key_saved(&keyring, spec);
                 let saved_at = if saved {
                     view.key
@@ -221,7 +209,8 @@ impl RootHost {
                     key_saved_at: saved_at,
                     basic_supported: spec.basic_auth,
                     basic_user: auth_user,
-                    basic_saved: spec.basic_auth && basic.as_ref().is_some_and(|view| view.key.saved),
+                    basic_saved: spec.basic_auth
+                        && basic.as_ref().is_some_and(|view| view.key.saved),
                     check: view.check,
                 }
             })
@@ -270,7 +259,8 @@ impl RootHost {
         }
         self.keyring()?.save_search_key(spec.id, &request.key)?;
         if spec.id == "deepseek" {
-            self.keyring()?.set_search_sync_connection("deepseek", Some("deepseek"))?;
+            self.keyring()?
+                .set_search_sync_connection("deepseek", Some("deepseek"))?;
         }
         self.after_web_change().await?;
         self.web_search_read().await
@@ -297,10 +287,7 @@ impl RootHost {
         if host.is_empty() || host == spec.host {
             settings.web_search.hosts.remove(spec.id);
         } else {
-            settings
-                .web_search
-                .hosts
-                .insert(spec.id.to_owned(), host);
+            settings.web_search.hosts.insert(spec.id.to_owned(), host);
         }
         self.save_web_settings(&settings)?;
         self.after_web_change().await?;
@@ -329,10 +316,7 @@ impl RootHost {
         if auth.user.is_empty() {
             settings.web_search.auth.remove(spec.id);
         } else {
-            settings
-                .web_search
-                .auth
-                .insert(spec.id.to_owned(), auth);
+            settings.web_search.auth.insert(spec.id.to_owned(), auth);
         }
         self.save_web_settings(&settings)?;
         if let Some(password) = request.password {
@@ -346,9 +330,7 @@ impl RootHost {
         self.web_search_read().await
     }
 
-    pub(crate) async fn web_search_check(
-        &self,
-    ) -> Result<WebSearchReadResponse, ServiceError> {
+    pub(crate) async fn web_search_check(&self) -> Result<WebSearchReadResponse, ServiceError> {
         let Some(selected) = self.selected_search()? else {
             return Err(ServiceError::SettingsInvalid(
                 "先选一家搜索服务商再检测".to_owned(),
@@ -356,7 +338,10 @@ impl RootHost {
         };
         let at = now_seconds();
         let result = match &selected.missing {
-            Some(reason) => CheckResult::Fail { at, reason: reason.clone() },
+            Some(reason) => CheckResult::Fail {
+                at,
+                reason: reason.clone(),
+            },
             None => {
                 let basic = selected
                     .basic
@@ -407,9 +392,8 @@ pub(crate) fn selected_for(
     let Some(id) = settings.web_search.selected.as_deref() else {
         return Ok(None);
     };
-    let spec = providers::provider(id).ok_or_else(|| {
-        ServiceError::SettingsInvalid(format!("没有这个搜索服务商：{id}"))
-    })?;
+    let spec = providers::provider(id)
+        .ok_or_else(|| ServiceError::SettingsInvalid(format!("没有这个搜索服务商：{id}")))?;
     let keyring = credentials::Keyring::open(data_dir, identity)?;
     let connections = keyring.view().connections;
     let host = settings
@@ -461,9 +445,19 @@ pub(crate) fn selected_for(
         KeyNeed::Llm => {
             let Some(connection) = llm_connection() else {
                 missing = Some("模型连接里没有可用的 key".to_owned());
-                return Ok(Some(SelectedSearch { spec, host, key: None, basic: None, missing }));
+                return Ok(Some(SelectedSearch {
+                    spec,
+                    host,
+                    key: None,
+                    basic: None,
+                    missing,
+                }));
             };
-            Some(keyring.issue(&connection, "网页搜索", None, None)?.into_secret())
+            Some(
+                keyring
+                    .issue(&connection, "网页搜索", None, None)?
+                    .into_secret(),
+            )
         }
     };
     let basic = if spec.basic_auth && keyring.search_basic_saved() {
@@ -477,14 +471,17 @@ pub(crate) fn selected_for(
     } else {
         None
     };
-    Ok(Some(SelectedSearch { spec, host, key, basic, missing }))
+    Ok(Some(SelectedSearch {
+        spec,
+        host,
+        key,
+        basic,
+        missing,
+    }))
 }
 
 /// 工具门用：选中且无缺项。
-pub(crate) fn ready_for(
-    data_dir: &std::path::Path,
-    identity: Option<&std::path::Path>,
-) -> bool {
+pub(crate) fn ready_for(data_dir: &std::path::Path, identity: Option<&std::path::Path>) -> bool {
     selected_for(data_dir, identity)
         .ok()
         .flatten()

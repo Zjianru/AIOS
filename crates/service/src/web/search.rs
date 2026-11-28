@@ -55,14 +55,14 @@ impl WebSearchTool {
 
     /// 跑一批查询：任一条失败整批失败；成功的结果按查询顺序轮流合并。
     async fn search(&self, queries: &[String]) -> Result<String, ToolFailure> {
-        let selected = crate::web_search::selected_for(
-            &self.config.data_dir,
-            self.config.identity.as_deref(),
-        )
-        .map_err(|error| ToolFailure::plain(error.to_string()))?
-        .ok_or_else(|| {
-            ToolFailure::plain("还没有选联网搜索服务商；去设置页 › 模型与连接 › 联网搜索 选一家")
-        })?;
+        let selected =
+            crate::web_search::selected_for(&self.config.data_dir, self.config.identity.as_deref())
+                .map_err(|error| ToolFailure::plain(error.to_string()))?
+                .ok_or_else(|| {
+                    ToolFailure::plain(
+                        "还没有选联网搜索服务商；去设置页 › 模型与连接 › 联网搜索 选一家",
+                    )
+                })?;
         if let Some(missing) = &selected.missing {
             return Err(ToolFailure::plain(format!(
                 "联网搜索还不能用：{missing}；去设置页 › 模型与连接 › 联网搜索 补上（设置 › 模型与连接 › 联网搜索）"

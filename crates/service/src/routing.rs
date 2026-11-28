@@ -168,10 +168,7 @@ impl RootHost {
                 .web_search_auth_set(request)
                 .await
                 .map(Response::WebSearchAuthSet),
-            Call::WebSearchCheck(_) => self
-                .web_search_check()
-                .await
-                .map(Response::WebSearchCheck),
+            Call::WebSearchCheck(_) => self.web_search_check().await.map(Response::WebSearchCheck),
             // 写非密钥设置。
             Call::SettingsUpdate(request) => self
                 .settings_update(request)

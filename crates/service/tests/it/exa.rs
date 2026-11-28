@@ -316,6 +316,14 @@ async fn web_skill_and_tools_follow_the_exa_key_in_the_root_session() {
         .map(|request| serde_json::from_slice(&request.body).expect("请求体"))
         .collect();
     assert_eq!(bodies.len(), 3, "第一轮一步 + 第二轮两步");
+    // D73：中途补 key，前面已经发过的消息前缀一字不改；只在新请求末尾追加。
+    let first_messages = bodies[0]["messages"].as_array().expect("第一轮 messages");
+    let second_messages = bodies[1]["messages"].as_array().expect("第二轮 messages");
+    assert_eq!(
+        &second_messages[..first_messages.len()],
+        first_messages.as_slice(),
+        "补 key 后旧消息前缀不变"
+    );
     let names = |body: &serde_json::Value| -> BTreeSet<String> {
         body["tools"]
             .as_array()

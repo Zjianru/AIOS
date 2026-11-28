@@ -177,6 +177,17 @@ async function lastToolNames(request: import('@playwright/test').APIRequestConte
   return (body.request?.tools ?? []).map((tool) => String(tool.name ?? ''));
 }
 
+async function allToolNames(
+  request: import('@playwright/test').APIRequestContext,
+  fixture: { fakeEndpoint: string },
+): Promise<string[][]> {
+  const response = await request.get(fixture.fakeEndpoint + '/__replay/requests');
+  const body = (await response.json()) as { requests?: LastRequest['request'][] };
+  return (body.requests ?? []).map((item) =>
+    (item?.tools ?? []).map((tool) => String(tool.name ?? '')),
+  );
+}
+
 test('Kind：无 Exa key 时全量 44（不含 web_* / write / edit / bash / job_*）', async ({ page, request }) => {
   test.setTimeout(120_000);
   const fixture = await startKernelFixture({ routeModel: 'replay-uncatalogued-model' });
@@ -253,26 +264,25 @@ test('存了 Exa key：Kind 46 / ThinAgent 25，含 web_*（D73 key 后出现）
     await page.goto(urlOf(fixture));
     await page.getByPlaceholder('和 Kind 说…').fill('查一下新闻归档里重复链接的判重规则和影响范围');
     await page.getByRole('button', { name: '发送', exact: true }).click();
-    // Kind 第一轮：全量 + web_*。
+    // Kind 第一轮：全量 + web_*。两个会话的请求会交错，按工具表认 Kind（含 kind_say），
+    // 不能拿「最后一条请求」当 Kind。
     await expect
-      .poll(async () => (await lastToolNames(request, fixture)).length, { timeout: 30_000 })
-      .toBeGreaterThan(0);
-    expect(await lastToolNames(request, fixture)).toEqual(KIND_FULL_WITH_KEY);
+      .poll(
+        async () => (await allToolNames(request, fixture)).some((tools) => tools.includes('kind_say')),
+        { timeout: 30_000 },
+      )
+      .toBe(true);
+    const kindTools = await allToolNames(request, fixture);
+    expect(kindTools.find((tools) => tools.includes('kind_say'))).toEqual(KIND_FULL_WITH_KEY);
     // ThinAgent（只读任务）：全量 + web_*。
-    const seen: string[][] = [];
-    for (let attempt = 0; attempt < 400; attempt += 1) {
-      const tools = await lastToolNames(request, fixture);
-      if (tools.includes('task_report')) {
-        const key = tools.join(',');
-        if (!seen.some((list) => list.join(',') === key)) seen.push(tools);
-        if (seen.length >= 1) break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    expect(seen.length).toBeGreaterThanOrEqual(1);
-    for (const tools of seen) {
-      expect(tools).toEqual(THIN_READ_WITH_KEY);
-    }
+    await expect
+      .poll(
+        async () => (await allToolNames(request, fixture)).some((tools) => tools.includes('task_report')),
+        { timeout: 30_000 },
+      )
+      .toBe(true);
+    const thinTools = (await allToolNames(request, fixture)).find((tools) => tools.includes('task_report'));
+    expect(thinTools).toEqual(THIN_READ_WITH_KEY);
   } finally {
     await fixture.close();
   }

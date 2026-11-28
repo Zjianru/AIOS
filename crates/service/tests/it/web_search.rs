@@ -2,8 +2,8 @@
 
 use service::{
     Call, ExaKeyRequest, ExaKeySaveRequest, Response, RootHost, WebSearchAuthSetRequest,
-    WebSearchHostSetRequest, WebSearchKeyRequest, WebSearchKeySaveRequest,
-    WebSearchReadRequest, WebSearchSelectRequest,
+    WebSearchHostSetRequest, WebSearchKeyRequest, WebSearchKeySaveRequest, WebSearchReadRequest,
+    WebSearchSelectRequest,
 };
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -47,7 +47,11 @@ async fn web_search_read_has_twenty_providers_and_never_returns_a_key() {
         .expect("save key")
     {
         Response::WebSearchKeySave(view) => {
-            let exa = view.providers.iter().find(|provider| provider.id == "exa").unwrap();
+            let exa = view
+                .providers
+                .iter()
+                .find(|provider| provider.id == "exa")
+                .unwrap();
             assert!(exa.key_saved, "存了 key");
             let json = serde_json::to_string(&view).unwrap();
             assert!(!json.contains("exa-secret-one"), "响应里不能有 key：{json}");
@@ -116,8 +120,16 @@ async fn exa_check_writes_ok_and_fail_and_host_is_stored() {
         Response::WebSearchCheck(view) => view,
         other => panic!("期望 WebSearchCheck：{other:?}"),
     };
-    let exa = checked.providers.iter().find(|provider| provider.id == "exa").unwrap();
-    assert!(matches!(exa.check, credentials::CheckState::Ok { .. }), "{:?}", exa.check);
+    let exa = checked
+        .providers
+        .iter()
+        .find(|provider| provider.id == "exa")
+        .unwrap();
+    assert!(
+        matches!(exa.check, credentials::CheckState::Ok { .. }),
+        "{:?}",
+        exa.check
+    );
 }
 
 #[tokio::test]
@@ -158,7 +170,11 @@ async fn searxng_basic_password_is_saved_in_keyring_and_sent() {
         Response::WebSearchAuthSet(view) => view,
         other => panic!("期望 WebSearchAuthSet：{other:?}"),
     };
-    let searx = view.providers.iter().find(|provider| provider.id == "searxng").unwrap();
+    let searx = view
+        .providers
+        .iter()
+        .find(|provider| provider.id == "searxng")
+        .unwrap();
     assert!(searx.basic_saved);
     assert_eq!(searx.basic_user, "user");
     let json = serde_json::to_string(&view).unwrap();
@@ -172,7 +188,11 @@ async fn searxng_basic_password_is_saved_in_keyring_and_sent() {
         Response::WebSearchCheck(view) => view,
         other => panic!("期望 WebSearchCheck：{other:?}"),
     };
-    let searx = checked.providers.iter().find(|provider| provider.id == "searxng").unwrap();
+    let searx = checked
+        .providers
+        .iter()
+        .find(|provider| provider.id == "searxng")
+        .unwrap();
     assert!(
         matches!(searx.check, credentials::CheckState::Ok { .. }),
         "{:?}",

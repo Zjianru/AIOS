@@ -16,6 +16,8 @@ struct Shared {
     last_model: Option<String>,
     /// T012.9：最近一次请求的完整请求体（e2e 断言思考档用）。
     last_request: Option<serde_json::Value>,
+    /// 这一轮跑过的请求体（e2e 要按工具表认 Kind/ThinAgent，时序不保证最后一条是谁）。
+    requests: Vec<serde_json::Value>,
     /// 假厂商的 /v1/models：空表照旧 404；非空时回这个列表（保存连接会来拉一次）。
     vendor_models: Vec<String>,
 }
@@ -74,6 +76,7 @@ pub async fn start_replay_server_with_models(
         routes: script.routes.into_iter().map(RouteState::new).collect(),
         last_model: None,
         last_request: None,
+        requests: Vec::new(),
         vendor_models,
     }));
     let task = tokio::spawn(async move {
@@ -134,6 +137,13 @@ async fn handle(mut stream: TcpStream, shared: Arc<Mutex<Shared>>) -> std::io::R
     }
     // T010.2：测试夹具要断言下一轮用的模型；控制端点回最近一次请求的 model。
     // T012.9：测试夹具要断言下一轮请求的思考档；控制端点回最近一次请求的完整 body。
+    if path.contains("__replay/requests") {
+        let requests = shared.lock().await.requests.clone();
+        let body = serde_json::json!({ "requests": requests })
+            .to_string()
+            .into_bytes();
+        return write_response(&mut stream, 200, "application/json", body).await;
+    }
     if path.contains("__replay/last-request") {
         let request = shared.lock().await.last_request.clone();
         let body = serde_json::json!({ "request": request })
@@ -162,6 +172,10 @@ async fn handle(mut stream: TcpStream, shared: Arc<Mutex<Shared>>) -> std::io::R
         }
         if !body_value.is_null() {
             state.last_request = Some(body_value.clone());
+            state.requests.push(body_value.clone());
+            if state.requests.len() > 200 {
+                state.requests.remove(0);
+            }
         }
         if state.routes.is_empty() {
             let index = state.cursor;

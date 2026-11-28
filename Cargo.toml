@@ -52,7 +52,3 @@ uninlined_format_args = "warn"
 collapsible_if = "warn"
 redundant_closure_for_method_calls = "warn"
 let_underscore_must_use = "warn"
-
-# 依赖不带调试信息：减少 target/debug deps 体积；自己的 crate 保持默认调试信息。
-[profile.dev.package."*"]
-debug = false

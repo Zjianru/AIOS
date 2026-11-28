@@ -64,9 +64,10 @@ impl Keyring {
     ) -> Result<ToolKeyView, KeyringError> {
         let _lock = self.lock()?;
         let mut store = self.load_store()?;
-        let stored = store.tool_keys.get_mut(provider).ok_or_else(|| {
-            KeyringError::InvalidToolKey(format!("还没有 {provider} 的 key"))
-        })?;
+        let stored = store
+            .tool_keys
+            .get_mut(provider)
+            .ok_or_else(|| KeyringError::InvalidToolKey(format!("还没有 {provider} 的 key")))?;
         stored.check = match result {
             CheckResult::Ok { at } => CheckState::Ok { at },
             CheckResult::Fail { at, reason } => CheckState::Fail { at, reason },
@@ -185,17 +186,17 @@ impl Keyring {
     pub fn search_basic_saved(&self) -> bool {
         self.load_store()
             .ok()
-            .and_then(|store| store.search_basic.map(|stored| !stored.api_key.trim().is_empty()))
+            .and_then(|store| {
+                store
+                    .search_basic
+                    .map(|stored| !stored.api_key.trim().is_empty())
+            })
             .unwrap_or(false)
     }
 
     /// DeepSeek 的搜索 key 来源连接 id（Keyring 内部同步；不存副本）。
     pub fn search_sync_connection(&self, provider: &str) -> Result<Option<String>, KeyringError> {
-        Ok(self
-            .load_store()?
-            .search_sync
-            .get(provider)
-            .cloned())
+        Ok(self.load_store()?.search_sync.get(provider).cloned())
     }
 
     pub fn set_search_sync_connection(
@@ -207,9 +208,7 @@ impl Keyring {
         let mut store = self.load_store()?;
         match connection {
             Some(id) => {
-                store
-                    .search_sync
-                    .insert(provider.to_owned(), id.to_owned());
+                store.search_sync.insert(provider.to_owned(), id.to_owned());
             }
             None => {
                 store.search_sync.remove(provider);
