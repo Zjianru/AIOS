@@ -123,6 +123,7 @@ async fn 空库起服务存连接后recheck用新模型() {
             result_card: None,
             result_cards: Vec::new(),
             canvases: Vec::new(),
+            source: None,
         }))
         .await;
     assert!(send.is_err(), "空库时发送应被拒：{send:?}");
@@ -177,6 +178,7 @@ async fn 空库起服务存连接后recheck用新模型() {
             result_card: None,
             result_cards: Vec::new(),
             canvases: Vec::new(),
+            source: None,
         }))
         .await
         .is_ok()

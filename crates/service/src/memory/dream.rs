@@ -692,6 +692,7 @@ fn service_send(request_id: &str, content: String) -> crate::protocol::SendReque
         result_card: None,
         result_cards: Vec::new(),
         canvases: Vec::new(),
+        source: None,
     }
 }
 

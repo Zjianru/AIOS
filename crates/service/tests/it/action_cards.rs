@@ -229,6 +229,7 @@ async fn send(host: &RootHost, text: &str, serial: u32) {
             result_card: None,
             result_cards: Vec::new(),
             canvases: Vec::new(),
+            source: None,
         }))
         .await
         .expect("send");

@@ -32,6 +32,7 @@ fn request(id: &str, attachment_id: &str) -> SendRequest {
         result_card: None,
         result_cards: Vec::new(),
         canvases: Vec::new(),
+        source: None,
     }
 }
 

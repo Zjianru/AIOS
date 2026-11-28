@@ -33,8 +33,8 @@ pub use error::{ErrorCode, ModelError};
 pub use image_projection::project_images;
 pub use ir::{
     BlockType, CanvasSource, ContentBlock, FinishReason, InstructionChange,
-    InstructionChangeAction, Message, MessageId, MessageSource, QuoteSource, Role,
-    SkillCatalogEntry, StreamChunk, ToolSchema, Usage, UserMessage,
+    InstructionChangeAction, Message, MessageId, MessageSource, PageContextSource, QuoteSource,
+    Role, SkillCatalogEntry, StreamChunk, ToolSchema, Usage, UserMessage,
 };
 pub use tool_updates::{ToolAddition, ToolHistory, ToolRequest, ToolUpdate};
 

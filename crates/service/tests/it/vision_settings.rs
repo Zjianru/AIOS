@@ -208,6 +208,7 @@ async fn g1_filling_the_chain_appends_one_static_notice() {
         result_card: None,
         result_cards: Vec::new(),
         canvases: Vec::new(),
+        source: None,
     }))
     .await
     .expect("send");

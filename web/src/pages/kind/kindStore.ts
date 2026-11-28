@@ -782,7 +782,15 @@ export const useKindStore = create<KindState>()((set, get) => ({
     return sendMessage(text, requestId, options).then(
       () => true,
       () => {
-        unsentSends.set(viewId, { requestId, text, pastes, files, canvases, resultCards });
+        unsentSends.set(viewId, {
+          requestId,
+          text,
+          pastes,
+          files,
+          canvases,
+          resultCards,
+          source: options?.source,
+        });
         addUnsentView(viewId, text, pastes, files, canvases, resultCards);
         return false;
       },
@@ -798,6 +806,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
       attachments: pending.files,
       canvases: pending.canvases,
       resultCards: pending.resultCards,
+      source: pending.source,
     })
       .then(() => {
         unsentSends.delete(viewId);

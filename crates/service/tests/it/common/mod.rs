@@ -74,9 +74,7 @@ pub fn options(data_dir: &Path) -> RootSessionOptions {
 }
 
 pub async fn open(options: RootSessionOptions) -> RootHost {
-    let data_dir = options.data_dir.clone();
-    let host = RootHost::open(options, DEFAULT_CONTEXT_WINDOW).await;
-    host
+    RootHost::open(options, DEFAULT_CONTEXT_WINDOW).await
 }
 
 /// 一次工具调用的 SSE（参数走 input_json_delta，和真模型一样）。

@@ -625,6 +625,7 @@ pub(super) fn send(_host: &RootHost, request_id: &str, text: &str) -> SendReques
         result_card: None,
         result_cards: Vec::new(),
         canvases: Vec::new(),
+        source: None,
     }
 }
 

@@ -4,8 +4,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use service::{
-    AttachmentPutRequest, Call, RootHost, SendAttachment, SendCanvas, SendObjectRef, SendQuote,
-    SendRequest, SendResultCard,
+    AttachmentPutRequest, Call, RootHost, SendAttachment, SendCanvas, SendObjectRef,
+    SendPageSource, SendQuote, SendRequest, SendResultCard,
 };
 use tempfile::tempdir;
 
@@ -54,6 +54,7 @@ fn request(content: &str) -> SendRequest {
         result_card: None,
         result_cards: Vec::new(),
         canvases: Vec::new(),
+        source: None,
     }
 }
 
@@ -91,6 +92,36 @@ async fn wait_user_blocks(host: &RootHost, data_dir: &Path) -> Vec<model::Conten
         }
     }
     panic!("等不到 user/message");
+}
+
+#[tokio::test]
+async fn page_source_is_a_hidden_block_after_the_user_text() {
+    let data = tempdir().unwrap();
+    let cwd = tempdir().unwrap();
+    let host = host(data.path(), cwd.path()).await;
+    let mut source = request("加一个看图模型");
+    source.source = Some(SendPageSource {
+        path: "settings:model".to_owned(),
+        title: "设置 · 模型与连接".to_owned(),
+        group: "model".to_owned(),
+    });
+    host.dispatch(Call::Send(source)).await.expect("send");
+    let blocks = wait_user_blocks(&host, data.path()).await;
+    assert_eq!(blocks.len(), 2, "{blocks:?}");
+    assert!(
+        matches!(&blocks[0], model::ContentBlock::Text { text, .. } if text == "加一个看图模型")
+    );
+    let model::ContentBlock::Text {
+        text, page_context, ..
+    } = &blocks[1]
+    else {
+        panic!("第二块要是页面来源：{blocks:?}");
+    };
+    assert!(text.starts_with("[page-context settings:model]"), "{text}");
+    let context = page_context.as_ref().expect("pageContext");
+    assert_eq!(context.path, "settings:model");
+    assert_eq!(context.title, "设置 · 模型与连接");
+    assert_eq!(context.group, "model");
 }
 
 #[tokio::test]

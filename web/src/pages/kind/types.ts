@@ -129,6 +129,7 @@ export interface KindState {
  /** （N2）：一次放回多条画布/结果卡，按顺序。 */
       canvases?: { id: string; title: string }[];
       resultCards?: { taskId: string; title: string; version: number }[];
+      source?: { path: string; title: string; group: string };
     },
   ) => Promise<boolean>;
   resend: (turnId: string) => void;

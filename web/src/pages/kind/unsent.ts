@@ -14,6 +14,7 @@ export const unsentSends = new Map<
     files: { id: string; name: string; bytes: number; mime?: string | null }[];
     canvases: { id: string; title: string }[];
     resultCards: { taskId: string; title: string; version: number }[];
+    source?: { path: string; title: string; group: string };
   }
 >();
 

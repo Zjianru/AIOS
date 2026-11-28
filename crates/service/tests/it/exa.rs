@@ -211,6 +211,7 @@ async fn an_exa_key_in_the_environment_is_not_used() {
         result_card: None,
         result_cards: Vec::new(),
         canvases: Vec::new(),
+        source: None,
     }))
     .await
     .expect("发消息");
@@ -269,6 +270,7 @@ async fn web_skill_and_tools_follow_the_exa_key_in_the_root_session() {
         result_card: None,
         result_cards: Vec::new(),
         canvases: Vec::new(),
+        source: None,
     }))
     .await
     .expect("发第一轮");
@@ -295,6 +297,7 @@ async fn web_skill_and_tools_follow_the_exa_key_in_the_root_session() {
         result_card: None,
         result_cards: Vec::new(),
         canvases: Vec::new(),
+        source: None,
     }))
     .await
     .expect("发第二轮");

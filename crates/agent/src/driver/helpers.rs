@@ -118,6 +118,7 @@ pub(super) fn interrupted_content(
                     text: text.clone(),
                     paste: false,
                     canvas: None,
+                    page_context: None,
                 },
                 BlockType::Reasoning => ContentBlock::Reasoning {
                     text: text.clone(),
@@ -127,6 +128,7 @@ pub(super) fn interrupted_content(
                     text: text.clone(),
                     paste: false,
                     canvas: None,
+                    page_context: None,
                 },
             })
         });
@@ -136,6 +138,7 @@ pub(super) fn interrupted_content(
                     text,
                     paste: false,
                     canvas: None,
+                    page_context: None,
                 });
             }
             Some(ContentBlock::Reasoning { text, .. }) if !text.trim().is_empty() => {

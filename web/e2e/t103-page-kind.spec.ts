@@ -41,6 +41,10 @@ test('T103.1 设置页 Kind 加看图模型：卡确认后设置变、Kind 对�
     await suggestion.click();
     await expect(page.locator('[data-kind="page-kind-input"]')).toHaveValue('');
     await expect(page.locator('[data-kind="page-kind-conversation"]')).toContainText('加一个看图模型', { timeout: 20_000 });
+    const bubble = page.locator('[data-kind="page-kind-conversation"] [data-kind="user-bubble"]').last();
+    await expect(bubble).toHaveText('加一个看图模型');
+    await expect(bubble).not.toContainText('page-context');
+    await expect(bubble).not.toContainText('在看');
 
     const card = page.locator('[data-kind="confirm-card"]').last();
     try {
@@ -61,7 +65,9 @@ test('T103.1 设置页 Kind 加看图模型：卡确认后设置变、Kind 对�
     // 回到 Kind：这句用户消息、卡和回执都在同一条根 Kind 对话里。
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind');
     await expect(page.locator('[data-kind="composer-input"]')).toBeVisible({ timeout: 60_000 });
-    await expect(page.locator('body')).toContainText('在看：设置 · 模型与连接', { timeout: 30_000 });
+    const kindBubble = page.locator('[data-kind="user-bubble"]').filter({ hasText: '加一个看图模型' }).last();
+    await expect(kindBubble).toHaveText('加一个看图模型', { timeout: 30_000 });
+    await expect(page.locator('body')).not.toContainText('page-context');
   } finally {
     await fixture.close();
   }

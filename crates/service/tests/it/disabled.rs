@@ -203,6 +203,7 @@ async fn send(host: &RootHost, request_id: &str, text: &str) {
         result_card: None,
         result_cards: Vec::new(),
         canvases: Vec::new(),
+        source: None,
     }))
     .await
     .expect("受理发送");

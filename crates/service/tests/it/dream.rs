@@ -62,6 +62,7 @@ async fn send(root: &service::RootHost, id: &str, text: &str) {
         result_card: None,
         result_cards: Vec::new(),
         canvases: Vec::new(),
+        source: None,
     }))
     .await
     .expect("send");
@@ -621,7 +622,8 @@ async fn turn_and_relay_checks_coalesce_into_one_run() {
         result_card: None,
         result_cards: Vec::new(),
         canvases: Vec::new(),
-    }))
+        source: None,
+}))
     .await
     .expect("relay send");
     wait_idle(&root).await;

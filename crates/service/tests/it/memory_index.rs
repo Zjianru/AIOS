@@ -191,6 +191,7 @@ async fn send(root: &service::RootHost, request_id: &str, content: &str) {
         result_card: None,
         result_cards: Vec::new(),
         canvases: Vec::new(),
+        source: None,
     }))
     .await
     .expect("send");

@@ -3,7 +3,7 @@
 use crate::error::ServiceError;
 use crate::protocol::{StatusRequest, StatusResponse};
 use crate::root_lifecycle::RootHost;
-use crate::{settings, stats};
+use crate::stats;
 
 impl RootHost {
     /// 状态（对象/在跑/待答问题/工作目录）+ 会话统计（轮/步/token/缓存/上下文/花费）。
@@ -42,7 +42,6 @@ impl RootHost {
                 model: self.options.model.model.clone(),
                 effort_wanted: self.options.model.effort.as_str().to_owned(),
             });
-        let settings = settings::load(&self.options.data_dir);
         let keyring = self.keyring()?;
         let view = keyring.view();
         let connection = view

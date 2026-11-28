@@ -64,8 +64,10 @@ export function PageKind({ page }: { page: PageKindPage }) {
     if (!value || sending) return;
     setSending(true);
     try {
-      // 页面上下文是这条用户消息的一部分，跟在这句话末尾；不进固定块、不另建会话。
-      const accepted = await send(value + '\n\n（在看：' + page.where + '）', {});
+      // 页面来源是这条用户消息的 source；后端把它作为程序加的一行放在消息块末尾。
+      const accepted = await send(value, {
+        source: { path: page.path, title: page.where, group },
+      });
       if (accepted) setText('');
     } finally {
       setSending(false);

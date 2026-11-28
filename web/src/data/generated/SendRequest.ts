@@ -3,6 +3,7 @@ import type { DeliveryMode } from "./DeliveryMode";
 import type { SendAttachment } from "./SendAttachment";
 import type { SendCanvas } from "./SendCanvas";
 import type { SendObjectRef } from "./SendObjectRef";
+import type { SendPageSource } from "./SendPageSource";
 import type { SendQuote } from "./SendQuote";
 import type { SendResultCard } from "./SendResultCard";
 
@@ -41,4 +42,8 @@ resultCards?: Array<SendResultCard>,
 /**
  * （N2）：一次放回多个画布标记时按顺序排列（旧字段 canvas 保留兼容）。
  */
-canvases?: Array<SendCanvas>, };
+canvases?: Array<SendCanvas>,
+/**
+ * T103：页面 Kind 的程序来源标记（只记录路径/标题/组，不塞页面数据）。
+ */
+source?: SendPageSource | null, };

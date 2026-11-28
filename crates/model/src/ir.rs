@@ -185,6 +185,15 @@ pub struct QuoteSource {
     pub task_id: Option<String>,
 }
 
+/// T103：程序替页面加的一句来源标记；模型看到一行文字，页面不用它画用户气泡。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PageContextSource {
+    pub path: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub group: String,
+}
+
 /// 消息内容块。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
@@ -197,6 +206,13 @@ pub enum ContentBlock {
         /// T015.4：画布放进来的那一句带画布身份；普通文字块没有（只增可选字段，旧日志原样读）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         canvas: Option<CanvasSource>,
+        /// T103：页面 Kind 的来源标记（path/title/group）；只进模型和日志，页面不画成用户气泡。
+        #[serde(
+            default,
+            rename = "pageContext",
+            skip_serializing_if = "Option::is_none"
+        )]
+        page_context: Option<PageContextSource>,
     },
     /// 用户消息里的图片块（附件仓库里的原图；投给模型时按当前模型输入模态转 image 或占位行）。
     Image {
@@ -273,6 +289,7 @@ impl ContentBlock {
             text: text.into(),
             paste: false,
             canvas: None,
+            page_context: None,
         }
     }
 
@@ -282,6 +299,7 @@ impl ContentBlock {
             text: text.into(),
             paste: true,
             canvas: None,
+            page_context: None,
         }
     }
 
@@ -291,6 +309,18 @@ impl ContentBlock {
             text: format!("（来自画布「{}」）", canvas.title),
             paste: false,
             canvas: Some(canvas),
+            page_context: None,
+        }
+    }
+
+    /// T103：页面 Kind 的来源行；模型看到一行文字，页面按 pageContext 跳过。
+    pub fn page_context(source: PageContextSource) -> Self {
+        let line = format!("[page-context {}] {}", source.path, source.title);
+        Self::Text {
+            text: line,
+            paste: false,
+            canvas: None,
+            page_context: Some(source),
         }
     }
 

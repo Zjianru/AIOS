@@ -945,7 +945,6 @@ impl TaskRuntime {
             model: task.model.model.clone(),
             effort_wanted: task.model.effort_wanted.clone(),
         };
-        let settings = crate::settings::load(&self.data_dir);
         let catalog = model::catalog::global().unwrap_or_else(model::catalog::snapshot);
         let context_window = crate::session_select::model_context_window(
             &self.data_dir,

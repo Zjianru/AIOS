@@ -510,6 +510,7 @@ async fn card_act_records_the_kind_turn_that_proposed_it() {
         result_card: None,
         result_cards: Vec::new(),
         canvases: Vec::new(),
+        source: None,
     }))
     .await
     .expect("发一句让根会话开一轮");

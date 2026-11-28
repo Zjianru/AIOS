@@ -67,6 +67,7 @@ async fn send(host: &RootHost, data_dir: &Path, request_id: &str) {
         result_card: None,
         result_cards: Vec::new(),
         canvases: Vec::new(),
+        source: None,
     }))
     .await
     .expect("发送");

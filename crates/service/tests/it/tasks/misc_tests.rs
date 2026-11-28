@@ -498,6 +498,7 @@ async fn update_task_requirement_card_round_trip_opens_a_new_attempt() {
             }),
             result_cards: Vec::new(),
             canvases: Vec::new(),
+            source: None,
         }))
         .await
         .expect("带结果卡发消息");

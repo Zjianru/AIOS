@@ -436,6 +436,7 @@ async fn a_root_session_without_a_task_runtime_has_no_task_policy() {
         result_card: None,
         result_cards: Vec::new(),
         canvases: Vec::new(),
+        source: None,
     })
     .await
     .expect("发送");

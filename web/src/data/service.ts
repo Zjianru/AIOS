@@ -222,6 +222,8 @@ export interface SendOptions {
   /** （N2）：一次放回多条结果卡/画布标记，按顺序发送。 */
   resultCards?: SendResultCardRef[];
   canvases?: { id: string; title: string }[];
+  /** D118：页面 Kind 的程序来源标记（只带路径/标题/组，不塞页面数据）。 */
+  source?: { path: string; title: string; group: string };
 }
 
 /** @ 选中的一个 AIOS 对象（任务/报告/项目）；消息里画成引用片。 */
@@ -276,6 +278,7 @@ export async function sendMessage(
     // （N2）：多条放回按顺序走列表；单条旧字段不再重复发（服务端两套都收）。
     resultCards: options.resultCards ?? [],
     canvases: options.canvases ?? [],
+    ...(options.source ? { source: options.source } : {}),
   });
 }
 
