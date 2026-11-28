@@ -51,10 +51,22 @@ test('设置页每个模型有「输入」列：跟目录/文字/文字+图片',
   }
 });
 
-test('输入框拖入图片：出图片卡（缩略图/名字/大小）', async ({ page }) => {
+test('输入框拖入图片：出图片卡（缩略图/名字/大小）', async ({ page, request }) => {
   test.setTimeout(120_000);
   const fixture = await startKernelFixture();
   try {
+    // 目录里 deepseek-flash 现在声明了 image；这一条要验「看不了图」的卡，显式把连接
+    // 的输入覆盖成只有文字，别让目录升级把用例意图改掉。
+    await apiPost(request, fixture, {
+      method: 'connection-save',
+      id: 'deepseek',
+      name: 'DeepSeek',
+      model: 'deepseek-flash',
+      endpoint: fixture.fakeEndpoint,
+      apiKey: 'test-key',
+      preset: 'deepseek',
+      models: [{ id: 'deepseek-flash', input: ['text'] }],
+    });
     await page.goto(urlOf(fixture, '#kind'));
     const composer = page.locator('[data-kind="composer"]');
     await expect(composer).toBeVisible({ timeout: 30_000 });
