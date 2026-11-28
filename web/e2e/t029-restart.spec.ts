@@ -177,6 +177,12 @@ async function writeRestartRoutes(
     { contains: 'tasks_interrupted', file: restartPath, paceMs: 120 },
     ...base.routes.map((route) => ({
       ...route,
+      // 甲/乙是「重启时还在跑」的 long 流：把回放放慢，确保移除 Keyring/重启时
+      // Attempt 还开着，而不是已经因为缺凭证先结束成「等报告」。
+      paceMs:
+        route.contains.includes('任务甲') || route.contains.includes('任务乙')
+          ? 5000
+          : route.paceMs,
       file: path.join(FIXTURE_DIR, route.file),
     })),
   ];

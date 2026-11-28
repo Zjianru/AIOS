@@ -2314,6 +2314,7 @@ fn settings_connections_keyring_actions_are_registered() {
     let registry = ActionRegistry::settings(data_dir.to_path_buf(), None);
     for (name, skill) in [
         ("settings_update", "aios-settings"),
+        ("web_search_select", "aios-settings"),
         ("connection_update", "aios-settings"),
         ("connection_delete", "aios-settings"),
         ("connection_revoke", "aios-settings"),
@@ -2331,6 +2332,33 @@ fn settings_connections_keyring_actions_are_registered() {
             "key 保存不能是 action：{forbidden}"
         );
     }
+}
+
+#[test]
+fn web_search_select_offers_a_provider_with_before_and_after() {
+    let directory = tempfile::tempdir().unwrap();
+    let data_dir = directory.path();
+    let action = settings_action(data_dir, "web_search_select");
+    let details = action.details(&json!({ "id": "exa" })).expect("details");
+    let facts = action
+        .describe(
+            &details,
+            &action_env(data_dir, &data_dir.join("identity.txt")),
+        )
+        .expect("搜索卡");
+    assert_eq!(facts.len(), 1);
+    assert_eq!(facts[0].name, "联网搜索");
+    assert!(facts[0].value.contains("Exa"), "{:?}", facts[0]);
+    assert!(
+        action.details(&json!({ "id": "no-such" })).is_err(),
+        "未知服务商要拒"
+    );
+    assert!(
+        action
+            .details(&json!({ "id": "exa", "key": "secret" }))
+            .is_err(),
+        "key 不能经过卡"
+    );
 }
 
 #[test]

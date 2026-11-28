@@ -24,7 +24,7 @@ export interface PageKindPage {
 }
 
 const SUGGESTIONS: Record<string, string[]> = {
-  model: ['加一个看图模型', '打开截桌面', '关掉截桌面', '看图模型应该怎么填？'],
+  model: ['加一个看图模型', '打开截桌面', '关掉截桌面', '用 Exa 搜网页', '用 DuckDuckGo 搜网页'],
   exec: ['席位加到 5 个', '先全局暂停', '打开 bash', '关掉 bash'],
   plugins: ['打开 Office 插件', '关掉 Office 插件'],
   rules: ['加一条全局规则', '现在有哪些规则？'],

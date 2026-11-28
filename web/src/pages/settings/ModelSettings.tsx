@@ -1000,6 +1000,9 @@ function WebSearchSection({ broken, onChanged }: { broken: boolean; onChanged: (
   useEffect(() => {
     if (broken) return;
     void load();
+    const refresh = () => void load();
+    window.addEventListener('aios:settings-changed', refresh);
+    return () => window.removeEventListener('aios:settings-changed', refresh);
   }, [broken, load]);
 
   const selected = view?.providers.find((provider) => provider.id === view.selected) ?? null;
