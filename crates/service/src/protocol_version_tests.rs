@@ -2,10 +2,7 @@ use super::*;
 
 #[test]
 fn protocol_version_is_38() {
-    assert_eq!(
-        PROTOCOL_VERSION, 38,
-        "协议 38：搜索服务商协议面"
-    );
+    assert_eq!(PROTOCOL_VERSION, 38, "协议 38：搜索服务商协议面");
 }
 
 #[test]
