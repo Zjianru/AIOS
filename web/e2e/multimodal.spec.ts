@@ -330,7 +330,10 @@ test('阅读页引用（Kind 侧）：pending quote → 引用卡 → 发送成�
   test.setTimeout(180_000);
   const fixture = await startKernelFixture();
   try {
-    await page.addInitScript((quote) => {
+    // 真实跨页路径：先在另一个页面写入 pending quote，再导航到 Kind；
+    // 不在 Kind 页设置后 reload，避免 Composer 已挂载时消费时序不确定。
+    await page.goto(urlOf(fixture, '#now'));
+    await page.evaluate((quote) => {
       localStorage.setItem('aios.kind.pending-quote', JSON.stringify(quote));
     }, readPendingQuote());
     await page.goto(urlOf(fixture, '#kind'));
