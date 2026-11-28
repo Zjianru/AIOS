@@ -9,6 +9,7 @@
 //! `url_policy`（URL/地址/重定向规则）。
 
 mod exa;
+pub(crate) mod providers;
 mod fetch;
 mod resolver;
 mod search;

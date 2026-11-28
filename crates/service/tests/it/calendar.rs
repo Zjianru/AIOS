@@ -323,6 +323,7 @@ async fn global_pause_merges_missed_occurrences_and_sends_once() {
             bash: false,
         },
         vision: Default::default(),
+        web_search: Default::default(),
     };
     service::settings::save(data, &settings).unwrap();
     let store = calendar::CalendarStore::open(data.join("calendar.sqlite")).unwrap();

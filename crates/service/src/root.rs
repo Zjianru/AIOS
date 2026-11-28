@@ -597,6 +597,9 @@ pub(crate) fn tool_key_source(options: &RootSessionOptions) -> tools::ToolKeySou
         {
             keys.insert(tools::ToolKey::Exa);
         }
+        if crate::web_search::ready_for(&data_dir, identity.as_deref()) {
+            keys.insert(tools::ToolKey::WebSearch);
+        }
         keys
     }))
 }

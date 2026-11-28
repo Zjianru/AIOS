@@ -51,9 +51,12 @@ async function saveExaKey(page: Page, fixture: KernelFixture): Promise<void> {
   await page.getByRole('button', { name: '设置', exact: true }).click();
   const section = page.locator('[data-settings="web-search"]');
   await expect(section).toBeVisible({ timeout: 20_000 });
-  await section.locator('[data-settings="exa-key-input"]').fill(EXA_KEY);
-  await section.getByRole('button', { name: '保存', exact: true }).click();
-  await expect(section.locator('[data-settings="web-search-status"]')).toContainText('能用（', {
+  await section.locator('[data-web-select]').selectOption('exa');
+  await section.locator('[data-web-host]').fill(fixture.exa!.baseUrl);
+  await section.locator('[data-web-host-save]').click();
+  await section.locator('[data-web-key-input]').fill(EXA_KEY);
+  await section.locator('[data-web-key-save]').click();
+  await expect(section.locator('[data-settings="web-search-status"]')).toContainText('能用', {
     timeout: 20_000,
   });
 }

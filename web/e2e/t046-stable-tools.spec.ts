@@ -245,6 +245,11 @@ test('存了 Exa key：Kind 46 / ThinAgent 25，含 web_*（D73 key 后出现）
       key: 'exa-t050-e2e-key',
     });
     expect(saved.ok()).toBe(true);
+    const selected = await apiPost(request, fixture, {
+      method: 'web-search-select',
+      id: 'exa',
+    });
+    expect(selected.ok()).toBe(true);
     await page.goto(urlOf(fixture));
     await page.getByPlaceholder('和 Kind 说…').fill('查一下新闻归档里重复链接的判重规则和影响范围');
     await page.getByRole('button', { name: '发送', exact: true }).click();

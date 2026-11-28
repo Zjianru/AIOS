@@ -100,6 +100,13 @@ impl ServiceHost {
     pub async fn dispatch(&self, call: Call) -> Result<Response, ServiceError> {
         match call {
             Call::Send(request) => self.send(request).await.map(Response::Send),
+            Call::WebSearchRead(_)
+            | Call::WebSearchSelect(_)
+            | Call::WebSearchKeySave(_)
+            | Call::WebSearchKeyDelete(_)
+            | Call::WebSearchHostSet(_)
+            | Call::WebSearchAuthSet(_)
+            | Call::WebSearchCheck(_) => Err(crate::error::ServiceError::SettingsOnBareHost),
             Call::Cancel(request) => self.cancel(request).await.map(Response::Cancel),
             Call::Answer(request) => self.answer(request).await.map(Response::Answer),
             Call::DismissQuestions(request) => self

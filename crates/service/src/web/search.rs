@@ -1,4 +1,4 @@
-//! `web_search` 的模型面：参数、执行、开出条件，以及 Exa 结果的合并排版。
+//! `web_search` 的模型面：参数、执行、开出条件，以及搜索结果的合并排版。
 
 use std::path::PathBuf;
 
@@ -8,7 +8,7 @@ use tools::{
     Tool, ToolCall, ToolCondition, ToolContext, ToolFailure, ToolFuture, ToolKey, ToolResult,
 };
 
-use super::exa::{SearchError, SearchSource, WEB_SEARCH_MAX_RESULTS, search_one};
+use super::providers::{self, SearchError, SearchSource, WEB_SEARCH_MAX_RESULTS};
 use super::{EXTERNAL_WEB_CONTENT_NOTICE, WEB_TOOL_TIMEOUT_MS};
 
 /// 一次搜索最多接受的查询数。
@@ -16,25 +16,8 @@ const WEB_SEARCH_MAX_QUERIES: usize = 4;
 /// 一条来源摘要最多给的字符数（含截断的省略号）。
 const WEB_SEARCH_SUMMARY_MAX_CHARS: usize = 800;
 
-/// 签发记录里的用途；设置页的「签发记录」表读它。
-const EXA_SEARCH_PURPOSE: &str = "网页搜索";
-
 /// 照抄 DSH 的引用说明。
 const CITE_INSTRUCTION: &str = "Cite the relevant URLs above as markdown links in your answer.";
-
-fn no_key() -> String {
-    format!(
-        "web_search 需要 Exa 的 key：去设置页填（{}），再试一次",
-        super::EXA_SETTINGS_PATH
-    )
-}
-
-fn key_unreadable() -> String {
-    format!(
-        "Exa 的 key 读不出来；去设置页看一眼（{}）",
-        super::EXA_SETTINGS_PATH
-    )
-}
 
 /// `web_search` 的装配：Keyring 位置和 Exa 根地址；服务启动/重开根会话时注入。
 #[derive(Clone)]
@@ -72,13 +55,39 @@ impl WebSearchTool {
 
     /// 跑一批查询：任一条失败整批失败；成功的结果按查询顺序轮流合并。
     async fn search(&self, queries: &[String]) -> Result<String, ToolFailure> {
-        let key = issue_search_key(&self.config)?;
+        let selected = crate::web_search::selected_for(
+            &self.config.data_dir,
+            self.config.identity.as_deref(),
+        )
+        .map_err(|error| ToolFailure::plain(error.to_string()))?
+        .ok_or_else(|| {
+            ToolFailure::plain("还没有选联网搜索服务商；去设置页 › 模型与连接 › 联网搜索 选一家")
+        })?;
+        if let Some(missing) = &selected.missing {
+            return Err(ToolFailure::plain(format!(
+                "联网搜索还不能用：{missing}；去设置页 › 模型与连接 › 联网搜索 补上（设置 › 模型与连接 › 联网搜索）"
+            )));
+        }
+        let spec = selected.spec;
+        let host = selected.host.clone();
+        let key = selected.key.clone();
+        let basic = selected.basic.clone();
+        let name = spec.name;
         let mut pending = JoinSet::new();
         for (index, query) in queries.iter().enumerate() {
-            let base_url = self.config.base_url.clone();
+            let host = host.clone();
             let key = key.clone();
+            let basic = basic.clone();
             let query = query.clone();
-            pending.spawn(async move { (index, search_one(&base_url, &key, &query).await) });
+            pending.spawn(async move {
+                let basic = basic
+                    .as_ref()
+                    .map(|(user, password)| (user.as_str(), password.as_str()));
+                (
+                    index,
+                    providers::search_one(spec, &host, key.as_deref(), basic, &query).await,
+                )
+            });
         }
         let mut per_query: Vec<Option<Vec<SearchSource>>> = vec![None; queries.len()];
         let mut first_failure = None;
@@ -98,7 +107,7 @@ impl WebSearchTool {
             }
         }
         if let Some(error) = first_failure {
-            return Err(error.into_failure());
+            return Err(error.into_failure(name));
         }
         let per_query = per_query
             .into_iter()
@@ -129,7 +138,7 @@ impl Tool for WebSearchTool {
     fn condition(&self) -> ToolCondition {
         ToolCondition::AfterSkillWithKey {
             skills: vec!["web".to_owned()],
-            key: ToolKey::Exa,
+            key: ToolKey::WebSearch,
         }
     }
 
@@ -188,21 +197,6 @@ fn parse_queries(arguments: &str) -> Result<Vec<String>, ToolFailure> {
     Ok(parsed)
 }
 
-/// 从 Keyring 现取一次 Exa 的 key；没存、读不出来都明确报，不静默跳过。
-fn issue_search_key(config: &WebSearchConfig) -> Result<String, ToolFailure> {
-    let keyring = credentials::Keyring::open(config.data_dir.clone(), config.identity.as_deref())
-        .map_err(|_| ToolFailure::plain(key_unreadable()))?;
-    let view = keyring
-        .exa_key_view()
-        .map_err(|_| ToolFailure::plain(key_unreadable()))?;
-    if !view.key.saved {
-        return Err(ToolFailure::plain(no_key()));
-    }
-    keyring
-        .issue_exa_key(EXA_SEARCH_PURPOSE)
-        .map(credentials::IssuedSecret::into_secret)
-        .map_err(|_| ToolFailure::plain(key_unreadable()))
-}
 /// 每条查询的结果按名次轮流取，URL 去重，总量不超过 8 条；返回是否还有被截掉的。
 fn merge_sources(per_query: Vec<Vec<SearchSource>>) -> (Vec<SearchSource>, bool) {
     let mut seen = std::collections::BTreeSet::new();

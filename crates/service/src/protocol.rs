@@ -98,6 +98,20 @@ pub enum Call {
     ExaKeyCheck(ExaKeyRequest),
     /// 删 Exa 的 key。
     ExaKeyDelete(ExaKeyRequest),
+    /// 读联网搜索服务商状态（不返回 key 正文）。
+    WebSearchRead(WebSearchReadRequest),
+    /// 选一家服务商（null = 不选）；同一时间只注册一家。
+    WebSearchSelect(WebSearchSelectRequest),
+    /// 存/换一家的 key。
+    WebSearchKeySave(WebSearchKeySaveRequest),
+    /// 删一家的 key。
+    WebSearchKeyDelete(WebSearchKeyRequest),
+    /// 改一家的地址。
+    WebSearchHostSet(WebSearchHostSetRequest),
+    /// 改 SearXNG 的 Basic 用户/密码。
+    WebSearchAuthSet(WebSearchAuthSetRequest),
+    /// 用选中那家发一次最小搜索，结果写回检查状态。
+    WebSearchCheck(WebSearchReadRequest),
     /// 写非密钥设置（只写 settings.json）。
     SettingsUpdate(SettingsUpdateRequest),
     /// 设置页「测试看图」：只测一个指定后端，不换备用。
@@ -194,6 +208,13 @@ pub enum Response {
     ExaKeySave(ExaKeyResponse),
     ExaKeyCheck(ExaKeyResponse),
     ExaKeyDelete(ExaKeyResponse),
+    WebSearchRead(WebSearchReadResponse),
+    WebSearchSelect(WebSearchReadResponse),
+    WebSearchKeySave(WebSearchReadResponse),
+    WebSearchKeyDelete(WebSearchReadResponse),
+    WebSearchHostSet(WebSearchReadResponse),
+    WebSearchAuthSet(WebSearchReadResponse),
+    WebSearchCheck(WebSearchReadResponse),
     /// 写非密钥设置。
     SettingsUpdate(SettingsUpdateResponse),
     VisionTest(VisionTestResponse),
@@ -1471,6 +1492,79 @@ pub struct ExaKeySaveRequest {
 
 /// Exa 凭证的视图：存没存、保存时间、上次验证结果。没有 key 正文。
 pub type ExaKeyResponse = credentials::ToolKeyView;
+
+/// 联网搜索的只读请求（读状态/检测都只带空体）。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct WebSearchReadRequest {}
+
+/// 选一家服务商；id 为 None = 不选。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct WebSearchSelectRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+}
+
+/// 引用一家服务商（删 key/查地址等）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct WebSearchKeyRequest {
+    pub id: String,
+}
+
+/// 存/换一家服务商的 key；只在请求体里，响应不回显。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct WebSearchKeySaveRequest {
+    pub id: String,
+    pub key: String,
+}
+
+/// 改一家的地址；空字符串 = 用内置默认。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct WebSearchHostSetRequest {
+    pub id: String,
+    pub host: String,
+}
+
+/// 改 SearXNG 的 Basic 认证；密码只进 Keyring，空 = 不改密码。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct WebSearchAuthSetRequest {
+    pub id: String,
+    #[serde(default)]
+    pub user: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+}
+
+/// 设置页看到的每家服务商事实；没有 key 正文。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct WebSearchProviderView {
+    pub id: String,
+    pub name: String,
+    pub key_need: String,
+    pub key_site: String,
+    pub site: String,
+    pub default_host: String,
+    pub host: String,
+    pub key_saved: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_saved_at: Option<u64>,
+    #[serde(default)]
+    pub basic_supported: bool,
+    #[serde(default)]
+    pub basic_user: String,
+    #[serde(default)]
+    pub basic_saved: bool,
+    pub check: credentials::CheckState,
+}
+
+/// 联网搜索设置页的状态。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct WebSearchReadResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected: Option<String>,
+    pub providers: Vec<WebSearchProviderView>,
+}
 
 /// 写非密钥设置（settings.json）；只碰非密钥设置，不碰 Keyring/连接。
 ///

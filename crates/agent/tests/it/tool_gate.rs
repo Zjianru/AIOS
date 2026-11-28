@@ -96,7 +96,7 @@ impl Tool for FakeWebSearchTool {
     fn condition(&self) -> ToolCondition {
         ToolCondition::AfterSkillWithKey {
             skills: vec!["web".to_owned()],
-            key: tools::ToolKey::Exa,
+            key: tools::ToolKey::WebSearch,
         }
     }
 
@@ -856,7 +856,7 @@ async fn web_skill_and_tools_open_only_with_the_exa_key() {
         .mount(&server)
         .await;
     let keys = tools::ToolKeySource::new(std::sync::Arc::new(|| {
-        std::collections::BTreeSet::from([tools::ToolKey::Exa])
+        std::collections::BTreeSet::from([tools::ToolKey::WebSearch])
     }));
     let (agent, _data_dir, _cwd, _id) = setup_with_keys(&server, web_tool_set(), keys).await;
     agent
@@ -983,7 +983,7 @@ async fn unsupported_route_full_tools_still_respect_the_exa_key() {
         .mount(&server)
         .await;
     let keys = tools::ToolKeySource::new(std::sync::Arc::new(|| {
-        std::collections::BTreeSet::from([tools::ToolKey::Exa])
+        std::collections::BTreeSet::from([tools::ToolKey::WebSearch])
     }));
     let (agent, _d, _c, _i) = setup_full_route(&server, web_tool_set(), keys).await;
     agent

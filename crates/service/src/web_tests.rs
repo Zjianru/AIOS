@@ -14,6 +14,13 @@ use crate::web::{WebSearchConfig, WebSearchTool};
 const EXA_KEY: &str = "exa-search-secret-0123456789";
 
 fn config(dir: &Path, base_url: String) -> WebSearchConfig {
+    let mut settings = crate::settings::load_for_write(dir).expect("settings");
+    settings.web_search.selected = Some("exa".to_owned());
+    settings
+        .web_search
+        .hosts
+        .insert("exa".to_owned(), base_url.clone());
+    crate::settings::save(dir, &settings).expect("保存搜索设置");
     WebSearchConfig {
         data_dir: dir.to_path_buf(),
         identity: Some(dir.join("identity.txt")),

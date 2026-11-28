@@ -147,6 +147,31 @@ impl RootHost {
             Call::ExaKeySave(request) => self.exa_key_save(request).await.map(Response::ExaKeySave),
             Call::ExaKeyCheck(_) => self.exa_key_check().await.map(Response::ExaKeyCheck),
             Call::ExaKeyDelete(_) => self.exa_key_delete().await.map(Response::ExaKeyDelete),
+            Call::WebSearchRead(_) => self.web_search_read().await.map(Response::WebSearchRead),
+            Call::WebSearchSelect(request) => self
+                .web_search_select(request)
+                .await
+                .map(Response::WebSearchSelect),
+            Call::WebSearchKeySave(request) => self
+                .web_search_key_save(request)
+                .await
+                .map(Response::WebSearchKeySave),
+            Call::WebSearchKeyDelete(request) => self
+                .web_search_key_delete(request)
+                .await
+                .map(Response::WebSearchKeyDelete),
+            Call::WebSearchHostSet(request) => self
+                .web_search_host_set(request)
+                .await
+                .map(Response::WebSearchHostSet),
+            Call::WebSearchAuthSet(request) => self
+                .web_search_auth_set(request)
+                .await
+                .map(Response::WebSearchAuthSet),
+            Call::WebSearchCheck(_) => self
+                .web_search_check()
+                .await
+                .map(Response::WebSearchCheck),
             // 写非密钥设置。
             Call::SettingsUpdate(request) => self
                 .settings_update(request)

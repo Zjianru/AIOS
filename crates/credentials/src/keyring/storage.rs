@@ -20,9 +20,18 @@ pub(super) struct Store {
     /// T008.F11：cookie 签名钥匙（hex 编码；age 密文落盘，不落明文）。
     #[serde(default)]
     pub(super) cookie_secret: Option<String>,
-    /// 工具凭证（D73）：这一期只有 Exa 的 key；age 密文落盘，不出现在任何视图里。
+    /// 旧版只存 Exa；读的时候迁移进 tool_keys，写的时候不再用它。
     #[serde(default)]
     pub(super) exa: Option<StoredToolKey>,
+    /// 搜索服务商的工具凭证：每家一项；age 密文落盘，不出现在任何视图里。
+    #[serde(default)]
+    pub(super) tool_keys: std::collections::BTreeMap<String, StoredToolKey>,
+    /// SearXNG Basic 密码（用户名在 settings，不进 Keyring）。
+    #[serde(default)]
+    pub(super) search_basic: Option<StoredToolKey>,
+    /// DeepSeek 搜索用的模型连接 id（同步来源；只记 id，不另存 key）。
+    #[serde(default)]
+    pub(super) search_sync: std::collections::BTreeMap<String, String>,
     #[serde(default)]
     pub(super) issues: Vec<IssueRecord>,
     #[serde(default)]
@@ -30,7 +39,7 @@ pub(super) struct Store {
 }
 
 /// 一种工具凭证的存储形状：正文 + 保存时间 + 最近一次验证结果。
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct StoredToolKey {
     pub(super) api_key: String,
     pub(super) saved_at: u64,
@@ -125,6 +134,9 @@ impl Keyring {
             .map_err(|error| KeyringError::Corrupt(format!("存储格式不对：{error}")))?;
         for stored in &mut store.connections {
             normalize_info(&mut stored.info);
+        }
+        if let Some(old) = store.exa.take() {
+            store.tool_keys.entry("exa".to_owned()).or_insert(old);
         }
         Ok(store)
     }

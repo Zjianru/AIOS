@@ -97,6 +97,7 @@ mod status;
 mod vision_runtime;
 mod vision_tools;
 mod web;
+mod web_search;
 pub mod work;
 mod worktree;
 mod write_scope;

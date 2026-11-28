@@ -57,6 +57,7 @@ import type { TaskSayResponse } from './generated/TaskSayResponse';
 import type { TaskStopResponse } from './generated/TaskStopResponse';
 import type { ToolKeyView } from './generated/ToolKeyView';
 import type { WorkResponse } from './generated/WorkResponse';
+import type { WebSearchReadResponse } from './generated/WebSearchReadResponse';
 
 // 页面从这里按名字取线上类型；类型本体只有 Rust 一份。
 export type { AvailableModelRow } from './generated/AvailableModelRow';
@@ -483,6 +484,45 @@ export async function saveExaKey(key: string): Promise<ToolKeyView> {
 /** 用已存的 key 向 Exa 发一次最小搜索，结果写回 Keyring。 */
 export async function checkExaKey(): Promise<ToolKeyView> {
   return post({ method: 'exa-key-check' });
+}
+
+/** 读联网搜索设置（每家的 key 存没存/地址/认证/检查状态；没有 key 正文）。 */
+export async function webSearchRead(): Promise<WebSearchReadResponse> {
+  return post({ method: 'web-search-read' });
+}
+
+/** 选一家搜索服务商；null = 不选。 */
+export async function webSearchSelect(id: string | null): Promise<WebSearchReadResponse> {
+  return post({ method: 'web-search-select', id });
+}
+
+/** 存/换一家的 key；响应不回显。 */
+export async function webSearchKeySave(id: string, key: string): Promise<WebSearchReadResponse> {
+  return post({ method: 'web-search-key-save', id, key });
+}
+
+/** 删一家的 key。 */
+export async function webSearchKeyDelete(id: string): Promise<WebSearchReadResponse> {
+  return post({ method: 'web-search-key-delete', id });
+}
+
+/** 改一家的地址；空 = 回内置默认。 */
+export async function webSearchHostSet(id: string, host: string): Promise<WebSearchReadResponse> {
+  return post({ method: 'web-search-host-set', id, host });
+}
+
+/** 改 SearXNG 的 Basic 用户/密码（密码只进 Keyring）。 */
+export async function webSearchAuthSet(
+  id: string,
+  user: string,
+  password?: string,
+): Promise<WebSearchReadResponse> {
+  return post({ method: 'web-search-auth-set', id, user, ...(password ? { password } : {}) });
+}
+
+/** 用选中那家发一次最小搜索，结果写回检查状态。 */
+export async function webSearchCheck(): Promise<WebSearchReadResponse> {
+  return post({ method: 'web-search-check' });
 }
 
 export async function deleteExaKey(): Promise<ToolKeyView> {

@@ -208,6 +208,8 @@ impl ToolContext {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ToolKey {
     Exa,
+    /// 选中的搜索服务商已具备开工条件（key/地址齐全）；web_search/web_fetch 共用。
+    WebSearch,
 }
 
 /// 当前已存的工具凭证：产品装配时注入的求值面，每步查一次。
@@ -603,7 +605,7 @@ mod tests {
         use super::{ToolCondition, ToolKey};
 
         let no_keys = BTreeSet::new();
-        let with_key = BTreeSet::from([ToolKey::Exa]);
+        let with_key = BTreeSet::from([ToolKey::Exa, ToolKey::WebSearch]);
         assert!(ToolCondition::Always.satisfied_by_keys(&no_keys));
         assert!(ToolCondition::AfterSkill(vec!["web".to_owned()]).satisfied_by_keys(&no_keys));
         let keyed = ToolCondition::AfterSkillWithKey {

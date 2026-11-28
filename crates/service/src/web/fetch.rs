@@ -170,7 +170,7 @@ impl Tool for WebFetchTool {
     fn condition(&self) -> ToolCondition {
         ToolCondition::AfterSkillWithKey {
             skills: vec!["web".to_owned()],
-            key: ToolKey::Exa,
+            key: ToolKey::WebSearch,
         }
     }
 

@@ -12,7 +12,7 @@ license = "MIT"
 similar = "2.7.0"
 tokio = { version = "1.52", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "io-std", "signal"] }
 # charset：网页正文按 Content-Type 声明的编码解码。
-reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "stream", "charset"] }
+reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "stream", "charset", "json"] }
 # 网页 HTML 转 Markdown；Apache-2.0，维护中的成熟实现。
 htmd = "0.5.6"
 serde = { version = "1.0", features = ["derive"] }
@@ -52,3 +52,7 @@ uninlined_format_args = "warn"
 collapsible_if = "warn"
 redundant_closure_for_method_calls = "warn"
 let_underscore_must_use = "warn"
+
+# 依赖不带调试信息：减少 target/debug deps 体积；自己的 crate 保持默认调试信息。
+[profile.dev.package."*"]
+debug = false

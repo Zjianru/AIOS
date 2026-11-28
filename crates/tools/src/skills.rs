@@ -175,7 +175,7 @@ pub fn bundled_skills() -> &'static [BundledSkill] {
         BundledSkill {
             name: "web",
             raw: include_str!("../bundled/web/SKILL.md"),
-            requires: Some(crate::ToolKey::Exa),
+            requires: Some(crate::ToolKey::WebSearch),
             tools: &["web_search", "web_fetch"],
             read_only: false,
             unavailable_hint: "Web search and page reading are unavailable: no Exa API key is saved. If the user asks you to search the web or read a link, say you cannot yet and tell them to save an Exa API key in the settings page (设置 › 模型与连接 › 联网搜索), then ask them to try again.",

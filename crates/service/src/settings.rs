@@ -34,6 +34,30 @@ pub struct Settings {
     /// 看图设置；文件里缺这一节按空链/关读。
     #[serde(default)]
     pub vision: vision::VisionSettings,
+    /// 联网搜索服务商；缺节按「没选、没有地址/认证」读。
+    #[serde(default)]
+    pub web_search: WebSearchSettings,
+}
+
+/// 联网搜索的设置：同一时间只选一家；地址与 Basic 用户名可覆盖；密码只进 Keyring。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct WebSearchSettings {
+    /// 选中的服务商 id；None = 不选，web 整组不开。
+    #[serde(default)]
+    pub selected: Option<String>,
+    /// 每家自己的根地址（用户可改；空 = 用内置默认）。
+    #[serde(default)]
+    pub hosts: std::collections::BTreeMap<String, String>,
+    /// SearXNG Basic 认证的用户名（密码只存 Keyring）。
+    #[serde(default)]
+    pub auth: std::collections::BTreeMap<String, WebSearchAuth>,
+}
+
+/// 一家搜索服务商的非密钥认证信息。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct WebSearchAuth {
+    #[serde(default)]
+    pub user: String,
 }
 
 /// 插件开关：官方插件默认全关。
@@ -97,6 +121,7 @@ impl Default for Settings {
             exec: ExecSettings::default(),
             plugins: PluginsSettings::default(),
             vision: vision::VisionSettings::default(),
+            web_search: WebSearchSettings::default(),
         }
     }
 }

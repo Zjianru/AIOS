@@ -47,41 +47,42 @@ async function expectNoKeyInDataDir(dataDir: string, secret: string): Promise<vo
   await walk(dataDir);
 }
 
-/// T014.6：设置页填、验证、换、删 Exa key 都走一次；有 key 时 skill web 进目录，
+/// T014.6：设置页选 Exa、填/换/删 key、检测；有 key 时 skill web 进目录，
 /// 加载以后的下一步工具表里有 web_search/web_fetch（参数也在）。
-test('联网搜索：填、验证、换、删 Exa key；有 key 时 skill web 开出网页工具', async ({ page }) => {
+test('联网搜索：选 Exa、填/换/删 key 与检测；有 key 时 skill web 开出网页工具', async ({ page }) => {
   const fixture = await startKernelFixture({ t014Web: true, fakeExa: true });
   try {
     await openSettings(page, fixture);
     const section = page.locator('[data-settings="web-search"]');
     const status = section.locator('[data-settings="web-search-status"]');
+    const detail = section.locator('[data-settings="web-search-detail"]');
     await expect(section).toBeVisible({ timeout: 20_000 });
-    await expect(status).toContainText('还没有 key');
-    await expect(section.getByRole('button', { name: '验证', exact: true })).toHaveCount(0);
+    await expect(section.locator('[data-web-provider]')).toHaveCount(20);
+    await expect(status).toContainText('还没有选服务商');
 
-    // 填 + 保存（自动验证一次，打到本地假 Exa）。
-    await section.locator('[data-settings="exa-key-input"]').fill(EXA_KEY);
-    await section.getByRole('button', { name: '保存', exact: true }).click();
-    await expect(status).toContainText('能用（', { timeout: 20_000 });
-    await expect(status).toContainText('验证）');
+    await section.locator('[data-web-select]').selectOption('exa');
+    await section.locator('[data-web-host]').fill(fixture.exa!.baseUrl);
+    await section.locator('[data-web-host-save]').click();
+    await expect(status).toContainText('这家要 key');
 
-    // 验证按钮能验证已存的 key。
-    await section.getByRole('button', { name: '验证', exact: true }).click();
-    await expect(status).toContainText('能用（', { timeout: 20_000 });
+    await section.locator('[data-web-key-input]').fill(EXA_KEY);
+    await section.locator('[data-web-key-save]').click();
+    await expect(detail).toContainText('存于');
+    await section.locator('[data-web-check]').click();
+    await expect(detail).toContainText('上次检查', { timeout: 20_000 });
 
-    // 换一把坏 key：Exa 401，状态写不能用。
-    await section.getByRole('button', { name: '换一把' }).click();
-    await section.locator('[data-settings="exa-key-input"]').fill(EXA_BAD);
-    await section.getByRole('button', { name: '保存', exact: true }).click();
-    await expect(status).toContainText('不能用：Exa 拒绝了这把 key（401）', { timeout: 20_000 });
+    // 换坏 key：检测写 401 原因，页面不回显 key。
+    await section.locator('[data-web-key-input]').fill(EXA_BAD);
+    await section.locator('[data-web-key-save]').click();
+    await section.locator('[data-web-check]').click();
+    await expect(detail).toContainText('401', { timeout: 20_000 });
+    await expect(section.locator('[data-web-key-input]')).toHaveValue('');
 
-    // 换回好 key：Kind 要能加载 web。
-    await section.getByRole('button', { name: '换一把' }).click();
-    await section.locator('[data-settings="exa-key-input"]').fill(EXA_KEY);
-    await section.getByRole('button', { name: '保存', exact: true }).click();
-    await expect(status).toContainText('能用（', { timeout: 20_000 });
+    await section.locator('[data-web-key-input]').fill(EXA_KEY);
+    await section.locator('[data-web-key-save]').click();
+    await section.locator('[data-web-check]').click();
+    await expect(detail).toContainText('上次检查', { timeout: 20_000 });
 
-    // 假 Exa 收到了两把 key 的授权头（第二次是坏 key）。
     const authorizations = fixture.exa?.requests() ?? [];
     expect(authorizations).toContain('Bearer ' + EXA_KEY);
     expect(authorizations).toContain('Bearer ' + EXA_BAD);
@@ -92,31 +93,21 @@ test('联网搜索：填、验证、换、删 Exa key；有 key 时 skill web �
     const request = await fixture.lastRequest();
     expect(request, '要拿到模型请求').toBeTruthy();
     const body = JSON.stringify(request);
-    expect(body).toContain('- `web`:');
-    expect(toolNames(request)).toEqual(
-      expect.arrayContaining(['web_search', 'web_fetch']),
-    );
+    expect(body).toContain('- \`web\`:');
+    expect(toolNames(request)).toEqual(expect.arrayContaining(['web_search', 'web_fetch']));
     const tools = (request?.tools ?? []) as Record<string, any>[];
     const search = tools.find((tool) => tool.name === 'web_search');
     const fetch = tools.find((tool) => tool.name === 'web_fetch');
     expect(search?.input_schema?.properties?.queries?.maxItems).toBe(4);
     expect(fetch?.input_schema?.required).toEqual(['url']);
 
-    // 删：确认以后回到「还没有 key」。
+    // 删：立即回到「这家要 key」；Keyring 里不再有 key。
     await openSettings(page, fixture);
     const reopened = page.locator('[data-settings="web-search"]');
-    await expect(reopened.locator('[data-settings="web-search-status"]')).toContainText('能用（', {
-      timeout: 20_000,
-    });
-    await reopened.getByRole('button', { name: '删除', exact: true }).click();
-    const dialog = page.getByRole('dialog');
-    await expect(dialog.getByText('删除 Exa 的 key？')).toBeVisible();
-    await dialog.getByRole('button', { name: '删除', exact: true }).click();
-    await expect(reopened.locator('[data-settings="web-search-status"]')).toContainText('还没有 key', {
-      timeout: 20_000,
-    });
+    await expect(reopened.locator('[data-settings="web-search-detail"]')).toContainText('存于', { timeout: 20_000 });
+    await reopened.locator('[data-web-key-delete]').click();
+    await expect(reopened.locator('[data-settings="web-search-status"]')).toContainText('这家要 key', { timeout: 20_000 });
 
-    // 日志、监控、证据里都查不到 key 正文（Keyring 密文一起查）。
     await expectNoKeyInDataDir(fixture.dataDir, EXA_KEY);
     await expectNoKeyInDataDir(fixture.dataDir, EXA_BAD);
   } finally {
@@ -132,10 +123,9 @@ test('没填 key：web 不进目录、网页工具不进表；EXA_API_KEY 环境
     await openSettings(page, fixture);
     const section = page.locator('[data-settings="web-search"]');
     await expect(section.locator('[data-settings="web-search-status"]')).toContainText(
-      '还没有 key',
+      '还没有选服务商',
       { timeout: 20_000 },
     );
-    await expect(section.getByRole('button', { name: '验证', exact: true })).toHaveCount(0);
 
     await page.goto(urlOf(fixture));
     await sendAndWaitAnswer(page, '帮我搜一下今天的新闻', '（T007 e2e 假回放）');

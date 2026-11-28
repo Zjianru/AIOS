@@ -15,13 +15,14 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Ban, ChevronDown, ChevronRight, CircleAlert, Eye, EyeOff, Loader2, Plus, X } from 'lucide-react';
 import { toast } from 'sonner';
 import {
-  addConnection, discoverModels, getExaKey, getModelSettings, moveKeyFile, relinkKeyFile,
-  removeConnection, removeExaKey, resetKeyring, revokeKey, saveExaKey, setDisabledModels, updateConnection,
-  verifyExaKey,
+  addConnection, discoverModels, getModelSettings, moveKeyFile, relinkKeyFile,
+  removeConnection, resetKeyring, revokeKey, setDisabledModels, updateConnection,
 } from '@/data/keyring';
 import { matchDisabled } from '@/data/disabled';
 import {
-  checkDisabledModels, displayPath, type DisabledModelUser, type ConnectionQuotaResponse,
+  checkDisabledModels, displayPath, webSearchAuthSet, webSearchCheck, webSearchHostSet,
+  webSearchKeyDelete, webSearchKeySave, webSearchRead, webSearchSelect,
+  type ConnectionQuotaResponse, type DisabledModelUser,
 } from '@/data/service';
 import { cachedQuota, loadQuota } from '@/data/quota';
 import { compactPrice, formatModelTokens } from '@/lib/numbers';
@@ -29,7 +30,8 @@ import { formatLocalDateTime } from '@/lib/time';
 import { useSettingsState } from '@/lib/settingsState';
 import { VisionSection } from './VisionSection';
 import { PROTOCOL_LABEL } from '@/data/keyring';
-import type { ConnectionView, ModelRow, ModelSettingsView, ToolKeyView } from '@/data/keyring';
+import type { ConnectionView, ModelRow, ModelSettingsView } from '@/data/keyring';
+import type { WebSearchReadResponse } from '@/data/generated/WebSearchReadResponse';
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
@@ -964,212 +966,205 @@ function KeyringBroken({ view, onView }: { view: ModelSettingsView; onView: (vie
   );
 }
 
-/* ───────────────────────── 联网搜索（D73） ───────────────────────── */
+/* ───────────────────────── 联网搜索（D73，T103.2） ───────────────────────── */
 
-/**
- * Exa 的工具凭证：只写不读，存进 Keyring；「已保存」和「能用」分开说。
- *
- * - 没存：Kind 的能力目录里没有 `web`，问它要联网，它让你来这里填；
- * - 保存以后自动验证一次；验证跑在服务端，页面只拿结果；
- * - 不读环境变量；页面、日志和对话里都不出现 key 正文。
- */
+const KEY_NEED_LABEL: Record<string, string> = {
+  required: '要 key',
+  optional: 'key 可选',
+  none: '不要 key',
+  llm: '用模型连接的 key',
+};
+
+function formatSavedAt(value: number | null | undefined): string {
+  if (!value) return '还没存';
+  return new Date(value * 1000).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
 function WebSearchSection({ broken, onChanged }: { broken: boolean; onChanged: () => void }) {
-  const [view, setView] = useState<ToolKeyView | null>(null);
+  const [view, setView] = useState<WebSearchReadResponse | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
-  const [editing, setEditing] = useState(false);
+  const [host, setHost] = useState('');
+  const [user, setUser] = useState('');
+  const [password, setPassword] = useState('');
   const [shown, setShown] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      setView(await webSearchRead());
+    } catch {
+      setView(null);
+    }
+  }, []);
 
   useEffect(() => {
     if (broken) return;
-    void getExaKey().then(setView).catch(() => setView(null));
-  }, [broken]);
+    void load();
+  }, [broken, load]);
 
-  const saved = view?.key.saved ?? false;
-  const checking = view?.check.kind === 'checking';
-  const savedAt = view && view.key.saved ? formatLocalDateTime(view.key.savedAt) : '';
+  const selected = view?.providers.find((provider) => provider.id === view.selected) ?? null;
+  useEffect(() => {
+    if (!selected) return;
+    setHost(selected.host || selected.defaultHost);
+    setUser(selected.basicUser);
+    setPassword('');
+    setDraft('');
+    // 只在切换服务商时重置输入；同一家的 key 保存/地址保存刷新不回滚用户正在打的字。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected?.id]);
 
-  const verify = async () => {
-    if (!view) return;
-    setView({ ...view, check: { kind: 'checking' } });
+  const apply = async (action: () => Promise<WebSearchReadResponse>, message?: string) => {
+    setBusy(action.name || 'web-search');
     try {
-      setView(await verifyExaKey());
+      const next = await action();
+      setView(next);
       onChanged();
+      if (message) toast.success(message);
     } catch (error) {
       toast.error((error as Error).message);
-      setView(await getExaKey().catch(() => null));
-    }
-  };
-
-  const save = async () => {
-    setBusy(true);
-    try {
-      const next = await saveExaKey(draft);
-      setDraft('');
-      setEditing(false);
-      onChanged();
-      toast.success(saved ? 'key 换好了，进了 Keyring；正在检查' : 'key 进了 Keyring；Kind 下一轮就能联网，正在检查');
-      setView({ ...next, check: { kind: 'checking' } });
-      setView(await verifyExaKey());
-      onChanged();
-    } catch (error) {
-      toast.error((error as Error).message);
-      setView(await getExaKey().catch(() => null));
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   };
 
-  const remove = async () => {
-    try {
-      setView(await removeExaKey());
-      setConfirmDelete(false);
-      onChanged();
-      toast('Exa 的 key 删了；Kind 从下一轮起不能联网');
-    } catch (error) {
-      toast.error((error as Error).message);
-    }
+  const choose = (id: string | null) => void apply(() => webSearchSelect(id));
+  const saveKey = () => {
+    if (!selected) return;
+    const key = draft.trim();
+    if (!key) return;
+    void apply(() => webSearchKeySave(selected.id, key), 'key 进了 Keyring；Kind 下一轮就能用').then(() => setDraft(''));
+  };
+  const removeKey = () => {
+    if (!selected) return;
+    void apply(() => webSearchKeyDelete(selected.id), 'key 删了；选中的服务商不能用了');
+  };
+  const saveHost = () => {
+    if (!selected) return;
+    void apply(() => webSearchHostSet(selected.id, host.trim()), '地址改好了');
+  };
+  const saveAuth = () => {
+    if (!selected) return;
+    void apply(() => webSearchAuthSet(selected.id, user.trim(), password.trim() || undefined), 'Basic 认证改好了');
+    setPassword('');
+  };
+  const check = () => {
+    if (!selected) return;
+    void apply(() => webSearchCheck(), '检查结果写回页面');
   };
 
-  const status: { text: string; tone?: 'warn' | 'fail' | 'ok' } = broken
-    ? { text: 'Keyring 现在读不出来，暂时不能联网', tone: 'fail' }
-    : !view
-      ? { text: '正在读取…' }
-      : !saved
-        ? { text: '还没有 key。Kind 现在不能搜网页、读链接。', tone: 'warn' }
-        : checking
-          ? { text: '已保存在 Keyring（' + savedAt + '）· 正在检查…' }
-          : view.check.kind === 'ok'
-            ? { text: '已保存在 Keyring（' + savedAt + '）· 能用（' + formatLocalDateTime(view.check.at) + ' 验证）', tone: 'ok' }
-            : view.check.kind === 'fail'
-              ? { text: '已保存在 Keyring（' + savedAt + '）· 不能用：' + view.check.reason, tone: 'fail' }
-              : { text: '已保存在 Keyring（' + savedAt + '）· 还没检查过' };
-
-  const dot = broken
-    ? 'var(--fail)'
-    : !saved
-      ? 'var(--wait)'
-      : checking
-        ? 'var(--run)'
-        : view?.check.kind === 'ok'
-          ? 'var(--done)'
-          : view?.check.kind === 'fail'
-            ? 'var(--fail)'
-            : 'var(--ink-3)';
+  const keySaved = selected?.keySaved ?? false;
+  const status = !view
+    ? '正在读取…'
+    : !selected
+      ? '还没有选服务商；web_search 和 web_fetch 都不在 Kind 的工具里。'
+      : selected.keyNeed === 'required' && !keySaved
+        ? '这家要 key，填了才能联网。'
+        : selected.keyNeed === 'llm' && !keySaved
+          ? '这家用模型连接的 key；先去模型提供商里把 key 填上。'
+          : '能用。检测失败只写原因，不会把工具拿掉。';
 
   return (
     <section className="mt-10" data-settings="web-search">
       <h2 className="text-3 font-medium text-ink">联网搜索</h2>
       <p className="mt-1 text-2 leading-5 text-ink-2">
-        填上你自己的 Exa key，Kind 才能搜网页、读链接。网页的内容当作资料，不当作指令；读网页不访问本机和内网地址。
+        同一时间只选一家。没选或缺 key/地址时 Kind 不能搜网页、读链接；网页内容当作资料，不当作指令。
       </p>
 
-      <div className="mt-3 rounded-card border border-line">
-        <div className="flex items-center gap-3 px-4 py-3">
-          <span
-            className={cn('block size-2 shrink-0 rounded-full', checking && 'animate-pulse')}
-            style={{ backgroundColor: dot }}
-          />
-          <div className="min-w-0">
-            <div className="text-3 text-ink">Exa</div>
-            <div
-              className="mt-0.5 truncate text-1"
-              data-settings="web-search-status"
-              style={status.tone ? { color: `var(--${status.tone === 'warn' ? 'wait' : status.tone === 'ok' ? 'done' : 'fail'})` } : undefined}
-            >
-              <span className={status.tone ? '' : 'text-ink-3'}>{status.text}</span>
-            </div>
-          </div>
-          <div className="ml-auto flex shrink-0 items-center gap-1">
-            {saved && !broken ? (
-              <Btn kind="quiet" disabled={checking} onClick={() => void verify()}>
-                {checking ? '正在检查…' : '验证'}
-              </Btn>
-            ) : null}
-            {saved && !editing && !broken ? (
-              <Btn kind="danger" onClick={() => setConfirmDelete(true)}>
-                删除
-              </Btn>
-            ) : null}
-            {(saved && !broken) || editing ? (
-              <Btn
-                kind="plain"
-                onClick={() => {
-                  setEditing((on) => !on);
-                  setDraft('');
-                }}
-              >
-                {editing ? '收起' : '换一把'}
-              </Btn>
-            ) : null}
-          </div>
+      <div className="mt-3 rounded-card border border-line" data-web-provider-list>
+        <div className="flex items-center gap-2 border-b border-line px-3 py-2" data-settings="web-search-select">
+          <span className="text-2 text-ink-2">服务商</span>
+          <select
+            data-web-select
+            value={selected?.id ?? ''}
+            disabled={broken}
+            onChange={(event) => choose(event.target.value || null)}
+            className="min-w-0 flex-1 rounded-btn border border-line bg-pane px-2 py-1 text-2 text-ink outline-none"
+          >
+            <option value="">不选</option>
+            {(view?.providers ?? []).map((provider) => (
+              <option key={provider.id} value={provider.id}>
+                {provider.name}（{KEY_NEED_LABEL[provider.keyNeed] ?? provider.keyNeed}）
+              </option>
+            ))}
+          </select>
         </div>
+        {(view?.providers ?? []).map((provider) => (
+          <button
+            key={provider.id}
+            type="button"
+            data-web-provider={provider.id}
+            onClick={() => choose(provider.id)}
+            className={cn(
+              'flex w-full items-center gap-2 border-b border-line px-3 py-1.5 text-left text-1 last:border-b-0 hover:bg-hover',
+              provider.id === view?.selected && 'bg-active',
+            )}
+          >
+            <span className="w-28 shrink-0 truncate text-ink">{provider.name}</span>
+            <span className="shrink-0 text-ink-3">{KEY_NEED_LABEL[provider.keyNeed] ?? provider.keyNeed}</span>
+            <span className="ml-auto shrink-0 text-ink-2">
+              {provider.keySaved ? 'key 已存' : '没有 key'}
+              {provider.check.kind === 'ok' ? ' · 能用' : provider.check.kind === 'fail' ? ' · 检查失败' : ''}
+            </span>
+          </button>
+        ))}
+      </div>
 
-        {(!saved || editing) && !broken ? (
-          <div className="border-t border-line px-4 py-3" data-settings="exa-key">
-            <div className="flex items-center gap-2">
+      <p className="mt-2 text-1 leading-4 text-ink-3" data-settings="web-search-status">{status}</p>
+
+      {selected && !broken ? (
+        <div className="mt-3 rounded-card border border-line p-3" data-settings="web-search-detail">
+          <div className="flex flex-wrap items-baseline gap-2">
+            <span className="text-3 text-ink">{selected.name}</span>
+            <a href={selected.site} target="_blank" rel="noreferrer" className="text-1 text-ink-3 underline-offset-2 hover:underline">{selected.defaultHost || '地址未填'}</a>
+            <span className="ml-auto text-1 text-ink-3">{selected.keySavedAt ? '存于 ' + formatSavedAt(selected.keySavedAt) : selected.keyNeed === 'llm' ? '用模型连接的 key' : '没有 key'}</span>
+          </div>
+          {selected.keyNeed !== 'llm' ? (
+            <div className="mt-2 flex items-center gap-2">
               <div className="relative flex-1">
                 <input
                   type={shown ? 'text' : 'password'}
+                  data-web-key-input
                   autoComplete="new-password"
                   spellCheck={false}
                   value={draft}
-                  onChange={(event) => {
-                    setDraft(event.target.value);
-                    setShown(false);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' && draft.trim() && !busy) void save();
-                  }}
-                  placeholder={saved ? '新的 key；保存后替换掉旧的' : '输入 Exa 的 API key'}
+                  onChange={(event) => setDraft(event.target.value)}
+                  placeholder={keySaved ? '新的 key；保存后替换旧的' : '输入 key'}
                   className={cn(inputClass, draft && 'pr-9')}
-                  data-settings="exa-key-input"
                 />
                 {draft ? (
-                  <button
-                    type="button"
-                    onClick={() => setShown((on) => !on)}
-                    aria-label={shown ? '隐藏 key' : '显示 key'}
-                    className="absolute right-1.5 top-1/2 grid size-6 -translate-y-1/2 place-items-center rounded-btn text-ink-3 hover:bg-hover hover:text-ink"
-                  >
+                  <button type="button" aria-label={shown ? '隐藏 key' : '显示 key'} onClick={() => setShown((on) => !on)} className="absolute right-1.5 top-1/2 grid size-6 -translate-y-1/2 place-items-center rounded-btn text-ink-3 hover:bg-hover hover:text-ink">
                     {shown ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
                   </button>
                 ) : null}
               </div>
-              <Btn kind="primary" disabled={!draft.trim() || busy} onClick={() => void save()}>
-                {busy ? '正在保存…' : '保存'}
-              </Btn>
+              <Btn kind="primary" data-web-key-save disabled={!draft.trim() || busy === 'web-search'} onClick={saveKey}>保存</Btn>
+              {keySaved ? <Btn kind="danger" data-web-key-delete onClick={removeKey}>删除</Btn> : null}
             </div>
-            <div className="mt-1.5 text-1 leading-4 text-ink-3">
-              在 <span className="brand-type">dashboard.exa.ai</span> 的 API Keys 里拿。保存以后页面、日志和对话里都不再出现；不从环境变量读。
-            </div>
+          ) : null}
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <span className="text-2 text-ink-2">地址</span>
+            <input data-web-host value={host} onChange={(event) => setHost(event.target.value)} placeholder={selected.defaultHost || 'https://…'} className={cn(inputClass, 'max-w-[320px] flex-1')} />
+            <Btn kind="plain" data-web-host-save onClick={saveHost}>保存地址</Btn>
+            <Btn kind="quiet" data-web-check disabled={!selected.keySaved && selected.keyNeed !== 'none'} onClick={check}>检测</Btn>
           </div>
-        ) : null}
-      </div>
-
-      <Dialog open={confirmDelete} onOpenChange={setConfirmDelete}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>删除 Exa 的 key？</DialogTitle>
-            <DialogDescription>
-              立刻生效：Kind 从下一轮起不能搜网页、读链接，正在搜的那一次会失败。删除会留下记录，key 本身不留。
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Btn kind="plain" onClick={() => setConfirmDelete(false)}>
-              取消
-            </Btn>
-            <Btn kind="danger" className="border border-[var(--fail)]/40" onClick={() => void remove()}>
-              删除
-            </Btn>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          {selected.basicSupported ? (
+            <div className="mt-2 flex flex-wrap items-center gap-2" data-web-basic>
+              <span className="text-2 text-ink-2">Basic 认证</span>
+              <input data-web-basic-user value={user} onChange={(event) => setUser(event.target.value)} placeholder="用户名（可空）" className={cn(inputClass, 'max-w-[180px]')} />
+              <input data-web-basic-password type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder={selected.basicSaved ? '新密码（不改就空着）' : '密码（可空）'} className={cn(inputClass, 'max-w-[180px]')} />
+              <Btn kind="plain" data-web-basic-save onClick={saveAuth}>保存认证</Btn>
+            </div>
+          ) : null}
+          <p className="mt-2 text-1 leading-4 text-ink-3" data-web-key-site>
+            {selected.keyNeed === 'llm' ? '这家不单独存 key。' : selected.keySite ? 'key 在 ' + selected.keySite + ' 拿；保存后页面、日志和对话里都不出现。' : '不要 key。'}
+            {selected.check.kind === 'fail' ? ' 上次检查：' + selected.check.reason : null}
+            {selected.check.kind === 'ok' ? ' 上次检查：' + formatSavedAt(selected.check.at) + ' 能用' : null}
+          </p>
+        </div>
+      ) : null}
     </section>
   );
 }
-
 function KeyringSection({ view, onView }: { view: ModelSettingsView; onView: (view: ModelSettingsView) => void }) {
   const [moving, setMoving] = useState(false);
   const [path, setPath] = useState(view.keyFile.path);

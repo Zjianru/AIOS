@@ -32,6 +32,7 @@ mod status;
 mod task_read;
 mod tasks;
 mod vision_notes;
+mod web_search;
 mod vision_protocol;
 mod vision_settings;
 mod work_graph_fixture;
