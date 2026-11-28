@@ -2337,8 +2337,34 @@ fn settings_update_lists_only_the_changed_fields() {
     let directory = tempfile::tempdir().unwrap();
     let data_dir = directory.path();
     let action = settings_action(data_dir, "settings_update");
+    let details = action.details(&json!({ "seats": 5 })).expect("details");
+    let facts = action
+        .describe(
+            &details,
+            &action_env(data_dir, &data_dir.join("identity.txt")),
+        )
+        .expect("设置卡");
+    assert_eq!(facts.len(), 1);
+    assert_eq!(facts[0].name, "席位");
+    assert!(facts[0].value.ends_with("→ 5"), "{:?}", facts[0]);
+    assert!(action.details(&json!({})).is_err(), "空 details 要拒");
+    assert!(
+        action.details(&json!({ "currency": "usd" })).is_err(),
+        "币种已删"
+    );
+}
+
+#[test]
+fn settings_update_accepts_vision_chain_and_screen_capture() {
+    let directory = tempfile::tempdir().unwrap();
+    let data_dir = directory.path();
+    seed_settings_connection(data_dir);
+    let action = settings_action(data_dir, "settings_update");
     let details = action
-        .details(&json!({ "currency": "cny", "seats": 5 }))
+        .details(&json!({
+            "visionModels": [{ "connection": "deepseek", "model": "deepseek-flash" }],
+            "screenCapture": true,
+        }))
         .expect("details");
     let facts = action
         .describe(
@@ -2347,11 +2373,14 @@ fn settings_update_lists_only_the_changed_fields() {
         )
         .expect("设置卡");
     assert_eq!(facts.len(), 2);
-    assert_eq!(facts[0].name, "币种");
-    assert!(facts[0].value.ends_with("→ cny"), "{:?}", facts[0]);
-    assert_eq!(facts[1].name, "席位");
-    assert!(facts[1].value.ends_with("→ 5"), "{:?}", facts[1]);
-    assert!(action.details(&json!({})).is_err(), "空 details 要拒");
+    assert_eq!(facts[0].name, "看图模型");
+    assert!(
+        facts[0].value.contains("→ deepseek/deepseek-flash"),
+        "{:?}",
+        facts[0]
+    );
+    assert_eq!(facts[1].name, "让 Kind 截桌面");
+    assert!(facts[1].value.ends_with("→ 开"), "{:?}", facts[1]);
 }
 
 #[test]
@@ -2499,7 +2528,7 @@ fn fake_key_never_becomes_a_save_action_or_details_field() {
             json!({ "id": "deepseek", "key": fake }),
         ),
         ("exa_key_delete", json!({ "key": fake })),
-        ("settings_update", json!({ "currency": "cny", "key": fake })),
+        ("settings_update", json!({ "seats": 5, "key": fake })),
         (
             "keyring_action",
             json!({ "action": "relocate", "path": "/tmp/x", "key": fake }),

@@ -129,11 +129,10 @@ fn old_settings_without_plugins_section_still_loads() {
     let dir = tempdir().unwrap();
     std::fs::write(
         dir.path().join("settings.json"),
-        r#"{"currency":"cny","lastSelection":null}"#,
+        r#"{"lastSelection":null}"#,
     )
     .unwrap();
     let settings = service::settings::load(dir.path());
-    assert_eq!(settings.currency, "cny");
     assert!(!settings.plugins.office, "旧文件缺 plugins 节按默认关读");
 }
 

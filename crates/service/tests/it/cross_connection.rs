@@ -1,12 +1,8 @@
 //! 跨连接换模型和并发的 status 读：两个窗口的同一条根会话交错。
 //!
-//! 窗口 A：status 读日志时如果把 Agent 克隆带过 fx 的 await，克隆会一直占着会话写锁；
-//! 这时跨连接换模型要重开根会话，拿不到写锁就报 writer-held（Busy）。
 //! 窗口 B：重开根会话在放掉旧 Agent 和装上新 Agent 之间，inner 短暂为空；这时 status
-//! 会报 RootUnavailable(state=Ok)，页面拿到 409。
-//!
-//! 复现只用测试夹具把时间窗拉长：A 用一个 FIFO 卡住 fx 缓存读（status 的 await 点），
-//! B 用装配层的 append_hook_factory 卡住重开时的 Agent::open。都不给产品加注入口。
+//! 会报 RootUnavailable(state=Ok)，页面拿到 409。用装配层的 append_hook_factory 卡住
+//! 重开时的 Agent::open，不给产品加注入口。
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -57,7 +53,6 @@ async fn scenario(append_hook_factory: Option<session::AppendHookFactory>) -> Sc
     ]);
     seed_connections(&data_dir, &identity, &server.base_url());
     // status 会拉汇率；预置未过期的缓存，测试不依赖网络（A 用例稍后把它换成 FIFO）。
-    crate::settings::seed_fx_cache(&data_dir);
     let mut options = common::options(&data_dir);
     options.identity = Some(identity.clone());
     options.config.instruction_roots = vec![data_dir.join("agents-home")];
@@ -309,61 +304,6 @@ async fn status_waits_while_root_reopens() {
     assert_eq!(stats.model, "MiniMax-M2.7-highspeed");
 }
 
-/// 窗口 A：status 读到 fx 的 await 时不能还拿着会话写锁，否则重开根会话报 writer-held。
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn status_does_not_hold_the_session_writer_across_fx() {
-    let scenario = scenario(None).await;
-    let fx_path = scenario.data_dir.join(service::fx::FX_FILE);
-    std::fs::remove_file(&fx_path).expect("去掉预置的汇率缓存");
-    make_fifo(&fx_path);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("系统时间")
-        .as_secs();
-    let body = format!("{{\"rate\":7.11,\"fetchedAt\":{now}}}");
-
-    let (reader_ready_tx, reader_ready_rx) = std::sync::mpsc::channel::<()>();
-    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
-    let writer = {
-        let fx_path = fx_path.clone();
-        std::thread::spawn(move || {
-            use std::io::Write;
-            // 写端能打开 = status 已经把 fx 的读端打开、正卡在 await 里。
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .open(&fx_path)
-                .expect("打开 fx FIFO 写端");
-            reader_ready_tx.send(()).expect("报告 fx 读端已就位");
-            release_rx.recv().expect("等测试放行");
-            file.write_all(body.as_bytes()).expect("写汇率缓存");
-        })
-    };
-
-    let status = tokio::spawn({
-        let host = Arc::clone(&scenario.host);
-        async move { host.dispatch(Call::Status(StatusRequest::default())).await }
-    });
-    tokio::task::spawn_blocking(move || {
-        reader_ready_rx.recv_timeout(std::time::Duration::from_secs(5))
-    })
-    .await
-    .expect("等待 fx 读端")
-    .expect("status 要进入 fx 的 await");
-
-    let card = scenario.host.dispatch(confirm(CROSS_CONNECTION)).await;
-    release_tx.send(()).expect("放行 fx 读");
-    writer.join().expect("fx 写线程");
-    let status = status.await.expect("status 任务");
-
-    let (phase, summary) = decision_phase(card.expect("status 占着会话读时换模型也要成功"));
-    assert_eq!(phase, "confirmed", "summary={summary}");
-    let stats = stats_of(status.expect("status 最终要回 Ok"));
-    // 这次 status 的日志快照在换模型之前取；它要读到这一轮的收尾，且没有因为
-    // 重开拿不到写锁而报 Busy。
-    assert_eq!(stats.turns, 1, "status 快照要读到这一轮");
-    assert!(!stats.connection.is_empty());
-}
-
 /// 同连接换模型不走重开：并发 status 时不回归。
 #[tokio::test]
 async fn same_connection_select_still_works_next_to_status() {
@@ -387,16 +327,4 @@ async fn same_connection_select_still_works_next_to_status() {
         })
         .expect("session/model");
     assert_eq!(selected, "deepseek-v4-pro");
-}
-
-fn make_fifo(path: &Path) {
-    let output = std::process::Command::new("mkfifo")
-        .arg(path)
-        .output()
-        .expect("运行 mkfifo");
-    assert!(
-        output.status.success(),
-        "mkfifo 失败：{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
 }

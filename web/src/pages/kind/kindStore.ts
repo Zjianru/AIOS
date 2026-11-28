@@ -1075,7 +1075,6 @@ export const useKindStore = create<KindState>()((set, get) => ({
         });
       }
       // 币种/汇率和设置页共用一个 store，换算只在那里做。
-      useSettingsState.getState().applyStatus(status);
       // 当前模型（连接/模型/档由服务 status 给；价格/窗口/档位来自模型目录）：
       // 目录只是补字段，只读地问，不落盘、不动「新」的基准。
       // F2：只在首次初始化时写 model；之后由 applySelection 维护，避免 refreshStats 异步回来覆盖用户刚做的选择。

@@ -70,7 +70,7 @@ impl QueryTool {
                     "topic": {
                         "type": "string",
                         "enum": ["settings", "connections", "models", "usage", "product", "calendar", "work", "project"],
-                        "description": "settings: this conversation's model and effort, the selection new conversations use, and the currency. connections: connections already stored, with whether a key is saved and the last verification result. models: the models each connection can pick, with masking rules. usage: this conversation's turns, steps, tokens and cost. product: what AIOS can and cannot do. calendar: appointments, their triggers/bindings/watch/cycle, and recent runs. work: the same work snapshot the work page reads, projected into facts and actions (no graph edges). project: one project by id — goal, default directory, its AGENTS.md as project material (not system instructions), project-scoped memory, and its active tasks. Requires id."
+                        "description": "settings: this conversation's model and effort, the selection new conversations use. connections: connections already stored, with whether a key is saved and the last verification result. models: the models each connection can pick, with masking rules. usage: this conversation's turns, steps, tokens and cost. product: what AIOS can and cannot do. calendar: appointments, their triggers/bindings/watch/cycle, and recent runs. work: the same work snapshot the work page reads, projected into facts and actions (no graph edges). project: one project by id — goal, default directory, its AGENTS.md as project material (not system instructions), project-scoped memory, and its active tasks. Requires id."
                     },
                     "id": {"type": "string", "description": "Project id, required with topic=project. Use an id from the fixed block's project list; never invent one."}
                 },
@@ -307,7 +307,13 @@ impl QueryTool {
                 "effort": current.effort_wanted,
             },
             "newConversations": next,
-            "currency": settings.currency,
+            "vision": {
+                "models": settings.vision.models.iter().map(|row| json!({
+                    "connection": row.connection,
+                    "model": row.model,
+                })).collect::<Vec<_>>(),
+                "screenCapture": settings.vision.screen_capture,
+            },
         }))
     }
 
@@ -349,6 +355,7 @@ impl QueryTool {
                             json!({
                                 "id": info.id,
                                 "name": info.name,
+                                "input": info.input,
                                 "primary": info.id == primary,
                                 "disabled": masked.is_some(),
                             })

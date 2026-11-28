@@ -180,7 +180,7 @@ async fn aios_query_topics_match_service_reads() {
             .unwrap_or_else(|error| panic!("查询结果是 JSON（{error}）：{results:?}"))
     };
 
-    // 设置：这条对话的模型、强度和币种，和 status 一致。
+    // 设置：这条对话的模型、强度和 status 一致。
     let status = host
         .dispatch(Call::Status(StatusRequest {}))
         .await
@@ -194,10 +194,6 @@ async fn aios_query_topics_match_service_reads() {
     assert_eq!(
         settings["session"]["connection"], status["stats"]["connection"],
         "设置里的连接和 status 一致：{settings}"
-    );
-    assert_eq!(
-        settings["currency"], status["currency"],
-        "币种和 status 一致：{settings}"
     );
 
     // 连接：和模型设置页的 Keyring 视图一致；有 key、没验证过。

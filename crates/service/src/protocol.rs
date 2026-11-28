@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::{fx, quota, stats};
+use crate::{quota, stats};
 
 /// 服务对象：固定 Kind 根会话（16b 换成根会话实体）；第一版用会话 id 表达。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -98,7 +98,7 @@ pub enum Call {
     ExaKeyCheck(ExaKeyRequest),
     /// 删 Exa 的 key。
     ExaKeyDelete(ExaKeyRequest),
-    /// 写非密钥设置（currency；只写 settings.json）。
+    /// 写非密钥设置（只写 settings.json）。
     SettingsUpdate(SettingsUpdateRequest),
     /// 设置页「测试看图」：只测一个指定后端，不换备用。
     VisionTest(VisionTestRequest),
@@ -486,12 +486,6 @@ pub struct StatusResponse {
     /// 会话统计（轮/步/token/缓存/上下文/花费）；裸宿主为 None。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stats: Option<stats::SessionStats>,
-    /// USD→CNY 汇率与拉到时间；裸宿主为 None。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fx: Option<fx::FxInfo>,
-    /// 币种（settings.json：usd/cny）；裸宿主为 None。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub currency: Option<String>,
     /// 会话的工作目录（工具的路径相对它解析）；页面用它把工作过程里的路径显示成相对路径。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
@@ -895,12 +889,6 @@ pub struct TaskReadResponse {
     /// T051：任务当前 Attempt 的会话统计（和 status 的 stats 同一形状、同一函数算；页面只显示）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stats: Option<stats::SessionStats>,
-    /// USD→CNY 汇率与拉到时间（同 status；页面按服务端给的换算显示花费）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fx: Option<fx::FxInfo>,
-    /// 币种（settings.json：usd/cny）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub currency: Option<String>,
     /// T056.2：账本（约束、在用叙述条、历史）；旧任务为空数组，页面不显示。
     #[serde(default)]
     pub ledger: TaskReadLedger,
@@ -1477,9 +1465,6 @@ pub type ExaKeyResponse = credentials::ToolKeyView;
 /// 全部字段为 None 时只读当前值（设置页打开时用），不写文件。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, TS)]
 pub struct SettingsUpdateRequest {
-    /// 币种（usd/cny）；None = 不改。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub currency: Option<String>,
     /// 全局暂停；None = 不改。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paused: Option<bool>,
@@ -1516,7 +1501,6 @@ pub struct ExecSettingsView {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct SettingsUpdateResponse {
-    pub currency: String,
     #[serde(rename = "exec")]
     pub exec: ExecSettingsView,
     #[serde(rename = "visionModels", default)]
@@ -2093,7 +2077,7 @@ pub struct ActionActResponse {
 /// 服务协议版本：只增不改的对外面每次扩展都记在这里，Web ready 帧里带上。
 ///
 /// - 4：第一版；
-/// - 5：settings-update（写非密钥设置 currency）。
+/// - 5：settings-update（写非密钥设置）。
 /// - 6：attachment-put / attachment-get / file-references-list 三个 op，
 ///   以及 send 的 pastes / attachments 两个字段（后两项随后实现，形状已定）。
 /// - 7：tool-call-delta + send.canvas（send.canvas 先加字段）。
@@ -2121,7 +2105,7 @@ pub struct ActionActResponse {
 ///
 /// 连接上的旧价格乘数后来整条删掉，不升版本：两个请求里的这个字段本来就可省略，旧页再发
 /// 由 serde 当未知字段忽略；响应里少了它，旧页读到 undefined 也不会拿去定价。
-pub const PROTOCOL_VERSION: u64 = 36;
+pub const PROTOCOL_VERSION: u64 = 37;
 
 /// 日历读取：不带 appointmentId 读全部；带 week 时额外给那周的计划点。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]

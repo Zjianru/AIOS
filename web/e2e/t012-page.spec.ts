@@ -116,8 +116,8 @@ test('换模型后档位跟着变', async ({ page, request }) => {
   }
 });
 
-/// T012.9 清单 13：币种切换——走设置页的「显示币种」按钮，回 Kind 后花费按人民币显示。
-test('币种：设置页切 CNY 后花费显示 ¥', async ({ page, request }) => {
+/// T103.1：花费只按美元显示，设置页不再有币种切换。
+test('花费固定按美元显示，不再有显示币种设置', async ({ page, request }) => {
   const fixture = await startKernelFixture({ usageReadOnly: true });
   try {
     await setUserPrices(request, fixture);
@@ -127,15 +127,8 @@ test('币种：设置页切 CNY 后花费显示 ¥', async ({ page, request }) =
     await expect(page.getByText('（T007 e2e 假回放）').last()).toBeVisible({ timeout: 30_000 });
     await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0, { timeout: 60_000 });
     await expect(page.locator('[data-kind="stats-cost"]')).toContainText('$');
-    // 真实 UI：设置页 › 显示币种 › ¥ CNY。
     await page.getByRole('button', { name: '设置', exact: true }).click();
-    const currency = page.locator('[data-settings="currency"]');
-    await expect(currency).toBeVisible({ timeout: 20_000 });
-    await currency.getByRole('button', { name: '¥ CNY' }).click();
-    // 回 Kind，统计行的花费变人民币。
-    await page.getByRole('button', { name: 'Kind', exact: true }).click();
-    await expect(page.getByPlaceholder('和 Kind 说…')).toBeVisible({ timeout: 20_000 });
-    await expect(page.locator('[data-kind="stats-cost"]')).toContainText('¥', { timeout: 20_000 });
+    await expect(page.locator('[data-settings="currency"]')).toHaveCount(0);
   } finally {
     await fixture.close();
   }

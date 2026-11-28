@@ -1903,7 +1903,6 @@ async fn task_read_reports_interrupted_and_restart_pending_until_kind_is_told() 
     assert_eq!(before.attempts, 1, "没自动重跑");
 
     host.dispatch(Call::SettingsUpdate(SettingsUpdateRequest {
-        currency: None,
         paused: Some(false),
         seats: None,
         bash: None,

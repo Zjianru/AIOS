@@ -532,7 +532,6 @@ async fn global_pause_merges_without_precreating_a_trigger_task_then_builds_one_
     fixture
         .host
         .dispatch(Call::SettingsUpdate(SettingsUpdateRequest {
-            currency: None,
             paused: Some(true),
             seats: None,
             bash: None,
@@ -553,7 +552,6 @@ async fn global_pause_merges_without_precreating_a_trigger_task_then_builds_one_
     fixture
         .host
         .dispatch(Call::SettingsUpdate(SettingsUpdateRequest {
-            currency: None,
             paused: Some(false),
             seats: None,
             bash: None,

@@ -133,12 +133,10 @@ test('现在页：在推进卡/问题卡字段、摘要纯文字、监控没事�
     await fixture.close();
   }
 });
-test('现在页：花费按设置币种显示（CN 是 ¥，不是写死 $）', async ({ page, request }) => {
+test('现在页：花费固定按美元显示，不再有币种设置', async ({ page, request }) => {
   test.setTimeout(120_000);
   const fixture = await startKernelFixture({});
   try {
-    const saved = await apiPost(request, fixture, { method: 'settings-update', currency: 'cny' });
-    expect(saved.ok()).toBeTruthy();
     const now = Date.now();
     const work = {
       method: 'work',
@@ -146,7 +144,7 @@ test('现在页：花费按设置币种显示（CN 是 ¥，不是写死 $）', 
       tasks: [
         {
           id: 'task-run-2',
-          title: '币种显示检查',
+          title: '美元显示检查',
           stage: 'running',
           running: true,
           runningSince: now - 30_000,
@@ -171,7 +169,7 @@ test('现在页：花费按设置币种显示（CN 是 ¥，不是写死 $）', 
       tasks: [
         {
           taskId: 'task-run-2',
-          title: '币种显示检查',
+          title: '美元显示检查',
           state: 'running',
           model: 'MiniMax-M3.1-Flash',
           running: true,
@@ -209,8 +207,8 @@ test('现在页：花费按设置币种显示（CN 是 ¥，不是写死 $）', 
     });
     await page.goto(urlOf(fixture, '#now'));
     const meta = page.locator('[data-kind="now-advancing-meta"]');
-    await expect(meta).toContainText('¥', { timeout: 30_000 });
-    await expect(meta).not.toContainText('$');
+    await expect(meta).toContainText('$', { timeout: 30_000 });
+    await expect(meta).not.toContainText('¥');
   } finally {
     await fixture.close();
   }

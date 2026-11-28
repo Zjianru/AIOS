@@ -224,7 +224,6 @@ async fn two_appointments_due_under_one_global_pause_both_use_the_pause_reason()
         .unwrap();
     let host = crate::common::open(crate::common::options(data)).await;
     host.dispatch(Call::SettingsUpdate(service::SettingsUpdateRequest {
-        currency: None,
         paused: Some(true),
         seats: None,
         bash: None,
@@ -242,7 +241,6 @@ async fn two_appointments_due_under_one_global_pause_both_use_the_pause_reason()
     // 暂停期间到点，且攒出多次（FREQ=SECONDLY），再开闸。
     tokio::time::sleep(std::time::Duration::from_millis(3_200)).await;
     host.dispatch(Call::SettingsUpdate(service::SettingsUpdateRequest {
-        currency: None,
         paused: Some(false),
         seats: None,
         bash: None,
@@ -318,7 +316,6 @@ async fn global_pause_merges_missed_occurrences_and_sends_once() {
     let mut settings = service::settings::Settings {
         plugins: service::settings::PluginsSettings::default(),
         last_selection: None,
-        currency: "usd".to_owned(),
         disabled_models: Vec::new(),
         exec: service::settings::ExecSettings {
             paused: true,
@@ -340,7 +337,6 @@ async fn global_pause_merges_missed_occurrences_and_sends_once() {
     settings.exec.paused = false;
     service::settings::save(data, &settings).unwrap();
     host.dispatch(Call::SettingsUpdate(service::SettingsUpdateRequest {
-        currency: None,
         paused: Some(false),
         seats: None,
         bash: None,

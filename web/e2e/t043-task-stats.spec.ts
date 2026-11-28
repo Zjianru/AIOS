@@ -9,16 +9,10 @@ import { apiPost, startKernelFixture, type KernelFixture } from './service-fixtu
  * 页面上不允许出现 Kind 全局数，也不允许页面自己按模型显示名匹配价格/窗口。
  */
 
-/** 和 web/src/lib/numbers.ts 的 formatCost 同一规则（币种、汇率、unpriced 的「+」）。 */
-function formatCost(usd: number, currency: string, cnyPerUsd: number, partial: boolean): string {
-  let amount = usd;
-  let sign = '$';
-  if (currency === 'cny' && cnyPerUsd > 0) {
-    amount = usd * cnyPerUsd;
-    sign = '¥';
-  }
-  const text = amount >= 100 ? amount.toFixed(0) : amount >= 1 ? amount.toFixed(2) : amount.toFixed(3);
-  return sign + text + (partial ? '+' : '');
+/** 和 web/src/lib/numbers.ts 的 formatCost 同一规则（只美元，unpriced 的「+」）。 */
+function formatCost(usd: number, partial: boolean): string {
+  const text = usd >= 100 ? usd.toFixed(0) : usd >= 1 ? usd.toFixed(2) : usd.toFixed(3);
+  return '$' + text + (partial ? '+' : '');
 }
 
 const urlOf = (fixture: KernelFixture, hash = '#kind') =>
@@ -142,8 +136,6 @@ test('任务对话统计条：轮/步/token 与任务会话日志一致，不等
         costUsd?: number | null;
         unpriced: boolean;
       };
-      fx?: { rate: number } | null;
-      currency?: string | null;
     };
     const serverStats = readBody.stats;
     if (!serverStats) throw new Error('task-read 要带 stats');
@@ -163,15 +155,9 @@ test('任务对话统计条：轮/步/token 与任务会话日志一致，不等
     );
     expect(usageNumbers[1]).toBe(String(serverStats.outputTokens));
 
-    // 花费：服务端按目录标价算出来的 costUsd，页面用同一个 formatCost 显示（币种/汇率也来自服务端）。
+    // 花费：服务端按目录标价算出来的 costUsd，页面用同一个 formatCost 显示。
     if (serverStats.costUsd == null) throw new Error('这个场景目录有价，stats.costUsd 不该为空');
-    const unit = (readBody.currency ?? 'usd') === 'cny' ? 'cny' : 'usd';
-    const expectedCost = formatCost(
-      serverStats.costUsd,
-      unit,
-      readBody.fx?.rate ?? 7.2,
-      serverStats.unpriced,
-    );
+    const expectedCost = formatCost(serverStats.costUsd, serverStats.unpriced);
     await expect(
       dock.locator('[data-kind="stats-cost"] [data-kind="stat-number"]'),
     ).toHaveText(expectedCost);

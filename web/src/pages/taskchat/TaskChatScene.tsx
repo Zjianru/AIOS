@@ -21,7 +21,6 @@ import type { DeliveryRecord } from '@/data/generated/DeliveryRecord';
 import type { TaskReadHeader } from '@/data/generated/TaskReadHeader';
 import type { TaskReadLedger } from '@/data/generated/TaskReadLedger';
 import type { SessionStats } from '@/data/generated/SessionStats';
-import type { FxInfo } from '@/data/generated/FxInfo';
 import { useStreamStore } from '@/pages/kind/kindStore';
 import { DeliveryBlock } from './DeliveryBlock';
 import { TurnRow, UserCards } from '@/pages/kind/TurnRow';
@@ -60,8 +59,6 @@ export function TaskChatScene() {
   const [upstreamOpen, setUpstreamOpen] = useState(false);
   // T051：统计由服务端 task-read 给（和 Kind status 同一个 session_stats），页面只显示。
   const [attemptStats, setAttemptStats] = useState<SessionStats | null>(null);
-  const [fx, setFx] = useState<FxInfo | null>(null);
-  const [currency, setCurrency] = useState<string | null>(null);
   const [winding, setWinding] = useState(false);
   const [events, setEvents] = useState<ServiceEvent[]>([]);
   const [error, setError] = useState('');
@@ -262,8 +259,6 @@ export function TaskChatScene() {
         setLedger(response.ledger);
         setTaskTitle(response.task.title);
         setAttemptStats(response.stats ?? null);
-        setFx(response.fx ?? null);
-        setCurrency(response.currency ?? null);
         setEvents(response.events);
         setHasOlder(response.events.length > 0);
         lastSeqRef.current = response.lastSeq;
@@ -498,8 +493,6 @@ export function TaskChatScene() {
       );
       // 统计也以服务端为准（task-read 每次都带当前 Attempt 的 stats）。
       setAttemptStats(response.stats ?? null);
-      setFx(response.fx ?? null);
-      setCurrency(response.currency ?? null);
     } catch {
       // 服务没回来/读失败：保持现状（不清空、不覆盖成错误状态），等重连再拉。
     }
@@ -995,8 +988,6 @@ export function TaskChatScene() {
           {attemptStats === null ? null : (
             <TaskStatsDock
               stats={attemptStats}
-              fx={fx}
-              currency={currency}
               attempts={task.attempts}
             />
           )}

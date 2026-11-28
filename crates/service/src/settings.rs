@@ -1,7 +1,7 @@
 //! 不是密钥的设置（`<数据目录>/settings.json`）。Keyring 只放连接和 key。
 //!
 //! 现有：上一次的模型选择（新会话默认用；story 2「新会话默认用我上一次选的」）。
-//! 起同一个文件还放币种（只增字段）。
+//! 起同一个文件还放模型/执行/插件/看图设置。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -22,9 +22,6 @@ pub struct Settings {
         rename = "lastSelection"
     )]
     pub last_selection: Option<session::ModelSelection>,
-    /// 币种：`usd` 或 `cny`；默认 usd。
-    #[serde(default = "default_currency")]
-    pub currency: String,
     /// 屏蔽的模型规则（通配；空表 = 都不屏蔽）。改了立即生效。
     #[serde(default, rename = "disabledModels")]
     pub disabled_models: Vec<String>,
@@ -92,15 +89,10 @@ fn default_seats() -> u8 {
     DEFAULT_SEATS
 }
 
-fn default_currency() -> String {
-    "usd".to_owned()
-}
-
 impl Default for Settings {
     fn default() -> Self {
         Self {
             last_selection: None,
-            currency: default_currency(),
             disabled_models: Vec::new(),
             exec: ExecSettings::default(),
             plugins: PluginsSettings::default(),
@@ -138,7 +130,7 @@ pub(crate) enum Read {
 /// 宽松读设置：文件不存在/读不出/坏 JSON 都按默认值（设置丢了不阻塞启动；与根会话状态
 /// 文件的严格报错不同——这里不是恢复链的硬事实）。
 ///
-/// 只给「上次选择/币种」这类不守门的字段用；屏蔽表和写入口用 read。
+/// 只给「上次选择」这类不守门的字段用；屏蔽表和写入口用 read。
 pub fn load(data_dir: &Path) -> Settings {
     read_file(data_dir).unwrap_or_default()
 }
@@ -243,15 +235,10 @@ mod tests {
     fn missing_exec_settings_read_as_not_paused() {
         let dir = tempfile::tempdir().expect("dir");
         // 旧设置文件没有 exec 这一节：按默认值读（不暂停）。
-        std::fs::write(
-            path(dir.path()),
-            br#"{"currency":"cny","disabledModels":[]}"#,
-        )
-        .expect("write");
+        std::fs::write(path(dir.path()), br#"{"disabledModels":[]}"#).expect("write");
         let settings = load(dir.path());
         assert!(!settings.exec.paused);
         assert_eq!(settings.exec.seats, 3, "缺 exec 节按默认 3 个席位");
-        assert_eq!(settings.currency, "cny");
     }
 
     #[test]

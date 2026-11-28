@@ -3,10 +3,10 @@
 use crate::error::ServiceError;
 use crate::protocol::{StatusRequest, StatusResponse};
 use crate::root_lifecycle::RootHost;
-use crate::{fx, settings, stats};
+use crate::{settings, stats};
 
 impl RootHost {
-    /// 状态（对象/在跑/待答问题/工作目录）+ 会话统计（轮/步/token/缓存/上下文/花费）+ 汇率 + 币种。
+    /// 状态（对象/在跑/待答问题/工作目录）+ 会话统计（轮/步/token/缓存/上下文/花费）。
     ///
     /// 统计和花费从日志现算（不落日志）：每轮模型取 assistant/message 的 message.source.model，
     /// 价格按当前连接 + 目录（用户价 > 目录标价 > 无价格；无价格的轮标 unpriced）。
@@ -15,7 +15,7 @@ impl RootHost {
         _request: StatusRequest,
     ) -> Result<StatusResponse, ServiceError> {
         // 日志快照和工作目录只在这把锁里取：Agent 一旦被克隆带出去，会话写锁就会跟着
-        // 跨过下面的 await（fx 可能拉网络），重开根会话时被误报 writer-held。
+        // 跨过下面的 await 时不能还拿着会话写锁，否则重开根会话会被误报 writer-held。
         let (object, running, pending_questions, events, cwd) = {
             let guard = self.inner.lock().await;
             let Some(host) = guard.as_ref() else {
@@ -79,14 +79,11 @@ impl RootHost {
             .as_ref()
             .map(|connection| stats::actual_effort_of(connection, &current))
             .unwrap_or_else(|| current.effort_wanted.clone());
-        let fx = fx::usd_to_cny(&self.options.data_dir).await;
         Ok(StatusResponse {
             object,
             running,
             pending_questions,
             stats: Some(stats),
-            fx: Some(fx),
-            currency: Some(settings.currency),
             cwd: Some(cwd),
         })
     }

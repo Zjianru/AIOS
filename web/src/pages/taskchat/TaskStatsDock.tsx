@@ -6,10 +6,9 @@
  * 不再自己数事件、不按模型显示名去设置目录匹配价格/窗口。多 Attempt 标次数。
  */
 import { TooltipProvider } from '@/components/ui/tooltip';
-import type { FxInfo } from '@/data/generated/FxInfo';
 import type { SessionStats } from '@/data/generated/SessionStats';
 import type { UsageTotals } from '@/data/turnUsage';
-import { formatExactTokens, formatPercent, type Currency } from '@/lib/numbers';
+import { formatExactTokens, formatPercent } from '@/lib/numbers';
 import { cn } from '@/lib/utils';
 import {
   ActivityPill,
@@ -24,16 +23,10 @@ import {
 
 export function TaskStatsDock({
   stats,
-  fx,
-  currency,
   attempts,
 }: {
   /** 服务端 task-read 给的当前 Attempt 统计（和 Kind status 同一函数）。 */
   stats: SessionStats;
-  /** USD→CNY 汇率（服务端给；缺失时按 7.2 兜底，和 Kind 一样）。 */
-  fx: FxInfo | null;
-  /** 币种（settings.json 的 usd/cny）。 */
-  currency: string | null;
   attempts: number;
 }) {
   const usage: UsageTotals = {
@@ -42,8 +35,6 @@ export function TaskStatsDock({
     cacheRead: stats.cacheReadTokens,
     cacheWrite: stats.cacheWriteTokens,
   };
-  const unit: Currency = currency === 'cny' ? 'cny' : 'usd';
-  const rate = fx?.rate ?? 7.2;
   const percent =
     stats.contextWindow > 0 ? (stats.contextUsed / stats.contextWindow) * 100 : null;
   return (
@@ -51,13 +42,7 @@ export function TaskStatsDock({
       <div className="mt-1.5 flex items-center gap-1 text-1" data-kind="task-stats">
         <ActivityPill turns={stats.turns} steps={stats.steps} />
         <UsagePill usage={usage} />
-        <CostPill
-          cost={stats.costUsd ?? null}
-          unpriced={stats.unpriced}
-          currency={unit}
-          cnyPerUsd={rate}
-          fxAt={fx?.fetchedAt}
-        />
+        <CostPill cost={stats.costUsd ?? null} unpriced={stats.unpriced} />
         {percent === null ? null : (
           <Hint
             content={

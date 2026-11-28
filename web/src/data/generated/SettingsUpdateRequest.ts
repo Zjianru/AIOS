@@ -8,10 +8,6 @@ import type { VisionModelRefView } from "./VisionModelRefView";
  */
 export type SettingsUpdateRequest = {
 /**
- * 币种（usd/cny）；None = 不改。
- */
-currency?: string | null,
-/**
  * 全局暂停；None = 不改。
  */
 paused?: boolean | null,

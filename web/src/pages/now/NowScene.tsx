@@ -15,7 +15,6 @@ import type { TaskGraph } from '@/pages/work/graphModel';
 import { WaitRow } from '@/pages/work/WaitList';
 import { advancingOf, boardOf, problemsOf, stageLabel, weekDone } from '@/pages/work/workModel';
 import { useWorkPolling, useWorkStore } from '@/pages/work/workStore';
-import { useSettingsState } from '@/lib/settingsState';
 import { clockOf, formatCost } from '@/lib/numbers';
 import { monitorSnapshot } from '@/data/service';
 import type { MonitorTaskSummary } from '@/data/generated/MonitorTaskSummary';
@@ -209,7 +208,6 @@ function buildAdvancing(
 }
 
 function AdvancingRow({ card }: { card: AdvancingCard }) {
-  const money = useSettingsState((state) => state.money);
   return (
     <article data-kind="now-advancing-card" className="rounded-card border border-line bg-pane/40 p-2.5">
       <div className="flex flex-wrap items-baseline gap-1.5">
@@ -264,7 +262,7 @@ function AdvancingRow({ card }: { card: AdvancingCard }) {
         <span>·</span>
         <span>
           {card.cost != null
-            ? formatCost(card.cost, money.currency, money.cnyPerUsd, card.unpriced)
+            ? formatCost(card.cost, card.unpriced)
             : card.unpriced
               ? '没价格'
               : '花费没采到'}
@@ -337,11 +335,6 @@ export function NowScene() {
   useEffect(() => {
     setNow(Date.now());
   }, [work]);
-
-  // 花费按设置里的币种显示（CN 用户是 ¥）；取不到就沿用上次值，不写死 $。
-  useEffect(() => {
-    void useSettingsState.getState().refreshMoney();
-  }, []);
 
   useEffect(() => {
     let alive = true;

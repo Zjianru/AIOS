@@ -1470,7 +1470,6 @@ async fn 空闲时跨连接切换重建根agent并走新连接() {
             hook_calls_for_hook.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         },
     ));
-    seed_fx_cache(dir.path());
     let host = RootHost::open(options, DEFAULT_CONTEXT_WINDOW).await;
     assert_eq!(
         *seen.lock().expect("seen"),
@@ -1968,42 +1967,6 @@ async fn stats_of(host: &RootHost) -> service::stats::SessionStats {
     status.stats.expect("stats")
 }
 
-pub(crate) fn seed_fx_cache(dir: &std::path::Path) {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or_default();
-    std::fs::write(
-        dir.join(service::fx::FX_FILE),
-        format!("{{\"rate\":7.11,\"fetchedAt\":{now}}}"),
-    )
-    .expect("fx cache");
-}
-
-/// status 带会话统计（轮/步/token/上下文/花费字段）、汇率与币种。
-#[tokio::test]
-async fn 状态带统计汇率与币种() {
-    let dir = tempdir().unwrap();
-    seed_fx_cache(dir.path());
-    let host = host(dir.path()).await;
-    let response = host
-        .dispatch(Call::Status(service::StatusRequest {}))
-        .await
-        .expect("status");
-    let service::Response::Status(status) = response else {
-        panic!("expected Status");
-    };
-    let stats = status.stats.expect("根宿主填统计");
-    assert_eq!(stats.turns, 0, "空会话没有轮");
-    assert_eq!(stats.steps, 0, "空会话没有步");
-    assert_eq!(stats.connection, "deepseek", "统计带当前连接");
-    assert!(stats.cost_usd.is_none(), "一个价格都没有就不显示花费");
-    assert!(!stats.unpriced, "没有用量时不算未定价");
-    let fx = status.fx.expect("汇率");
-    assert_eq!(fx.rate, 7.11, "12h 内用缓存");
-    assert_eq!(status.currency.as_deref(), Some("usd"), "默认币种 usd");
-}
-
 /// 余额/余量按厂商形状查询（DeepSeek /user/balance、MiniMax /v1/token_plan/remains）；
 /// 自定义地址不查（字段为空）、查不到不报错。
 #[tokio::test]
@@ -2108,47 +2071,6 @@ async fn 打开会话写初始模型选择事件() {
     assert_eq!(selection.model, "deepseek-flash");
 }
 
-/// 写非密钥设置（currency）——settings.json 生效，status 也带新币种。
-#[tokio::test]
-async fn 设置更新写币种且状态里带新币种() {
-    let dir = tempdir().unwrap();
-    seed_fx_cache(dir.path());
-    let host = host(dir.path()).await;
-    let response = host
-        .dispatch(Call::SettingsUpdate(service::SettingsUpdateRequest {
-            currency: Some("cny".to_owned()),
-            ..Default::default()
-        }))
-        .await
-        .expect("settings-update 应成功");
-    let service::Response::SettingsUpdate(response) = response else {
-        panic!("expected SettingsUpdate");
-    };
-    assert_eq!(response.currency, "cny");
-    assert_eq!(
-        service::settings::load(dir.path()).currency,
-        "cny",
-        "settings.json 里是 cny"
-    );
-    let status = host
-        .dispatch(Call::Status(service::StatusRequest {}))
-        .await
-        .expect("status");
-    let service::Response::Status(status) = status else {
-        panic!("expected Status");
-    };
-    assert_eq!(status.currency.as_deref(), Some("cny"), "status 带新币种");
-    // 非法币种：拒绝且不改 settings。
-    let rejected = host
-        .dispatch(Call::SettingsUpdate(service::SettingsUpdateRequest {
-            currency: Some("eur".to_owned()),
-            ..Default::default()
-        }))
-        .await;
-    assert!(rejected.is_err(), "只接受 usd/cny");
-    assert_eq!(service::settings::load(dir.path()).currency, "cny");
-}
-
 /// 设置 › 执行：全空请求只读；暂停/席位保存后回送、落盘；0/17 拒存且不改旧值。
 #[tokio::test]
 async fn 设置更新读写执行设置且拒绝越界席位() {
@@ -2169,7 +2091,6 @@ async fn 设置更新读写执行设置且拒绝越界席位() {
     let service::Response::SettingsUpdate(response) = response else {
         panic!("expected SettingsUpdate");
     };
-    assert_eq!(response.currency, "usd");
     assert!(response.exec.paused);
     assert_eq!(response.exec.seats, 1);
 
@@ -2185,11 +2106,9 @@ async fn 设置更新读写执行设置且拒绝越界席位() {
     let service::Response::SettingsUpdate(response) = response else {
         panic!("expected SettingsUpdate");
     };
-    assert_eq!(response.currency, "usd");
     assert!(!response.exec.paused);
     assert_eq!(response.exec.seats, 16);
     let file = service::settings::load(dir.path());
-    assert_eq!(file.currency, "usd");
     assert!(!file.exec.paused);
     assert_eq!(file.exec.seats, 16);
 
@@ -2507,7 +2426,7 @@ async fn 设置更新读写执行设置的bash开关() {
     // 旧设置文件没有 exec.bash：按默认关读。
     std::fs::write(
         dir.path().join("settings.json"),
-        r#"{"currency":"usd","exec":{"paused":false,"seats":3}}"#,
+        r#"{"exec":{"paused":false,"seats":3}}"#,
     )
     .expect("旧设置文件");
     assert!(

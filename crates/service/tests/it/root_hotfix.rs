@@ -235,7 +235,6 @@ async fn connection_save_uses_model_default_effort_and_recheck_reports_it() {
         DEFAULT_CONTEXT_WINDOW,
     )
     .await;
-    crate::settings::seed_fx_cache(data.path());
     host.dispatch(Call::ConnectionSave(save_request(
         "minimax",
         "minimax",

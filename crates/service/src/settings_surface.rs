@@ -562,7 +562,7 @@ impl RootHost {
         Ok(())
     }
 
-    /// 写非密钥设置（币种、执行设置）。只碰 settings.json，不碰 Keyring/连接。
+    /// 写非密钥设置（执行/设置）。只碰 settings.json，不碰 Keyring/连接。
     ///
     /// 全部字段为 None 时只读当前值，不写文件。执行设置不是只写文件：改完文件再走
     /// set_exec_paused / set_exec_seats / set_exec_bash 更新任务运行时的状态，
@@ -572,14 +572,6 @@ impl RootHost {
         request: SettingsUpdateRequest,
     ) -> Result<SettingsUpdateResponse, ServiceError> {
         // 先校验全部字段：任何一项不合法都不写文件，也不改运行时。
-        if let Some(currency) = request.currency.as_deref()
-            && currency != "usd"
-            && currency != "cny"
-        {
-            return Err(ServiceError::SettingsInvalid(format!(
-                "不支持的币种：{currency}（只有 usd/cny）"
-            )));
-        }
         if let Some(seats) = request.seats
             && !(settings::MIN_SEATS..=settings::MAX_SEATS).contains(&seats)
         {
@@ -656,19 +648,11 @@ impl RootHost {
         // 读一次严格口径：文件坏了，读和写都拒绝，页面看到原因。
         let current = settings::load_for_write(&self.options.data_dir)
             .map_err(ServiceError::SettingsUnreadable)?;
-        let changed = request.currency.is_some()
-            || request.paused.is_some()
+        let changed = request.paused.is_some()
             || request.seats.is_some()
             || request.bash.is_some()
             || request.vision_models.is_some()
             || request.screen_capture.is_some();
-        if let Some(currency) = request.currency {
-            let mut settings = settings::load_for_write(&self.options.data_dir)
-                .map_err(ServiceError::SettingsUnreadable)?;
-            settings.currency = currency;
-            settings::save(&self.options.data_dir, &settings)
-                .map_err(ServiceError::SettingsInvalid)?;
-        }
         if let Some(paused) = request.paused {
             self.set_exec_paused(paused)?;
         }
@@ -686,7 +670,6 @@ impl RootHost {
             current
         };
         Ok(SettingsUpdateResponse {
-            currency: settings.currency,
             exec: ExecSettingsView {
                 paused: settings.exec.paused,
                 // 手改文件写出 0/17 时回送夹回后的值，和准入用的上限一致。

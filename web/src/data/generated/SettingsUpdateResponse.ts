@@ -2,4 +2,4 @@
 import type { ExecSettingsView } from "./ExecSettingsView";
 import type { VisionModelRefView } from "./VisionModelRefView";
 
-export type SettingsUpdateResponse = { currency: string, exec: ExecSettingsView, visionModels: Array<VisionModelRefView>, screenCapture: boolean, };
+export type SettingsUpdateResponse = { exec: ExecSettingsView, visionModels: Array<VisionModelRefView>, screenCapture: boolean, };

@@ -135,7 +135,7 @@ impl RootHost {
                     "任务库没开，接着做不了".to_owned(),
                 )),
             },
-            // 根宿主自己填统计/汇率/币种（需要 data_dir + Keyring）。
+            // 根宿主自己填统计（需要 data_dir + Keyring）。
             Call::Status(request) => self.host_status(request).await.map(Response::Status),
             // 余额/余量需要 Keyring 签发 key。
             Call::ConnectionQuota(request) => self

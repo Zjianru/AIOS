@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use super::{ActionEnv, ActionFuture, ActionKind, ActionOutcome, CardFact};
 use crate::protocol::{
     ConnectionDeleteRequest, ConnectionRevokeRequest, ConnectionUpdateRequest,
-    KeyringRelocateRequest, KeyringReopenRequest, SettingsUpdateRequest,
+    KeyringRelocateRequest, KeyringReopenRequest, SettingsUpdateRequest, VisionModelRefView,
 };
 use crate::root_lifecycle::RootHost;
 
@@ -47,16 +47,21 @@ impl SettingsUpdateAction {
         Ok(crate::settings::load(&self.data_dir))
     }
 
-    fn fields(raw: &Value) -> Result<(Option<String>, Option<u8>, Option<bool>), String> {
+    fn fields(
+        raw: &Value,
+    ) -> Result<
+        (
+            Option<u8>,
+            Option<bool>,
+            Option<Vec<VisionModelRefView>>,
+            Option<bool>,
+        ),
+        String,
+    > {
         reject_key_fields(raw)?;
         let object = raw
             .as_object()
             .ok_or_else(|| "details 必须是 JSON 对象".to_owned())?;
-        let currency = match object.get("currency") {
-            None | Some(Value::Null) => None,
-            Some(Value::String(value)) if value == "usd" || value == "cny" => Some(value.clone()),
-            Some(_) => return Err("details.currency 只能是 usd 或 cny".to_owned()),
-        };
         let seats = match object.get("seats") {
             None | Some(Value::Null) => None,
             Some(Value::Number(value)) => Some(
@@ -75,10 +80,26 @@ impl SettingsUpdateAction {
             Some(Value::Bool(value)) => Some(*value),
             Some(_) => return Err("details.bash 必须是布尔值".to_owned()),
         };
-        if currency.is_none() && seats.is_none() && bash.is_none() {
-            return Err("details 至少要带 currency、seats 或 bash 一项".to_owned());
+        let vision_models = match object.get("visionModels") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(
+                serde_json::from_value::<Vec<VisionModelRefView>>(value.clone()).map_err(|_| {
+                    "details.visionModels 必须是 {connection, model} 数组".to_owned()
+                })?,
+            ),
+        };
+        let screen_capture = match object.get("screenCapture") {
+            None | Some(Value::Null) => None,
+            Some(Value::Bool(value)) => Some(*value),
+            Some(_) => return Err("details.screenCapture 必须是布尔值".to_owned()),
+        };
+        if seats.is_none() && bash.is_none() && vision_models.is_none() && screen_capture.is_none()
+        {
+            return Err(
+                "details 至少要带 seats、bash、visionModels 或 screenCapture 一项".to_owned(),
+            );
         }
-        Ok((currency, seats, bash))
+        Ok((seats, bash, vision_models, screen_capture))
     }
 }
 
@@ -92,20 +113,19 @@ impl ActionKind for SettingsUpdateAction {
     }
 
     fn details(&self, raw: &Value) -> Result<Value, String> {
-        let (currency, seats, bash) = Self::fields(raw)?;
-        Ok(json!({ "currency": currency, "seats": seats, "bash": bash }))
+        let (seats, bash, vision_models, screen_capture) = Self::fields(raw)?;
+        Ok(json!({
+            "seats": seats,
+            "bash": bash,
+            "visionModels": vision_models,
+            "screenCapture": screen_capture,
+        }))
     }
 
     fn describe(&self, details: &Value, _env: &ActionEnv<'_>) -> Result<Vec<CardFact>, String> {
-        let (currency, seats, bash) = Self::fields(details)?;
+        let (seats, bash, vision_models, screen_capture) = Self::fields(details)?;
         let current = self.current()?;
         let mut facts = Vec::new();
-        if let Some(currency) = currency {
-            facts.push(CardFact {
-                name: "币种".to_owned(),
-                value: format!("{} → {currency}", current.currency),
-            });
-        }
         if let Some(seats) = seats {
             facts.push(CardFact {
                 name: "席位".to_owned(),
@@ -122,6 +142,42 @@ impl ActionKind for SettingsUpdateAction {
                 ),
             });
         }
+        if let Some(models) = vision_models {
+            let before = current
+                .vision
+                .models
+                .iter()
+                .map(|row| format!("{}/{}", row.connection, row.model))
+                .collect::<Vec<_>>()
+                .join("、");
+            let after = models
+                .iter()
+                .map(|row| format!("{}/{}", row.connection, row.model))
+                .collect::<Vec<_>>()
+                .join("、");
+            facts.push(CardFact {
+                name: "看图模型".to_owned(),
+                value: format!(
+                    "{} → {}",
+                    if before.is_empty() { "没有" } else { &before },
+                    if after.is_empty() { "清空" } else { &after }
+                ),
+            });
+        }
+        if let Some(screen_capture) = screen_capture {
+            facts.push(CardFact {
+                name: "让 Kind 截桌面".to_owned(),
+                value: format!(
+                    "{} → {}",
+                    if current.vision.screen_capture {
+                        "开"
+                    } else {
+                        "关"
+                    },
+                    if screen_capture { "开" } else { "关" }
+                ),
+            });
+        }
         Ok(facts)
     }
 
@@ -131,14 +187,13 @@ impl ActionKind for SettingsUpdateAction {
         host: &'a RootHost,
     ) -> ActionFuture<'a, Result<ActionOutcome, String>> {
         Box::pin(async move {
-            let (currency, seats, bash) = Self::fields(details)?;
+            let (seats, bash, vision_models, screen_capture) = Self::fields(details)?;
             host.settings_update(SettingsUpdateRequest {
-                currency,
                 paused: None,
                 seats,
                 bash,
-                vision_models: None,
-                screen_capture: None,
+                vision_models,
+                screen_capture,
             })
             .await
             .map_err(|error| error.to_string())?;

@@ -102,7 +102,6 @@ mod worktree;
 mod write_scope;
 
 pub mod commands;
-pub mod fx;
 pub mod memory;
 pub mod models;
 pub(crate) mod monitor_facts;

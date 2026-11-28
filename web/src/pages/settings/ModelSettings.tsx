@@ -24,11 +24,10 @@ import {
   checkDisabledModels, displayPath, type DisabledModelUser, type ConnectionQuotaResponse,
 } from '@/data/service';
 import { cachedQuota, loadQuota } from '@/data/quota';
-import { CURRENCIES, compactPrice, formatModelTokens } from '@/lib/numbers';
+import { compactPrice, formatModelTokens } from '@/lib/numbers';
 import { formatLocalDateTime } from '@/lib/time';
 import { useSettingsState } from '@/lib/settingsState';
 import { VisionSection } from './VisionSection';
-import { SettingsPageKind } from './SettingsPageKind';
 import { PROTOCOL_LABEL } from '@/data/keyring';
 import type { ConnectionView, ModelRow, ModelSettingsView, ToolKeyView } from '@/data/keyring';
 import {
@@ -1171,37 +1170,6 @@ function WebSearchSection({ broken, onChanged }: { broken: boolean; onChanged: (
   );
 }
 
-/* ───────────────────────── Keyring 一节 ───────────────────────── */
-
-/** ：显示币种（settings.json 的 currency；价格和花费一律按美元存，显示时换算）。 */
-function CurrencySection() {
-  const money = useSettingsState((state) => state.money);
-  const setCurrency = useSettingsState((state) => state.setCurrency);
-  return (
-    <section className="mt-5" data-settings="currency">
-      <div className="flex items-center gap-2">
-        <span className="text-2 text-ink-2">显示币种</span>
-        {CURRENCIES.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            onClick={() => void setCurrency(item.id)}
-            className={cn(
-              'h-6 rounded-btn px-2 text-2 transition-colors',
-              money.currency === item.id ? 'bg-ink text-content' : 'text-ink-2 hover:bg-hover hover:text-ink',
-            )}
-          >
-            {item.label}
-          </button>
-        ))}
-        <span className="text-1 text-ink-3">
-          花费按 1 美元 = {money.cnyPerUsd} 元换算{money.fxAt ? '' : '（还没取到汇率，先按 7.2）'}
-        </span>
-      </div>
-    </section>
-  );
-}
-
 function KeyringSection({ view, onView }: { view: ModelSettingsView; onView: (view: ModelSettingsView) => void }) {
   const [moving, setMoving] = useState(false);
   const [path, setPath] = useState(view.keyFile.path);
@@ -1524,10 +1492,6 @@ function MaskDialog({ pattern, busy, onCancel, onConfirm }: {
 /* ───────────────────────── 整组 ───────────────────────── */
 
 export function ModelSettings() {
-  useEffect(() => {
-    // 直接打开设置页（不经 Kind 页）时也要拿币种/汇率。
-    void useSettingsState.getState().refreshMoney();
-  }, []);
   const [view, setView] = useState<ModelSettingsView | null>(null);
   /** 展开的是哪张卡片：连接 id、'add'，或者都不展开。一次只展开一张。 */
   const [open, setOpen] = useState<string | null>(null);
@@ -1545,6 +1509,9 @@ export function ModelSettings() {
 
   useEffect(() => {
     void load();
+    const refresh = () => void load();
+    window.addEventListener('aios:settings-changed', refresh);
+    return () => window.removeEventListener('aios:settings-changed', refresh);
   }, [load]);
 
   const mask = async (wasRunning: boolean) => {
@@ -1582,10 +1549,6 @@ export function ModelSettings() {
       </p>
 
       {broken ? <KeyringBroken view={view} onView={setView} /> : null}
-
-      <SettingsPageKind view={view} onChanged={() => void load()} />
-
-      <CurrencySection />
 
       <section className="mt-6">
         <h2 className="text-3 font-medium text-ink">模型提供商</h2>

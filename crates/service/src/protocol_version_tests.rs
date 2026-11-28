@@ -1,8 +1,11 @@
 use super::*;
 
 #[test]
-fn protocol_version_is_36() {
-    assert_eq!(PROTOCOL_VERSION, 36, "只增看图设置/协议 36 接口面，升到 36");
+fn protocol_version_is_37() {
+    assert_eq!(
+        PROTOCOL_VERSION, 37,
+        "协议 37：去币种，设置/搜索/规则/通知接口面"
+    );
 }
 
 #[test]

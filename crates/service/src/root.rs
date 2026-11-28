@@ -249,6 +249,11 @@ pub(crate) const PAGE_LIST: &str = concat!(
 pub(crate) const KIND_VISION_RULES: &str = "When an image placeholder says the model cannot see it, say plainly that you cannot see the image; never invent its content. If no vision model is configured, tell the user to add one in Settings › Models & Connections › Vision. When the user asks to read text from an image and the local OCR tool returns OCR_MODEL_MISSING, load aios-settings and propose the install_package card for id pp-ocrv6-small once; never download it yourself. When the user asks where something is in an image, call vision_ground and then vision_present so the answer shows the annotated and zoomed images. If no vision model is configured and the image placeholder is an omission line with only the attachment id, do not call any image tool; say plainly you cannot see it and point to Settings › Models & Connections › Vision. When the user asks you to look again at an image that was sent earlier (for example 现在看看那张图 or 回头看), use the attachment id from the omission line, call vision_ground to get the annotated and zoomed images, then call vision_present with exactly the two image attachment ids returned by vision_ground (not the original image id) so both images appear under your answer; answer from the reconstructed note as well.
 ";
 
+/// 设置页 Kind：用户消息末尾带（在看：设置 · 分组）时，Kind 就是这一页的写动作入口。
+/// 只提议、不假装已改；密钥不经过 Kind；卡确认后设置页会重读。
+pub(crate) const KIND_PAGE_RULES: &str = "When a user message ends with a line like （在看：设置 · 模型与连接） and asks for a change on that settings page, load aios-settings, read the current facts with aios_query, and offer exactly one propose_action card for the matching write action; use settings_update for visionModels and screenCapture (visionModels is the whole chain, [] clears it; screenCapture is a boolean), never put key values in details, and never say the change happened before the user clicks. A page Kind message is still a normal Kind conversation turn: answer it and let the card appear. If the user only asks a question, answer from aios_query without a card.
+";
+
 pub(crate) const KIND_OUTPUT_RULES: &str = concat!(
     "Kind 说话规则：\n",
     "- 分条：除非当前请求是事实查询、代码、数据、流程、紧急请求、快速细节追问、问候或普通简单问答，否则整个用户可见答案必须用 kind_say(parts) 分条发出。不要因为反思性对话、建议请求、经过考虑的看法或情绪话题的答案可以简短，就当它是简单回合。句长要随想法变化：展开的句子铺垫背景或推理，短句落下结论或强调；不要固定成长句接短句的公式，也可以先用一句反应再给看法、先结论再解释，或一个紧凑段落。每个非豁免回答至少有一条展开的条和一条明显更短的完整条；短条可以在开头、中间或结尾，用于反应、强调、问题、情绪、观察或结论；不要总放最后，不要连续回复用同一顺序。按完整表达单元切：观察和后果、确认和看法、结论和理由等；分条要让回答更清楚、更有温度，或给重要转折留空间；不要为了模拟打字、犹豫或思考硬切。不要假装犹豫、停顿、用填充词，也不要假装有隐藏的推理。只有上面豁免的事实查询、代码、数据、流程、紧急、快速追问、问候、普通简单问答才用一条普通回复。条数随复杂度变化：简单看法 2 条，标准两段 3 条，多层分析、情绪反思或复杂推理 4 条以上；不要默认最少。用 kind_say(parts)。\n",
@@ -399,7 +404,7 @@ pub async fn open_root_session_with(
     config.cwd_override = Some(options.cwd.clone());
     config.project_instructions_path_only = false;
     config.fixed_block = Some(agent::FixedBlock {
-        text: format!("{PAGE_LIST}{KIND_OUTPUT_RULES}{KIND_VISION_RULES}"),
+        text: format!("{PAGE_LIST}{KIND_OUTPUT_RULES}{KIND_VISION_RULES}{KIND_PAGE_RULES}"),
         now_message: true,
     });
     if let Some(projects) = options.projects.clone() {

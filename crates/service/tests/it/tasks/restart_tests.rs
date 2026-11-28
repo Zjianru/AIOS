@@ -264,7 +264,6 @@ async fn a_paused_restart_waits_for_the_gate_then_reports_once() {
     );
 
     host.dispatch(Call::SettingsUpdate(SettingsUpdateRequest {
-        currency: None,
         paused: Some(false),
         seats: None,
         bash: None,

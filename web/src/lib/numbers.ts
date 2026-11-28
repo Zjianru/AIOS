@@ -7,13 +7,6 @@
  *   ≥100 取整，≥1 两位小数，其余三位；有一部分调用没价格，后面加「+」。
  */
 
-export type Currency = 'usd' | 'cny';
-
-export const CURRENCIES: { id: Currency; label: string }[] = [
-  { id: 'usd', label: '$ USD' },
-  { id: 'cny', label: '¥ CNY' },
-];
-
 export function formatTokens(value: number): string {
   const scaled = (candidate: number): string =>
     candidate >= 100 ? String(Math.round(candidate)) : String(Math.round(candidate * 10) / 10);
@@ -55,24 +48,10 @@ export function compactPrice(value: number): string {
   return '$' + value.toPrecision(2).replace(/0+$/, '');
 }
 
-/** 花费（美元）按币种显示；cnyPerUsd 是汇率（没取到时 7.2）；partial：有调用没价格，后面加「+」。 */
-export function formatCost(usd: number, currency: Currency, cnyPerUsd: number, partial = false): string {
-  let amount = usd;
-  let sign = '$';
-  if (currency === 'cny' && cnyPerUsd > 0) {
-    amount = usd * cnyPerUsd;
-    sign = '¥';
-  }
-  const text = amount >= 100 ? amount.toFixed(0) : amount >= 1 ? amount.toFixed(2) : amount.toFixed(3);
-  return sign + text + (partial ? '+' : '');
-}
-
-/** 汇率拉到时间的显示（页面不推算，直接用服务给的 fetchedAt 毫秒）。 */
-export function formatFxTime(fetchedAt: number): string | null {
-  if (!fetchedAt) return null;
-  const date = new Date(fetchedAt * 1000);
-  if (Number.isNaN(date.getTime())) return null;
-  return date.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+/** 花费（美元）：只按美元显示；partial：有调用没价格，后面加「+」。 */
+export function formatCost(usd: number, partial = false): string {
+  const text = usd >= 100 ? usd.toFixed(0) : usd >= 1 ? usd.toFixed(2) : usd.toFixed(3);
+  return '$' + text + (partial ? '+' : '');
 }
 
 /** T059 F6：交付记录的时间（unix 秒）按本机时区显示，月/日/时分统一 zh-CN。 */

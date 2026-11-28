@@ -13,11 +13,10 @@ import { ArrowDown, ArrowUp, CircleHelp, Gauge, LoaderCircle, Wallet } from 'luc
 import type { LucideIcon } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { formatCacheHitPercent, formatCost, formatExactTokens, formatFxTime, formatPercent, formatTokens, type Currency } from '@/lib/numbers';
+import { formatCacheHitPercent, formatCost, formatExactTokens, formatPercent, formatTokens } from '@/lib/numbers';
 import { displayedInput, type UsageTotals } from '@/data/turnUsage';
 import { cn } from '@/lib/utils';
 import { useKindStore } from './kindStore';
-import { useSettingsState } from '@/lib/settingsState';
 
 /** 浅色的悬停卡片：和页面同一套底色、描边、阴影。 */
 export function Hint({
@@ -160,43 +159,17 @@ export function UsagePill({ usage }: { usage: UsageTotals }) {
  * T043/T051：花费 pill 共用。Kind 用 status 的 stats；任务对话用 task-read 的 stats——
  * 币种和汇率也走服务端给的值（页面不另拉设置），两边花费格式是同一个 formatCost。
  */
-export function CostPill({
-  cost,
-  unpriced,
-  currency,
-  cnyPerUsd,
-  fxAt,
-}: {
-  cost: number | null;
-  unpriced: boolean;
-  /** 服务端给的币种；缺省用设置页的值（Kind）。 */
-  currency?: Currency;
-  /** 服务端给的汇率；缺省用设置页缓存的值（Kind）。 */
-  cnyPerUsd?: number;
-  /** 服务端汇率拉到的时间；缺省用设置页缓存的值（Kind）。 */
-  fxAt?: number;
-}) {
-  const money = useSettingsState((state) => state.money);
-  const unit = currency ?? money.currency;
-  const rate = cnyPerUsd ?? money.cnyPerUsd;
-  const rateAt = fxAt ?? money.fxAt;
+export function CostPill({ cost, unpriced }: { cost: number | null; unpriced: boolean }) {
   // 一个价格都没有：不显示花费（不按 0 算）。
   if (cost === null) return null;
   return (
     <Hint
       content={
         <>
-          <Row label="这个会话的花费" value={formatCost(cost, unit, rate, unpriced)} strong />
+          <Row label="这个会话的花费" value={formatCost(cost, unpriced)} strong />
           <p className="mt-1.5 max-w-[240px] text-1 leading-4 text-ink-3">
             按每个模型的价格算（设置 › 模型与连接）。
             {unpriced ? '有的轮用的模型没有价格，没算进来，所以后面带「+」。' : null}
-            {unit === 'cny'
-              ? ' 价格按美元记，这里按 1 美元 = ' +
-                rate +
-                ' 元换算' +
-                (formatFxTime(rateAt) ? '（' + formatFxTime(rateAt) + '的汇率）' : '（没取到汇率，先按 7.2）') +
-                '。'
-              : null}
           </p>
         </>
       }
@@ -204,7 +177,7 @@ export function CostPill({
       <span className={pill} data-kind="stats-cost">
         <Wallet className="size-3.5 shrink-0" aria-hidden />
         <span data-kind="stat-number" className="tabular-nums">
-          {formatCost(cost, unit, rate, unpriced)}
+          {formatCost(cost, unpriced)}
         </span>
       </span>
     </Hint>

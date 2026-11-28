@@ -13,6 +13,7 @@ import { cn } from '@/lib/utils';
 import { ModelSettings } from './ModelSettings';
 import { ExecSettings } from './ExecSettings';
 import { PluginsPane } from './PluginsPane';
+import { PageKind } from '@/components/kind/PageKind';
 
 /** 已经做出来的分组；其余仍是第 3 期。 */
 const BUILT = new Set(['model', 'exec', 'plugins']);
@@ -61,6 +62,7 @@ export function SettingsScene() {
           )}
         </div>
       </div>
+      <PageKind page={{ path: 'settings:' + current.id, where: '设置 · ' + current.name }} />
     </div>
   );
 }

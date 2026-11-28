@@ -349,8 +349,6 @@ impl ServiceHost {
             running: self.agent.is_running(),
             pending_questions: self.agent.pending_questions().len(),
             stats: None,
-            fx: None,
-            currency: None,
             cwd: Some(self.agent.cwd().to_string_lossy().into_owned()),
         })
     }
