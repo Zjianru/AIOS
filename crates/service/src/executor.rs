@@ -106,6 +106,8 @@ fn expected_tool_lists(
 }
 
 /// ThinAgent 的只读工具名单（构造期 only 过滤；顺序就是名单顺序）。
+/// 核心 10 件 = read/glob/grep/skill/todo_write/web_search_sources/web_search/
+/// web_fetch/task_report/task_handback；office/账本/看图按插件、账本、D134 另加，不计在 10 里。
 pub const THIN_TOOLS: [&str; 27] = [
     "read",
     "glob",
@@ -136,7 +138,8 @@ pub const THIN_TOOLS: [&str; 27] = [
     "vision_present",
 ];
 
-/// 写任务的 ThinAgent 工具名单：只读 9 件加 write、edit（D85）。
+/// 写任务的 ThinAgent 工具名单：核心 12 件 = 只读 10 件加 write、edit（D85）；
+/// office_create、vision_materialize 等按插件/看图另加，不计在 12 里。
 pub const THIN_WRITE_TOOLS: [&str; 31] = [
     "read",
     "glob",
@@ -171,7 +174,8 @@ pub const THIN_WRITE_TOOLS: [&str; 31] = [
     "vision_materialize",
 ];
 
-/// 开了 bash 的写任务：写任务 11 件再加 bash 和后台任务三件（D85）。
+/// 开了 bash 的写任务：核心 16 件 = 写任务 12 件加 bash 和后台任务三件（D85）；
+/// office/账本/看图仍按各自规则另加，不计在 16 里。
 pub const THIN_WRITE_BASH_TOOLS: [&str; 35] = [
     "read",
     "glob",
@@ -5079,5 +5083,43 @@ mod tool_list_tolerance_tests {
         assert!(!legacy.contains(&missing), "缺工具要拒绝：{missing:?}");
         missing.insert("read");
         assert!(legacy.contains(&missing), "完整旧名单要接受");
+    }
+}
+
+#[cfg(test)]
+mod tool_surface_core_tests {
+    use super::{THIN_TOOLS, THIN_WRITE_BASH_TOOLS, THIN_WRITE_TOOLS};
+
+    fn core<'a>(names: &'a [&'a str]) -> Vec<&'a str> {
+        names
+            .iter()
+            .copied()
+            .filter(|name| {
+                !name.starts_with("office_")
+                    && !name.starts_with("task_ledger_")
+                    && !name.starts_with("vision_")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn d152_core_tool_surface_is_ten_twelve_sixteen() {
+        assert_eq!(core(&THIN_TOOLS).len(), 10);
+        assert_eq!(core(&THIN_WRITE_TOOLS).len(), 12);
+        assert_eq!(core(&THIN_WRITE_BASH_TOOLS).len(), 16);
+        for name in [
+            "web_search_sources",
+            "web_search",
+            "web_fetch",
+            "task_report",
+            "task_handback",
+        ] {
+            assert!(THIN_TOOLS.contains(&name), "{name}");
+        }
+        assert!(THIN_WRITE_TOOLS.contains(&"write"));
+        assert!(THIN_WRITE_TOOLS.contains(&"edit"));
+        assert!(!THIN_TOOLS.contains(&"write"));
+        assert!(!THIN_WRITE_TOOLS.contains(&"bash"));
+        assert!(THIN_WRITE_BASH_TOOLS.contains(&"bash"));
     }
 }
