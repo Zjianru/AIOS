@@ -314,19 +314,6 @@ impl QueryTool {
                 })).collect::<Vec<_>>(),
                 "screenCapture": settings.vision.screen_capture,
             },
-            "webSearch": {
-                "selected": settings.web_search.selected,
-                "providers": crate::web::providers::PROVIDERS.iter().map(|spec| json!({
-                    "id": spec.id,
-                    "name": spec.name,
-                    "keyNeed": match spec.key_need {
-                        crate::web::providers::KeyNeed::Required => "required",
-                        crate::web::providers::KeyNeed::Optional => "optional",
-                        crate::web::providers::KeyNeed::None => "none",
-                        crate::web::providers::KeyNeed::Llm => "llm",
-                    },
-                })).collect::<Vec<_>>(),
-            },
         }))
     }
 
