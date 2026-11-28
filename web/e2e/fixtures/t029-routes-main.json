@@ -17,12 +17,12 @@
     {
       "contains": "任务甲",
       "file": "t029-thin-long.jsonl",
-      "paceMs": 5000
+      "paceMs": 30000
     },
     {
       "contains": "任务乙",
       "file": "t029-thin-long.jsonl",
-      "paceMs": 5000
+      "paceMs": 30000
     },
     {
       "contains": "任务丙",

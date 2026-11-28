@@ -181,7 +181,7 @@ async function writeRestartRoutes(
       // Attempt 还开着，而不是已经因为缺凭证先结束成「等报告」。
       paceMs:
         route.contains.includes('任务甲') || route.contains.includes('任务乙')
-          ? 5000
+          ? 30000
           : route.paceMs,
       file: path.join(FIXTURE_DIR, route.file),
     })),
