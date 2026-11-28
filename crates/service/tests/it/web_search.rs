@@ -1,4 +1,4 @@
-//! T103.2：联网搜索服务商协议、Keyring 只写不读、SearXNG Basic、检测状态。
+//! 联网搜索服务商协议、Keyring 只写不读、SearXNG Basic、检测状态。
 
 use service::{
     Call, ExaKeyRequest, ExaKeySaveRequest, Response, RootHost, WebSearchAuthSetRequest,

@@ -966,7 +966,7 @@ function KeyringBroken({ view, onView }: { view: ModelSettingsView; onView: (vie
   );
 }
 
-/* ───────────────────────── 联网搜索（D73，T103.2） ───────────────────────── */
+/* ───────────────────────── 联网搜索（D73） ───────────────────────── */
 
 const KEY_NEED_LABEL: Record<string, string> = {
   required: '要 key',
