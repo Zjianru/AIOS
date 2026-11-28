@@ -185,7 +185,7 @@ pub struct QuoteSource {
     pub task_id: Option<String>,
 }
 
-/// T103：程序替页面加的一句来源标记；模型看到一行文字，页面不用它画用户气泡。
+/// 程序替页面加的一句来源标记；模型看到一行文字，页面不用它画用户气泡。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PageContextSource {
     pub path: String,
@@ -206,7 +206,7 @@ pub enum ContentBlock {
         /// T015.4：画布放进来的那一句带画布身份；普通文字块没有（只增可选字段，旧日志原样读）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         canvas: Option<CanvasSource>,
-        /// T103：页面 Kind 的来源标记（path/title/group）；只进模型和日志，页面不画成用户气泡。
+        /// 页面 Kind 的来源标记（path/title/group）；只进模型和日志，页面不画成用户气泡。
         #[serde(
             default,
             rename = "pageContext",
@@ -313,7 +313,7 @@ impl ContentBlock {
         }
     }
 
-    /// T103：页面 Kind 的来源行；模型看到一行文字，页面按 pageContext 跳过。
+    /// 页面 Kind 的来源行；模型看到一行文字，页面按 pageContext 跳过。
     pub fn page_context(source: PageContextSource) -> Self {
         let line = format!("[page-context {}] {}", source.path, source.title);
         Self::Text {

@@ -202,7 +202,7 @@ impl RootHost {
                 });
             }
         }
-        // T103：页面 Kind 的程序来源行排在用户消息块末尾；模型看到 [page-context …]，
+        // 页面 Kind 的程序来源行排在用户消息块末尾；模型看到 [page-context …]，
         // 页面按块上的 pageContext 跳过，用户气泡只留自己打的字。
         if let Some(source) = &request.source {
             blocks.push(model::ContentBlock::page_context(

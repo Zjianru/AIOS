@@ -289,12 +289,12 @@ pub struct SendRequest {
     /// （N2）：一次放回多个画布标记时按顺序排列（旧字段 canvas 保留兼容）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub canvases: Vec<SendCanvas>,
-    /// T103：页面 Kind 的程序来源标记（只记录路径/标题/组，不塞页面数据）。
+    /// 页面 Kind 的程序来源标记（只记录路径/标题/组，不塞页面数据）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SendPageSource>,
 }
 
-/// T103：页面 Kind 随消息带的来源，模型看到一行 [page-context …]，页面不画成用户气泡。
+/// 页面 Kind 随消息带的来源，模型看到一行 [page-context …]，页面不画成用户气泡。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct SendPageSource {
     pub path: String,

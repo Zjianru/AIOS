@@ -420,7 +420,7 @@ export function deriveTurnViews(
           canvas = source;
           continue;
         }
-        // T103：页面 Kind 的程序来源只给模型看；用户气泡只留自己打的字。
+        // 页面 Kind 的程序来源只给模型看；用户气泡只留自己打的字。
         if (typed.pageContext && typeof typed.pageContext === 'object') continue;
         if (typed.paste === true) pastes.push(value);
         else text.push(value);

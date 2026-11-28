@@ -44,6 +44,6 @@ resultCards?: Array<SendResultCard>,
  */
 canvases?: Array<SendCanvas>,
 /**
- * T103：页面 Kind 的程序来源标记（只记录路径/标题/组，不塞页面数据）。
+ * 页面 Kind 的程序来源标记（只记录路径/标题/组，不塞页面数据）。
  */
 source?: SendPageSource | null, };
