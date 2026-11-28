@@ -569,10 +569,6 @@ pub(crate) fn web_extra_tools(
     let web_search_config = crate::web::WebSearchConfig {
         data_dir: options.data_dir.clone(),
         identity: options.identity.clone(),
-        base_url: options
-            .exa_base_url
-            .clone()
-            .unwrap_or_else(|| crate::EXA_DEFAULT_BASE_URL.to_owned()),
     };
     vec![
         std::sync::Arc::new(crate::web::WebSearchTool::new(web_search_config)),

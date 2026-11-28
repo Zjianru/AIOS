@@ -24,7 +24,6 @@ const CITE_INSTRUCTION: &str = "Cite the relevant URLs above as markdown links i
 pub(crate) struct WebSearchConfig {
     pub(crate) data_dir: PathBuf,
     pub(crate) identity: Option<PathBuf>,
-    pub(crate) base_url: String,
 }
 
 /// 联网搜索工具。

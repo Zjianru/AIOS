@@ -1357,21 +1357,96 @@ mod recorded_contract_tests {
 
     fn recorded_cases() -> [Case; 15] {
         [
-            Case { id: "tavily", method: "POST", path: "/search", success: serde_json::json!({"results":[{"url":"https://example.com/t","title":"T","content":"摘要 T"}]}) },
-            Case { id: "exa-mcp", method: "POST", path: "/", success: serde_json::json!({"result":{"content":[{"text":"{\"results\":[{\"url\":\"https://example.com/m\",\"title\":\"M\",\"content\":\"摘要 M\"}]}"}]}}) },
-            Case { id: "bocha", method: "POST", path: "/v1/web-search", success: serde_json::json!({"code":0,"data":{"webPages":{"value":[{"url":"https://example.com/bc","name":"BC","summary":"摘要 BC"}]}}}) },
-            Case { id: "zhipu", method: "POST", path: "/", success: serde_json::json!({"search_result":[{"link":"https://example.com/z","title":"Z","content":"摘要 Z"}]}) },
-            Case { id: "deepseek", method: "POST", path: "/v1/tools/search", success: serde_json::json!({"results":[{"url":"https://example.com/ds","title":"DS","content":"摘要 DS"}]}) },
-            Case { id: "yuanbao", method: "POST", path: "/SearchPro", success: serde_json::json!({"Response":{"Pages":["{\"url\":\"https://example.com/y\",\"title\":\"Y\",\"content\":\"摘要 Y\"}"]}}) },
-            Case { id: "stepfun", method: "POST", path: "/v1/search", success: serde_json::json!({"results":[{"url":"https://example.com/st","title":"ST","content":"摘要 ST"}]}) },
-            Case { id: "jina", method: "GET", path: "/q", success: serde_json::json!({"data":[{"url":"https://example.com/j","title":"J","content":"摘要 J"}]}) },
-            Case { id: "firecrawl", method: "POST", path: "/v2/search", success: serde_json::json!({"data":{"web":[{"url":"https://example.com/f","title":"F","markdown":"摘要 F"}]}}) },
-            Case { id: "parallel", method: "POST", path: "/v1/search", success: serde_json::json!({"results":[{"url":"https://example.com/p","title":"P","excerpts":["摘要 P"]}]}) },
-            Case { id: "querit", method: "POST", path: "/v1/search", success: serde_json::json!({"results":{"result":[{"url":"https://example.com/q","title":"Q","snippet":"摘要 Q"}]}}) },
-            Case { id: "searchapi", method: "GET", path: "/api/v1/search", success: serde_json::json!({"organic_results":[{"link":"https://example.com/sa","title":"SA","snippet":"摘要 SA"}]}) },
-            Case { id: "serpkite", method: "GET", path: "/v1/search", success: serde_json::json!({"results":[{"link":"https://example.com/sk","title":"SK","snippet":"摘要 SK"}]}) },
-            Case { id: "serply", method: "GET", path: "/v1/search/q=q&num=8", success: serde_json::json!({"results":[{"link":"https://example.com/sp","title":"SP","description":"摘要 SP"}]}) },
-            Case { id: "desearch", method: "GET", path: "/web", success: serde_json::json!({"data":[{"link":"https://example.com/de","title":"DE","snippet":"摘要 DE"}]}) },
+            Case {
+                id: "tavily",
+                method: "POST",
+                path: "/search",
+                success: serde_json::json!({"results":[{"url":"https://example.com/t","title":"T","content":"摘要 T"}]}),
+            },
+            Case {
+                id: "exa-mcp",
+                method: "POST",
+                path: "/",
+                success: serde_json::json!({"result":{"content":[{"text":"{\"results\":[{\"url\":\"https://example.com/m\",\"title\":\"M\",\"content\":\"摘要 M\"}]}"}]}}),
+            },
+            Case {
+                id: "bocha",
+                method: "POST",
+                path: "/v1/web-search",
+                success: serde_json::json!({"code":0,"data":{"webPages":{"value":[{"url":"https://example.com/bc","name":"BC","summary":"摘要 BC"}]}}}),
+            },
+            Case {
+                id: "zhipu",
+                method: "POST",
+                path: "/",
+                success: serde_json::json!({"search_result":[{"link":"https://example.com/z","title":"Z","content":"摘要 Z"}]}),
+            },
+            Case {
+                id: "deepseek",
+                method: "POST",
+                path: "/v1/tools/search",
+                success: serde_json::json!({"results":[{"url":"https://example.com/ds","title":"DS","content":"摘要 DS"}]}),
+            },
+            Case {
+                id: "yuanbao",
+                method: "POST",
+                path: "/SearchPro",
+                success: serde_json::json!({"Response":{"Pages":["{\"url\":\"https://example.com/y\",\"title\":\"Y\",\"content\":\"摘要 Y\"}"]}}),
+            },
+            Case {
+                id: "stepfun",
+                method: "POST",
+                path: "/v1/search",
+                success: serde_json::json!({"results":[{"url":"https://example.com/st","title":"ST","content":"摘要 ST"}]}),
+            },
+            Case {
+                id: "jina",
+                method: "GET",
+                path: "/q",
+                success: serde_json::json!({"data":[{"url":"https://example.com/j","title":"J","content":"摘要 J"}]}),
+            },
+            Case {
+                id: "firecrawl",
+                method: "POST",
+                path: "/v2/search",
+                success: serde_json::json!({"data":{"web":[{"url":"https://example.com/f","title":"F","markdown":"摘要 F"}]}}),
+            },
+            Case {
+                id: "parallel",
+                method: "POST",
+                path: "/v1/search",
+                success: serde_json::json!({"results":[{"url":"https://example.com/p","title":"P","excerpts":["摘要 P"]}]}),
+            },
+            Case {
+                id: "querit",
+                method: "POST",
+                path: "/v1/search",
+                success: serde_json::json!({"results":{"result":[{"url":"https://example.com/q","title":"Q","snippet":"摘要 Q"}]}}),
+            },
+            Case {
+                id: "searchapi",
+                method: "GET",
+                path: "/api/v1/search",
+                success: serde_json::json!({"organic_results":[{"link":"https://example.com/sa","title":"SA","snippet":"摘要 SA"}]}),
+            },
+            Case {
+                id: "serpkite",
+                method: "GET",
+                path: "/v1/search",
+                success: serde_json::json!({"results":[{"link":"https://example.com/sk","title":"SK","snippet":"摘要 SK"}]}),
+            },
+            Case {
+                id: "serply",
+                method: "GET",
+                path: "/v1/search/q=q&num=8",
+                success: serde_json::json!({"results":[{"link":"https://example.com/sp","title":"SP","description":"摘要 SP"}]}),
+            },
+            Case {
+                id: "desearch",
+                method: "GET",
+                path: "/web",
+                success: serde_json::json!({"data":[{"link":"https://example.com/de","title":"DE","snippet":"摘要 DE"}]}),
+            },
         ]
     }
 
@@ -1432,9 +1507,7 @@ mod recorded_contract_tests {
             let server = MockServer::start().await;
             Mock::given(method(case.method))
                 .and(path(case.path))
-                .respond_with(
-                    ResponseTemplate::new(200).set_delay(Duration::from_millis(200)),
-                )
+                .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_millis(200)))
                 .mount(&server)
                 .await;
             let error = search_one_with_timeout(
@@ -1447,7 +1520,11 @@ mod recorded_contract_tests {
             )
             .await
             .expect_err("超时");
-            assert!(matches!(error, SearchError::Timeout), "{} 超时要映射 Timeout", case.id);
+            assert!(
+                matches!(error, SearchError::Timeout),
+                "{} 超时要映射 Timeout",
+                case.id
+            );
         }
     }
 }

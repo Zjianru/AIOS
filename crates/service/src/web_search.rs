@@ -399,7 +399,7 @@ pub(crate) fn selected_for(
     if host.trim().is_empty() {
         missing = Some("地址还没填".to_owned());
     }
-    let mut llm_connection = || {
+    let llm_connection = || {
         let synced = keyring.search_sync_connection(spec.id).ok().flatten();
         if let Some(synced_id) = synced {
             return connections

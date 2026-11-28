@@ -24,7 +24,6 @@ fn config(dir: &Path, base_url: String) -> WebSearchConfig {
     WebSearchConfig {
         data_dir: dir.to_path_buf(),
         identity: Some(dir.join("identity.txt")),
-        base_url,
     }
 }
 
