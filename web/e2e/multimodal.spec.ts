@@ -330,12 +330,11 @@ test('阅读页引用（Kind 侧）：pending quote → 引用卡 → 发送成�
   test.setTimeout(180_000);
   const fixture = await startKernelFixture();
   try {
-    await page.goto(urlOf(fixture, '#kind'));
-    await expect(page.locator('[data-kind="composer-input"]')).toBeVisible({ timeout: 30_000 });
-    await page.evaluate((quote) => {
+    await page.addInitScript((quote) => {
       localStorage.setItem('aios.kind.pending-quote', JSON.stringify(quote));
     }, readPendingQuote());
-    await page.reload();
+    await page.goto(urlOf(fixture, '#kind'));
+    await expect(page.locator('[data-kind="composer-input"]')).toBeVisible({ timeout: 30_000 });
     const quoteCard = page.locator('[data-kind="composer-cards"] [data-kind="quote-card"]').last();
     await expect(quoteCard).toBeVisible({ timeout: 20_000 });
     await expect(quoteCard.locator('[data-kind="quote-source"]')).toContainText('阅读页 · 评测记录.md · 版本 1');
