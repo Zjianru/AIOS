@@ -18,7 +18,7 @@ struct Shared {
     last_request: Option<serde_json::Value>,
     /// 这一轮跑过的请求体（e2e 要按工具表认 Kind/ThinAgent，时序不保证最后一条是谁）。
     requests: Vec<serde_json::Value>,
-    /// t029：ThinAgent 请求闸门。测试看到请求已到回放再移 Keyring/重启，不用 sleep。
+    /// ThinAgent 请求闸门：重启用例看到请求已到回放再移 Keyring/重启，不用 sleep。
     hold_thin: bool,
     thin_release: Arc<tokio::sync::Notify>,
     /// 假厂商的 /v1/models：空表照旧 404；非空时回这个列表（保存连接会来拉一次）。
@@ -143,14 +143,30 @@ async fn handle(mut stream: TcpStream, shared: Arc<Mutex<Shared>>) -> std::io::R
     // T010.2：测试夹具要断言下一轮用的模型；控制端点回最近一次请求的 model。
     // T012.9：测试夹具要断言下一轮请求的思考档；控制端点回最近一次请求的完整 body。
     if path.contains("__replay/hold-thin") {
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
-        let hold = value.get("hold").and_then(serde_json::Value::as_bool).unwrap_or(false);
+        let value: serde_json::Value =
+            serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+        let hold = value
+            .get("hold")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
         shared.lock().await.hold_thin = hold;
-        return write_response(&mut stream, 200, "application/json", br#"{"ok":true}"#.to_vec()).await;
+        return write_response(
+            &mut stream,
+            200,
+            "application/json",
+            br#"{"ok":true}"#.to_vec(),
+        )
+        .await;
     }
     if path.contains("__replay/release-thin") {
         shared.lock().await.thin_release.notify_waiters();
-        return write_response(&mut stream, 200, "application/json", br#"{"ok":true}"#.to_vec()).await;
+        return write_response(
+            &mut stream,
+            200,
+            "application/json",
+            br#"{"ok":true}"#.to_vec(),
+        )
+        .await;
     }
     if path.contains("__replay/requests") {
         let requests = shared.lock().await.requests.clone();
