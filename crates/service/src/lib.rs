@@ -109,6 +109,8 @@ pub(crate) mod monitor_facts;
 pub(crate) mod program_messages;
 pub mod quota;
 mod root;
+#[allow(dead_code)]
+mod rules;
 pub mod settings;
 pub mod stats;
 
