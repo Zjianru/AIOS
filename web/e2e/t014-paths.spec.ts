@@ -64,7 +64,7 @@ test('旧的状态消息没有 cwd：路径原样显示，页面不报错', asyn
       await route.continue();
       return;
     }
-    // 旧服务（协议 8）的 status：没有 cwd，stats/fx/currency 也允许缺。
+    // 旧服务（协议 8）的 status：没有 cwd，stats 等字段也允许缺。
     await route.fulfill({
       status: 200,
       contentType: 'application/json',

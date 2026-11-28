@@ -108,8 +108,6 @@ export interface FixtureOptions {
   envExaKey?: string;
  /// ：起服务前先放一条旧格式（v16）的根会话日志，用来验旧日志照读。
   legacySession?: boolean;
- /// ：把服务的汇率请求指到本地代理，测试可以等 status 进了 fx 的 await 再动作。
-  slowFx?: boolean;
  /// ：起服务前先写好根会话日志（翻页夹具）。cc-pages：同一条抄送的
  /// agent/inbox/spliced 落在上一页末尾、领取后的 user/message 落在下一页开头。
   kindHistory?: 'cc-pages';

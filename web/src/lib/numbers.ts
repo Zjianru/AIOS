@@ -1,9 +1,9 @@
 /**
- * 数字的显示：token 数、缓存命中、花费（照原型 app-v14 1f0c920 的 lib/numbers，数据源换成服务给的币种/汇率）。
+ * 数字的显示：token 数、缓存命中、花费（照原型 app-v14 1f0c920 的 lib/numbers，花费只按美元）。
  *
  * - token：照 DSH `ui-chat/token-format.ts`：517 / 12.2K / 517K / 1.2M；精确值按三位分组，悬停时给。
  * - 缓存命中：照 DSH `formatCacheHitPercent`：没有输入不显示；部分命中不四舍五入成 100%。
- * - 花费：照 Magpie `usage.FormatCost`：价格和花费一律按美元存，显示时按币种换算；
+ * - 花费：照 Magpie `usage.FormatCost`：价格和花费一律按美元存、只按美元显示；
  *   ≥100 取整，≥1 两位小数，其余三位；有一部分调用没价格，后面加「+」。
  */
 

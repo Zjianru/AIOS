@@ -62,6 +62,9 @@ impl SettingsUpdateAction {
         let object = raw
             .as_object()
             .ok_or_else(|| "details 必须是 JSON 对象".to_owned())?;
+        if object.contains_key("currency") {
+            return Err("币种已删除；设置只认 seats、bash、visionModels、screenCapture".to_owned());
+        }
         let seats = match object.get("seats") {
             None | Some(Value::Null) => None,
             Some(Value::Number(value)) => Some(
