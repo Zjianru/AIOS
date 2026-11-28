@@ -7,15 +7,19 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
 export type Theme = 'dark' | 'light';
+export type ThemeMode = 'dark' | 'light' | 'system';
 
 export interface AppState {
   theme: Theme;
+  /** 外观偏好：light/dark/system；theme 是解析后的实际主题。 */
+  themeMode: ThemeMode;
   /** 用户手动改过的「减少动效」；null = 跟随系统。 */
   reducedMotion: boolean | null;
   sidebarCollapsed: boolean;
   /** dockview 序列化布局，按场景 key 存。 */
   layouts: Record<string, unknown>;
   setTheme: (theme: Theme) => void;
+  setThemeMode: (mode: ThemeMode) => void;
   toggleTheme: () => void;
   setReducedMotion: (value: boolean | null) => void;
   toggleSidebar: () => void;
@@ -28,10 +32,12 @@ export const useAppStore = create<AppState>()(
   persist(
     (set) => ({
       theme: 'dark',
+      themeMode: 'dark',
       reducedMotion: null,
       sidebarCollapsed: false,
       layouts: {},
       setTheme: (theme) => set({ theme }),
+      setThemeMode: (themeMode) => set({ themeMode }),
       toggleTheme: () => set((state) => ({ theme: state.theme === 'dark' ? 'light' : 'dark' })),
       setReducedMotion: (reducedMotion) => set({ reducedMotion }),
       toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
@@ -49,6 +55,7 @@ export const useAppStore = create<AppState>()(
       name: 'aios-v14',
       partialize: (state) => ({
         theme: state.theme,
+        themeMode: state.themeMode,
         reducedMotion: state.reducedMotion,
         sidebarCollapsed: state.sidebarCollapsed,
         layouts: state.layouts,

@@ -44,6 +44,7 @@ export function AppShell() {
   const panes = def.panes;
   const dockKey = scene;
   const theme = useAppStore((s) => s.theme);
+  const themeMode = useAppStore((s) => s.themeMode);
   const reducedPref = useAppStore((s) => s.reducedMotion);
   const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed);
   const setSidebarCollapsed = useAppStore((s) => s.setSidebarCollapsed);
@@ -51,7 +52,20 @@ export function AppShell() {
   const reduced = reducedPref ?? systemReduced;
 
   useEffect(() => {
-    document.documentElement.dataset.theme = theme;
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    const resolve = () => {
+      if (themeMode === 'system') return media.matches ? 'dark' : 'light';
+      return themeMode;
+    };
+    document.documentElement.dataset.theme = resolve();
+    const refresh = () => {
+      if (themeMode === 'system') document.documentElement.dataset.theme = resolve();
+    };
+    media.addEventListener('change', refresh);
+    return () => media.removeEventListener('change', refresh);
+  }, [themeMode, theme]);
+
+  useEffect(() => {
     if (reduced) document.documentElement.dataset.reducedMotion = 'true';
     else delete document.documentElement.dataset.reducedMotion;
   }, [theme, reduced]);
