@@ -177,12 +177,6 @@ async function writeRestartRoutes(
     { contains: 'tasks_interrupted', file: restartPath, paceMs: 120 },
     ...base.routes.map((route) => ({
       ...route,
-      // 甲/乙是「重启时还在跑」的 long 流：把回放放慢，确保移除 Keyring/重启时
-      // Attempt 还开着，而不是已经因为缺凭证先结束成「等报告」。
-      paceMs:
-        route.contains.includes('任务甲') || route.contains.includes('任务乙')
-          ? 30000
-          : route.paceMs,
       file: path.join(FIXTURE_DIR, route.file),
     })),
   ];
@@ -214,6 +208,29 @@ async function lastRequestOn(url: string): Promise<unknown> {
   const response = await fetch(url + '/__replay/last-request');
   const body = (await response.json()) as { request?: unknown };
   return body.request ?? null;
+}
+
+async function setThinGate(replayUrl: string, hold: boolean): Promise<void> {
+  const response = await fetch(replayUrl + '/__replay/hold-thin', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ hold }),
+  });
+  expect(response.ok).toBeTruthy();
+}
+
+async function waitThinAgentRequest(replayUrl: string): Promise<void> {
+  await waitFor('ThinAgent 请求已到回放', async () => {
+    const response = await fetch(replayUrl + '/__replay/requests');
+    const body = (await response.json()) as { requests?: unknown[] };
+    return (body.requests ?? []).some((item) => JSON.stringify(item).includes('ThinAgent'))
+      ? true
+      : null;
+  });
+}
+
+async function releaseThinGate(replayUrl: string): Promise<void> {
+  await fetch(replayUrl + '/__replay/release-thin', { method: 'POST' });
 }
 
 async function launchTasks(
@@ -267,6 +284,7 @@ async function restartAfterInterruption(
   const routes = await writeRestartRoutes(fixture, scenario, ids);
   const replayUrl = await switchReplay(request, fixture, routes);
   await fixture.restart?.();
+  await releaseThinGate(fixture.fakeEndpoint);
   return { reports: await restartMessages(fixture), replayUrl };
 }
 
@@ -418,9 +436,11 @@ test('任务对话里先说「继续」：开新 Attempt，请求里恢复说明
   test.setTimeout(120_000);
   const fixture = await startKernelFixture({ t029Restart: 'single' });
   try {
+    await setThinGate(fixture.fakeEndpoint, true);
     await apiPost(request, fixture, { method: 'settings-update', seats: 8 });
     const [taskA] = await launchTasks(page, request, fixture, 1, '帮我派一个任务');
     await waitTaskRunning(request, fixture, taskA);
+    await waitThinAgentRequest(fixture.fakeEndpoint);
     const before = latestAttempt(taskRow(fixture, taskA));
     await restartAfterInterruption(request, fixture, 'single', [taskA]);
 
@@ -486,9 +506,11 @@ test('模型不可用时：页头「被打断了 · 待 Kind 核实，尚未接�
   test.setTimeout(150_000);
   const fixture = await startKernelFixture({ t029Restart: 'single' });
   try {
+    await setThinGate(fixture.fakeEndpoint, true);
     await apiPost(request, fixture, { method: 'settings-update', seats: 8 });
     const [taskA] = await launchTasks(page, request, fixture, 1, '帮我派一个任务');
     await waitTaskRunning(request, fixture, taskA);
+    await waitThinAgentRequest(fixture.fakeEndpoint);
 
     // 先把连接指到新回放；再把 Keyring 拿走：服务起得来，但根会话/模型不可用。
     const { rm } = await import('node:fs/promises');
@@ -496,7 +518,7 @@ test('模型不可用时：页头「被打断了 · 待 Kind 核实，尚未接�
     const replayUrl = await switchReplay(request, fixture, routes);
     await rm(path.join(fixture.dataDir, 'keyring.age'), { force: true });
     await fixture.restart?.();
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await releaseThinGate(fixture.fakeEndpoint);
 
     // 任务对话能打开：页头固定「被打断了」，横幅「待 Kind 核实」。
     await page.goto(urlOf(fixture, '#taskchat:' + taskA));
