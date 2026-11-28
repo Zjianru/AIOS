@@ -38,7 +38,11 @@ export const useAppStore = create<AppState>()(
       layouts: {},
       setTheme: (theme) => set({ theme }),
       setThemeMode: (themeMode) => set({ themeMode }),
-      toggleTheme: () => set((state) => ({ theme: state.theme === 'dark' ? 'light' : 'dark' })),
+      toggleTheme: () =>
+        set((state) => {
+          const next = state.theme === 'dark' ? 'light' : 'dark';
+          return { theme: next, themeMode: next };
+        }),
       setReducedMotion: (reducedMotion) => set({ reducedMotion }),
       toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
       setSidebarCollapsed: (sidebarCollapsed) => set({ sidebarCollapsed }),

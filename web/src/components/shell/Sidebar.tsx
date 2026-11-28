@@ -179,6 +179,7 @@ function SidebarInner({ route }: { route: ParsedRoute }) {
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton
+              data-theme-toggle
               tooltip={theme === 'dark' ? '换浅色（外观）' : '换深色（外观）'}
               onClick={toggleTheme}
               className="h-8 gap-2.5 rounded-btn px-2 text-3 text-ink-2 hover:bg-hover hover:text-ink"

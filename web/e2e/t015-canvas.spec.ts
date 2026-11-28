@@ -154,7 +154,7 @@ test('画布跟着 AIOS 的深浅色：主题变量换一套', async ({ page }) 
     );
     const dark = await canvasVariable(page, '--color-background-primary');
 
-    await page.getByRole('button', { name: '外观', exact: true }).click();
+    await page.locator('[data-theme-toggle]').click();
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
     await expect.poll(() => canvasVariable(page, '--color-background-primary')).not.toBe(dark);
     expect(await canvasVariable(page, '--color-background-primary')).toBe(await raisedOf());
