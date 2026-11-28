@@ -2349,10 +2349,10 @@ fn settings_update_lists_only_the_changed_fields() {
     assert_eq!(facts[0].name, "席位");
     assert!(facts[0].value.ends_with("→ 5"), "{:?}", facts[0]);
     assert!(action.details(&json!({})).is_err(), "空 details 要拒");
-    assert!(
-        action.details(&json!({ "currency": "usd" })).is_err(),
-        "币种已删"
-    );
+    let error = action
+        .details(&json!({ "seats": 5, "currency": "usd" }))
+        .expect_err("旧 currency 字段要明确拒");
+    assert!(error.contains("币种已删除"), "{error}");
 }
 
 #[test]
