@@ -317,9 +317,9 @@ async fn web_search_rejects_empty_blank_and_oversized_query_lists() {
 
 #[tokio::test]
 async fn web_search_sources_lists_enabled_providers_capabilities_price_and_status() {
-    crate::web::reset_health();
     let dir = tempfile::tempdir().expect("临时目录");
     let data = dir.path();
+    crate::web::reset_health(data);
     let search_config = config(data, "http://127.0.0.1:1".to_owned());
     let mut settings = crate::settings::load_for_write(data).expect("settings");
     settings.web_search.enabled = vec!["duckduckgo".to_owned()];

@@ -57,6 +57,9 @@ pub struct WebSearchSettings {
     /// SearXNG Basic 认证的用户名（密码只存 Keyring）。
     #[serde(default)]
     pub auth: std::collections::BTreeMap<String, WebSearchAuth>,
+    /// 每家的最近失败/冷却（跨设置页/进程保留）。
+    #[serde(default)]
+    pub health: std::collections::BTreeMap<String, WebSearchHealth>,
     /// 旧版单选字段：只用于迁移，写回时不再出现。
     #[serde(default, rename = "selected", skip_serializing)]
     pub legacy_selected: Option<String>,
@@ -70,6 +73,7 @@ impl Default for WebSearchSettings {
             schedule: WebSearchSchedule::default(),
             hosts: std::collections::BTreeMap::new(),
             auth: std::collections::BTreeMap::new(),
+            health: std::collections::BTreeMap::new(),
             legacy_selected: None,
         }
     }
@@ -104,6 +108,17 @@ impl WebSearchSettings {
             self.schedule.per_provider = 5;
         }
     }
+}
+
+/// 一家搜索服务商的健康状态（持久化在设置里，页面不显示正文）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct WebSearchHealth {
+    #[serde(default)]
+    pub failures: u32,
+    #[serde(default)]
+    pub cooldown_until: u64,
+    #[serde(default)]
+    pub last_failure: Option<String>,
 }
 
 /// 没点名时的调度：平衡/质量/省钱，每家取几条。

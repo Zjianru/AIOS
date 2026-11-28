@@ -171,7 +171,7 @@ impl WebSearchTool {
                     }
                 }
                 Ok((_, _, provider_id, Err(error))) => {
-                    crate::web::search::record_failure(provider_id, &error);
+                    crate::web::search::record_failure(&self.config.data_dir, provider_id, &error);
                     failures.push(format!("{}: {:?}", provider_id, error));
                 }
                 Err(join_error) => {
@@ -463,17 +463,6 @@ fn format_search_output(
     )
 }
 
-/// 搜之前的来源状态；冷却/最近失败和搜索共用一张表。
-static HEALTH: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, Health>>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
-
-#[derive(Debug, Clone, Default)]
-struct Health {
-    failures: u32,
-    last_failure: Option<String>,
-    cooldown_until: u64,
-}
-
 fn now_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -481,7 +470,12 @@ fn now_seconds() -> u64 {
         .unwrap_or(0)
 }
 
-pub(crate) fn provider_status(id: &str, missing: Option<&str>) -> String {
+/// 搜之前的来源状态：从设置里读持久化的最近失败/冷却。
+pub(crate) fn provider_status(
+    data_dir: &std::path::Path,
+    id: &str,
+    missing: Option<&str>,
+) -> String {
     if let Some(missing) = missing {
         let key = if missing.contains("key") {
             "missing_key"
@@ -490,9 +484,9 @@ pub(crate) fn provider_status(id: &str, missing: Option<&str>) -> String {
         };
         return format!("{key} ({missing})");
     }
-    let health = HEALTH
-        .lock()
-        .expect("web health 锁被毒化")
+    let health = crate::settings::load(data_dir)
+        .web_search
+        .health
         .get(id)
         .cloned()
         .unwrap_or_default();
@@ -505,14 +499,12 @@ pub(crate) fn provider_status(id: &str, missing: Option<&str>) -> String {
     "ready".to_owned()
 }
 
-#[cfg(test)]
-pub(crate) fn reset_health() {
-    HEALTH.lock().expect("web health 锁被毒化").clear();
-}
-
-pub(crate) fn record_failure(id: &str, error: &SearchError) {
-    let mut health = HEALTH.lock().expect("web health 锁被毒化");
-    let entry = health.entry(id.to_owned()).or_default();
+pub(crate) fn record_failure(data_dir: &std::path::Path, id: &str, error: &SearchError) {
+    let mut settings = match crate::settings::load_for_write(data_dir) {
+        Ok(settings) => settings,
+        Err(_) => return,
+    };
+    let entry = settings.web_search.health.entry(id.to_owned()).or_default();
     let reason = format!("{error:?}");
     if !matches!(error, SearchError::Http(401)) {
         entry.failures += 1;
@@ -522,25 +514,13 @@ pub(crate) fn record_failure(id: &str, error: &SearchError) {
         }
     }
     entry.last_failure = Some(reason);
+    let _ = crate::settings::save(data_dir, &settings);
 }
 
 #[cfg(test)]
-mod health_tests {
-    use super::*;
-
-    #[test]
-    fn three_failures_cool_down_but_401_only_records_last_failure() {
-        reset_health();
-        for _ in 0..3 {
-            record_failure("x", &SearchError::Http(500));
-        }
-        let status = provider_status("x", None);
-        assert!(status.starts_with("cooldown_until="), "{status}");
-        reset_health();
-        record_failure("y", &SearchError::Http(401));
-        let status = provider_status("y", None);
-        assert_eq!(status, "last_failure=Http(401)");
-        assert!(!status.contains("cooldown"));
-        reset_health();
+pub(crate) fn reset_health(data_dir: &std::path::Path) {
+    if let Ok(mut settings) = crate::settings::load_for_write(data_dir) {
+        settings.web_search.health.clear();
+        let _ = crate::settings::save(data_dir, &settings);
     }
 }

@@ -61,8 +61,11 @@ impl Tool for WebSourcesTool {
             let mut lines = vec!["Enabled web search sources:".to_owned()];
             for row in rows {
                 let capabilities = providers::capability_labels(row.spec.id).join("、");
-                let status =
-                    crate::web::search::provider_status(row.spec.id, row.missing.as_deref());
+                let status = crate::web::search::provider_status(
+                    &self.config.data_dir,
+                    row.spec.id,
+                    row.missing.as_deref(),
+                );
                 lines.push(format!(
                     "- {} ({}): capabilities={}; price={}; status={}",
                     row.spec.name,

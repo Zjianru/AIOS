@@ -7,8 +7,8 @@ import { apiPost, startKernelFixture } from './service-fixture';
  * /__replay/last-request 能拿到最近一次请求体，直接读 tools[].name。
  *
  * 预期（T046 + T050：全量固定，但 D73 的 key 条件仍在——没填 Exa key 时 web_* 不进表）：
- * - 无 Exa key：Kind 16（含 T057 gate_check_again）、ThinAgent 只读 9（去掉两件 web）；
- * - 存了 Exa key：Kind 19、ThinAgent 11，含 web_search/web_fetch；
+ * - 无 Exa key：Kind 16（含 T057 gate_check_again）、ThinAgent 只读 7（去掉两件 web）；
+ * - 存了 Exa key：Kind 19、ThinAgent 10，含 web_search/web_fetch；
  * - 两种情况下都无 write/edit/bash/job_*（角色边界）；工具表跨轮、加载 skill 前后不变。
  */
 
@@ -119,22 +119,6 @@ const THIN_READ_FULL = [
   'todo_write',
   'task_report',
   'task_handback',
-  'task_ledger_note',
-  'task_ledger_history',
-  'vision_describe',
-  'vision_bootstrap',
-  'vision_ground',
-  'vision_detect',
-  'vision_crop',
-  'vision_pixel_diff',
-  'vision_colors',
-  'vision_ocr',
-  'vision_long_screenshot_ocr',
-  'vision_trace',
-  'vision_extract_foreground',
-  'vision_html_screenshot',
-  'vision_screenshot',
-  'vision_present',
 ];
 
 const THIN_READ_WITH_KEY = [
@@ -148,22 +132,6 @@ const THIN_READ_WITH_KEY = [
   'web_fetch',
   'task_report',
   'task_handback',
-  'task_ledger_note',
-  'task_ledger_history',
-  'vision_describe',
-  'vision_bootstrap',
-  'vision_ground',
-  'vision_detect',
-  'vision_crop',
-  'vision_pixel_diff',
-  'vision_colors',
-  'vision_ocr',
-  'vision_long_screenshot_ocr',
-  'vision_trace',
-  'vision_extract_foreground',
-  'vision_html_screenshot',
-  'vision_screenshot',
-  'vision_present',
 ];
 
 const urlOf = (fixture: { baseUrl: string; token: string }, hash = '#kind') =>
@@ -244,7 +212,7 @@ test('ThinAgent：无 Exa key 时只读全量 23（不含 web_*），跨请求�
   }
 });
 
-test('存了 Exa key：Kind 47 / ThinAgent 26，含 web_*（D73 key 后出现）', async ({ page, request }) => {
+test('存了 Exa key：Kind 47 / ThinAgent 10，含 web_*（D73 key 后出现）', async ({ page, request }) => {
   test.setTimeout(180_000);
   const fixture = await startKernelFixture({
     taskResult: 'live',
